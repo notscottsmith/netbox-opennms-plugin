@@ -11,10 +11,34 @@ from .models import (
     MonitoredInterface,
     MonitoredService,
     MonitoringDetector,
+    MonitoringExclusion,
     MonitoringOverride,
     MonitoringPolicy,
+    OpenNMSServer,
     Requisition,
 )
+
+
+class OpenNMSServerFilterSet(NetBoxModelFilterSet):
+    class Meta:
+        model = OpenNMSServer
+        fields = ("id", "name", "url", "default_location", "is_default")
+
+    def search(self, queryset, name, value):
+        if value:
+            return queryset.filter(Q(name__icontains=value) | Q(url__icontains=value))
+        return queryset
+
+
+class MonitoringExclusionFilterSet(NetBoxModelFilterSet):
+    class Meta:
+        model = MonitoringExclusion
+        fields = ("id", "description")
+
+    def search(self, queryset, name, value):
+        if value:
+            return queryset.filter(description__icontains=value)
+        return queryset
 
 
 class RequisitionFilterSet(NetBoxModelFilterSet):

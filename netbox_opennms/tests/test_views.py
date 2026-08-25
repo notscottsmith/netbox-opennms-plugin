@@ -19,8 +19,10 @@ from netbox_opennms.models import (
     MonitoredInterface,
     MonitoredService,
     MonitoringDetector,
+    MonitoringExclusion,
     MonitoringOverride,
     MonitoringPolicy,
+    OpenNMSServer,
     Requisition,
 )
 
@@ -258,6 +260,58 @@ class AssetMappingViewTest(
             "requisition": req.pk,
             "netbox_source": "asset_tag",
             "asset_field": "assetNumber",
+        }
+
+
+class OpenNMSServerViewTest(
+    ViewTestCases.GetObjectViewTestCase,
+    ViewTestCases.GetObjectChangelogViewTestCase,
+    ViewTestCases.CreateObjectViewTestCase,
+    ViewTestCases.EditObjectViewTestCase,
+    ViewTestCases.DeleteObjectViewTestCase,
+    ViewTestCases.ListObjectsViewTestCase,
+    ViewTestCases.BulkDeleteObjectsViewTestCase,
+):
+    model = OpenNMSServer
+
+    def _get_base_url(self):
+        return "plugins:netbox_opennms:opennmsserver_{}"
+
+    @classmethod
+    def setUpTestData(cls):
+        for name in ("srv-1", "srv-2", "srv-3"):
+            OpenNMSServer.objects.create(
+                name=name, url=f"https://{name}.example", username="svc", password="x"
+            )
+        cls.form_data = {
+            "name": "srv-4",
+            "url": "https://srv-4.example",
+            "username": "svc",
+            "password": "hunter2",
+            "headers": "{}",
+        }
+
+
+class MonitoringExclusionViewTest(
+    ViewTestCases.GetObjectViewTestCase,
+    ViewTestCases.GetObjectChangelogViewTestCase,
+    ViewTestCases.CreateObjectViewTestCase,
+    ViewTestCases.EditObjectViewTestCase,
+    ViewTestCases.DeleteObjectViewTestCase,
+    ViewTestCases.ListObjectsViewTestCase,
+    ViewTestCases.BulkDeleteObjectsViewTestCase,
+):
+    model = MonitoringExclusion
+
+    def _get_base_url(self):
+        return "plugins:netbox_opennms:monitoringexclusion_{}"
+
+    @classmethod
+    def setUpTestData(cls):
+        for description in ("excl-1", "excl-2", "excl-3"):
+            MonitoringExclusion.objects.create(description=description)
+        cls.form_data = {
+            "description": "excl-4",
         }
 
 

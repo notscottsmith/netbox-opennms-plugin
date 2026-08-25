@@ -6,6 +6,17 @@ from netbox.plugins import PluginMenuButton, PluginMenuItem
 
 menu_items = (
     PluginMenuItem(
+        link="plugins:netbox_opennms:opennmsserver_list",
+        link_text="OpenNMS Servers",
+        buttons=(
+            PluginMenuButton(
+                link="plugins:netbox_opennms:opennmsserver_add",
+                title="Add",
+                icon_class="mdi mdi-plus-thick",
+            ),
+        ),
+    ),
+    PluginMenuItem(
         link="plugins:netbox_opennms:requisition_list",
         link_text="Requisitions",
         buttons=(
@@ -22,6 +33,17 @@ menu_items = (
         buttons=(
             PluginMenuButton(
                 link="plugins:netbox_opennms:monitoringoverride_add",
+                title="Add",
+                icon_class="mdi mdi-plus-thick",
+            ),
+        ),
+    ),
+    PluginMenuItem(
+        link="plugins:netbox_opennms:monitoringexclusion_list",
+        link_text="Monitoring Exclusions",
+        buttons=(
+            PluginMenuButton(
+                link="plugins:netbox_opennms:monitoringexclusion_add",
                 title="Add",
                 icon_class="mdi mdi-plus-thick",
             ),

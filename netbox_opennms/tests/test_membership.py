@@ -33,6 +33,7 @@ from netbox_opennms.models import (
     MonitoredInterface,
     MonitoredService,
     MonitoringOverride,
+    OpenNMSServer,
     Requisition,
 )
 
@@ -305,6 +306,72 @@ class MembershipTest(TestCase):
         self.assertEqual(len(conflicts), 1)
         self.assertEqual(conflicts[0].foreign_id, f"device-{device.pk}")
         self.assertEqual(conflicts[0].requisition_names, ["a", "b"])
+
+    # --- server resolution (multi-server, ADR 0002) -------------------------
+
+    def test_no_members_resolves_no_server_and_no_conflict(self):
+        self._requisition(filter_params={"role": ["server"]})  # matches nothing
+        resolution = resolve(FS)
+        self.assertIsNone(resolution.server)
+        self.assertIsNone(resolution.server_conflict)
+
+    def test_members_agreeing_on_a_server_resolve_cleanly(self):
+        server = OpenNMSServer.objects.create(name="Server A", url="https://a.example")
+        server.sites.add(self.site)
+        self._device("rtr-1")
+        self._requisition()
+        resolution = resolve(FS)
+        self.assertEqual(resolution.server, server)
+        self.assertIsNone(resolution.server_conflict)
+
+    def test_members_disagreeing_on_server_is_a_server_conflict(self):
+        other_site = Site.objects.create(name="Durham", slug="durham")
+        server_a = OpenNMSServer.objects.create(name="Server A", url="https://a.example")
+        server_a.sites.add(self.site)
+        server_b = OpenNMSServer.objects.create(name="Server B", url="https://b.example")
+        server_b.sites.add(other_site)
+        self._device("rtr-1")
+        self._device("rtr-2", site=other_site, ip="10.0.0.2/24")
+        self._requisition(filter_params={"role": ["router"]})
+        resolution = resolve(FS)
+        self.assertIsNone(resolution.server)
+        self.assertIsNotNone(resolution.server_conflict)
+        self.assertEqual(
+            resolution.server_conflict.servers, ["Server A", "Server B"]
+        )
+
+    def test_no_server_resolved_for_any_member_is_blocking(self):
+        # No Scope binding matches and no Default Server exists — a Requisition
+        # must resolve to exactly one Server, never zero.
+        self._device("rtr-1")
+        self._requisition()
+        resolution = resolve(FS)
+        self.assertIsNone(resolution.server)
+        self.assertIsNotNone(resolution.server_conflict)
+
+    def test_excluded_member_does_not_count_toward_server_conflict(self):
+        other_site = Site.objects.create(name="Durham", slug="durham")
+        server_a = OpenNMSServer.objects.create(name="Server A", url="https://a.example")
+        server_a.sites.add(self.site)
+        server_b = OpenNMSServer.objects.create(name="Server B", url="https://b.example")
+        server_b.sites.add(other_site)
+        self._device("rtr-1")
+        excluded, _ = self._device("rtr-2", site=other_site, ip="10.0.0.2/24")
+        MonitoringOverride.objects.create(assigned_object=excluded, exclude=True)
+        self._requisition(filter_params={"role": ["router"]})
+        resolution = resolve(FS)
+        self.assertEqual(resolution.server, server_a)
+        self.assertIsNone(resolution.server_conflict)
+
+    def test_server_conflict_keeps_requisition_monitored(self):
+        # No Scope binding matches and no Default Server exists — a blocking
+        # server_conflict — must not drop the requisition out of
+        # monitored_foreign_sources (reconciler safety), same as a filter Conflict.
+        self._device("rtr-1")
+        self._requisition()
+        resolution = resolve(FS)
+        self.assertIsNotNone(resolution.server_conflict)
+        self.assertEqual(monitored_foreign_sources(), [FS])
 
     # --- resolve_node -------------------------------------------------------
 

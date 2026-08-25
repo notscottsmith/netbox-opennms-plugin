@@ -146,10 +146,9 @@ and netbox-docker, not the package.)
 
    pluginsConfig:
      netbox_opennms:
-       opennms_url: "https://opennms.example.org/opennms"
-       opennms_username: "provision-svc"
-       opennms_password: "********"     # lab only — in production source from a Secret via extraConfig
-       default_location: ""
+       # Fernet key protecting OpenNMSServer credentials/headers at rest — source
+       # this from a Secret via extraConfig, never a plaintext value.
+       opennms_secret_key: "********"
        import_mode: "false"
        reconcile_orphans: "true"
 
@@ -172,26 +171,30 @@ and netbox-docker, not the package.)
    kubectl logs deploy/netbox | grep netbox_opennms   # → Applying netbox_opennms... OK
    ```
 
-Keep `opennms_password` out of plaintext values — load the plugin config from a
+   Then create at least one **OpenNMS Server** (URL, credentials, optional
+   headers, default location) from the UI/API — see [Configuration](#configuration).
+
+Keep `opennms_secret_key` out of plaintext values — load the plugin config from a
 `Secret` via the chart's `extraConfig`. On upgrades, rebuild the image with the
 new plugin version, bump `image.tag`, and `helm upgrade`.
 
 ## Configuration
 
-Configure the OpenNMS connection and behaviour in `PLUGINS_CONFIG`. Credentials
-are read at runtime and are **never stored on a NetBox model**.
+Plugin-wide behaviour is set in `PLUGINS_CONFIG`; the OpenNMS connection itself
+(URL, credentials, optional headers, default monitoring location) is **not** —
+it lives on one or more **OpenNMS Server** records, managed from the NetBox
+UI/API (**Plugins → NetBox OpenNMS → OpenNMS Servers**), so an MSP-style NetBox
+instance can point different tenants/sites/locations at different OpenNMS
+instances. Credentials and headers are encrypted at rest with the Fernet key
+below — never stored in plaintext.
 
 ```python
 PLUGINS_CONFIG = {
     "netbox_opennms": {
-        # Base URL of the OpenNMS instance, including the context path.
-        "opennms_url": "https://opennms.example.org/opennms",
-        # A provisioning/REST role account (NOT stored on any NetBox model).
-        "opennms_username": "provision-svc",
-        "opennms_password": "********",          # use your secrets mechanism
-        # Default OpenNMS monitoring location for requisitions that don't set one.
-        # Empty means OpenNMS's built-in "Default" location.
-        "default_location": "",
+        # Fernet key protecting OpenNMSServer credentials/headers at rest.
+        # Required to start. Generate with:
+        #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+        "opennms_secret_key": "********",
         # rescanExisting value passed to the import step: one of
         # "true" | "false" | "dbonly".
         "import_mode": "false",
@@ -205,9 +208,23 @@ PLUGINS_CONFIG = {
 }
 ```
 
-You can verify the configured connection from the UI at **Plugins → NetBox
-OpenNMS → Connect OpenNMS** (permission-gated; it tests the configured
-connection and never persists credentials).
+An **OpenNMS Server** carries its URL, credentials, an optional `headers` dict
+(merged into every outbound request — e.g. a Cloudflare Access service-token
+pair for a server behind a Tunnel), and a default monitoring location. Scope it
+to one or more tenant groups / tenants / site groups / sites / locations —
+whichever level is most specific for a Requisition's matched object wins
+(location > site > site group > tenant > tenant group). At most one Server may
+be marked **Default** (unscoped, no bindings) as the fallback when nothing more
+specific matches. If a Requisition's matched members resolve to more than one
+Server — or to none, with no Default configured — that's a blocking **Server
+conflict**, the same idiom as a filter conflict: Sync is refused until the
+Scope bindings (or **Monitoring Exclusions**, the equivalent scope hierarchy for
+excluding a whole tenant/site/location from monitoring) are adjusted so every
+member agrees on one Server.
+
+You can verify a Server's connection from the UI at **Plugins → NetBox OpenNMS
+→ Connect OpenNMS** (permission-gated; it tests the stored connection and never
+persists anything you type in).
 
 ### `import_mode` values
 
@@ -273,8 +290,9 @@ render-and-replace makes every re-sync idempotent and never duplicates a node.
 The plugin writes requisitions; it does **not** configure OpenNMS polling. For
 monitoring to actually happen:
 
-- **Provisioning account** — `opennms_username` needs a role that can read/write
-  requisitions and trigger imports (e.g. the OpenNMS provisioning/REST role).
+- **Provisioning account** — each OpenNMS Server's username needs a role that can
+  read/write requisitions and trigger imports (e.g. the OpenNMS provisioning/REST
+  role).
 - **Detectors → poller packages** — the requisition's detectors tell OpenNMS which
   services to auto-discover, but OpenNMS only *polls* a discovered service if a
   matching **poller package** exists for it. The plugin cannot create poller

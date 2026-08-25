@@ -2,10 +2,28 @@
 # SPDX-License-Identifier: MIT
 """Tests for the pure dry-run differ (Requisition redesign, R7)."""
 
-from django.test import SimpleTestCase
+from unittest import mock
 
-from netbox_opennms.dryrun import diff
-from netbox_opennms.membership import Conflict, InterfaceSpec, NodeSpec, Resolution
+from dcim.models import (
+    Device,
+    DeviceRole,
+    DeviceType,
+    Interface,
+    Manufacturer,
+    Site,
+)
+from django.test import SimpleTestCase, TestCase
+from ipam.models import IPAddress
+
+from netbox_opennms.dryrun import diff, dry_run
+from netbox_opennms.membership import (
+    Conflict,
+    InterfaceSpec,
+    NodeSpec,
+    Resolution,
+    ServerConflict,
+)
+from netbox_opennms.models import DeployedForeignSource, OpenNMSServer, Requisition
 
 
 class _Rules:
@@ -104,6 +122,20 @@ class DryRunDiffTest(SimpleTestCase):
         self.assertEqual(result.changed, [])
         self.assertEqual(result.unchanged, 0)
 
+    def test_server_conflict_reports_freeze_instead_of_diff(self):
+        # ADR 0002: members disagreeing on (or none resolving to) an OpenNMS
+        # Server is the same kind of freeze as a filter conflict — report it
+        # instead of a node diff of a push that is blocked anyway.
+        resolution = _resolution([_node()])
+        resolution.server_conflict = ServerConflict(["Server A", "Server B"])
+        result = diff(resolution, _current(), {"scan-interval": "1d"})
+        self.assertIn("Server A", result.server_conflict)
+        self.assertIn("Server B", result.server_conflict)
+        self.assertEqual(result.added, [])
+        self.assertEqual(result.removed, [])
+        self.assertEqual(result.changed, [])
+        self.assertEqual(result.unchanged, 0)
+
     def test_blank_location_matches_configured_default(self):
         # Node location blank + OpenNMS holds the configured default_location →
         # not a change (the renderer substitutes the default).
@@ -132,3 +164,95 @@ class DryRunDiffTest(SimpleTestCase):
         result = diff(_resolution([_node()]), current, {"scan-interval": "1d"})
         self.assertEqual(result.added, [])
         self.assertEqual(result.unchanged, 1)
+
+
+FS = "netbox.raleigh.router"
+
+
+class DryRunFetchTest(TestCase):
+    """``dry_run()``'s target-Server resolution (ADR 0002), mirroring
+    ``jobs._render_and_replace``: a cleanly-resolved Server is used first, else
+    the Server this Foreign Source was last deployed to, else there is nothing
+    live to compare against.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.site = Site.objects.create(name="Raleigh", slug="raleigh")
+        cls.role = DeviceRole.objects.create(name="Router", slug="router")
+        mfr = Manufacturer.objects.create(name="Acme", slug="acme")
+        cls.dt = DeviceType.objects.create(manufacturer=mfr, model="M1", slug="m1")
+        cls.requisition = Requisition.objects.create(
+            name=FS, filter_params={"site": ["raleigh"], "role": ["router"]}
+        )
+        device = Device.objects.create(
+            name="rtr-1", device_type=cls.dt, role=cls.role, site=cls.site
+        )
+        iface = Interface.objects.create(device=device, name="eth0", type="virtual")
+        address = IPAddress.objects.create(address="10.0.0.1/24", assigned_object=iface)
+        device.primary_ip4 = address
+        device.save()
+        cls.server = OpenNMSServer.objects.create(
+            name="Acme", url="https://onms.example/opennms", is_default=True
+        )
+
+    @mock.patch("netbox_opennms.dryrun.OpenNMSClient.from_server")
+    def test_uses_the_resolved_server(self, mock_from_server):
+        client = mock_from_server.return_value.__enter__.return_value
+        client.get_requisition.return_value = None
+        client.get_foreign_source.return_value = None
+        dry_run(FS)
+        mock_from_server.assert_called_once_with(self.server)
+
+    @mock.patch("netbox_opennms.dryrun.OpenNMSClient.from_server")
+    def test_falls_back_to_the_previously_deployed_server(self, mock_from_server):
+        # Zero members (e.g. the requisition's device was removed) → resolution.
+        # server is None; fall back to where this Foreign Source last landed.
+        other = OpenNMSServer.objects.create(
+            name="Other", url="https://other.example"
+        )
+        DeployedForeignSource.objects.create(name=FS, server=other)
+        Requisition.objects.filter(pk=self.requisition.pk).update(
+            filter_params={"role": ["nonexistent"]}
+        )
+        client = mock_from_server.return_value.__enter__.return_value
+        client.get_requisition.return_value = None
+        client.get_foreign_source.return_value = None
+        dry_run(FS)
+        mock_from_server.assert_called_once_with(other)
+
+    @mock.patch("netbox_opennms.dryrun.OpenNMSClient.from_server")
+    def test_no_resolvable_or_deployed_server_skips_the_fetch(self, mock_from_server):
+        Requisition.objects.filter(pk=self.requisition.pk).update(
+            filter_params={"role": ["nonexistent"]}
+        )
+        OpenNMSServer.objects.all().delete()
+        result = dry_run(FS)
+        mock_from_server.assert_not_called()
+        self.assertFalse(result.exists)
+
+    @mock.patch("netbox_opennms.dryrun.OpenNMSClient.from_server")
+    def test_server_conflict_skips_the_fetch(self, mock_from_server):
+        # Two members in different Sites, each bound to a different Server →
+        # they disagree — the dry-run reports the freeze without ever calling
+        # OpenNMS.
+        other_site = Site.objects.create(name="Durham", slug="durham")
+        other_server = OpenNMSServer.objects.create(
+            name="Other", url="https://other.example"
+        )
+        other_server.sites.add(other_site)
+        device2 = Device.objects.create(
+            name="rtr-2", device_type=self.dt, role=self.role, site=other_site
+        )
+        iface2 = Interface.objects.create(device=device2, name="eth0", type="virtual")
+        address2 = IPAddress.objects.create(
+            address="10.0.0.2/24", assigned_object=iface2
+        )
+        device2.primary_ip4 = address2
+        device2.save()
+        Requisition.objects.filter(pk=self.requisition.pk).update(
+            filter_params={"role": ["router"]}
+        )
+        result = dry_run(FS)
+        mock_from_server.assert_not_called()
+        self.assertTrue(result.server_conflict)

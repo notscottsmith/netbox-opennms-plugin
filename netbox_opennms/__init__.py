@@ -14,8 +14,10 @@ class NetBoxOpenNMSConfig(PluginConfig):
     """Plugin configuration for netbox-opennms-plugin.
 
     Declares NetBox compatibility and the connection configuration surface
-    (``PLUGINS_CONFIG``). Credentials are read at runtime via
-    ``get_plugin_config`` and are never stored in plugin models (AD-13).
+    (``PLUGINS_CONFIG``). Per-server connection settings (URL, credentials,
+    default location) now live on ``OpenNMSServer`` rows, encrypted at rest
+    (ADR 0005, superseding the prior AD-13); ``opennms_secret_key`` is the
+    Fernet key that protects them and is required to start.
     """
 
     name = "netbox_opennms"
@@ -36,14 +38,14 @@ class NetBoxOpenNMSConfig(PluginConfig):
     # max_version intentionally unset — pinned against a tested 4.6.x patch at
     # release (Story 4.4). Do not pin Django independently; NetBox bundles it.
 
-    # Connection surface consumed by the OpenNMS REST client (Story 1.4).
-    # Override these in NetBox's PLUGINS_CONFIG. Secrets belong here / in a
-    # secrets backend, never in plugin models.
+    # opennms_secret_key must be set in NetBox's PLUGINS_CONFIG: the Fernet key
+    # protecting OpenNMSServer credentials/headers at rest (ADR 0005). NetBox
+    # refuses to start without it.
+    required_settings = ["opennms_secret_key"]
+
+    # Plugin-wide settings that remain global (per-server settings — URL,
+    # credentials, default location — moved to OpenNMSServer, ADR 0002).
     default_settings = {
-        "opennms_url": "",
-        "opennms_username": "",
-        "opennms_password": "",
-        "default_location": "",
         # rescanExisting value used by the import step (Story 1.7).
         "import_mode": "false",
         # Periodic drift reconciler: clear OpenNMS netbox.* Foreign Sources that

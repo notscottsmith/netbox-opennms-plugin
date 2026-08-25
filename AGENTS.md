@@ -34,3 +34,13 @@ idempotent render-and-replace.
 Conventional Commits; `git commit -s` (DCO, human identity) plus an
 `Assisted-by: <Agent>:<model>` trailer on AI-assisted commits. PRs start from
 an issue and are squash-merged. See CONTRIBUTING.md.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues on `notscottsmith/netbox-opennms-plugin`, via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` + `docs/adr/` at the repo root (created lazily, not yet present). See `docs/agents/domain.md`.

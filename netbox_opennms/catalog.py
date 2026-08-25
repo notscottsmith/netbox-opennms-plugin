@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from django.core.cache import cache
 
 from .client import OpenNMSClient, OpenNMSError
+from .models import OpenNMSServer
 from .presets import DETECTOR_PRESETS, POLICY_PRESETS
 
 CACHE_TTL = 300  # seconds — short; refreshed on demand and at Sync
@@ -97,6 +98,22 @@ class Catalog:
         return None
 
 
+def _default_client():
+    """A client for the Default OpenNMS Server (``is_default=True``).
+
+    Catalog discovery (RD-1) has no natural per-Server context — it runs while
+    editing a Requisition's rules, and a Requisition no longer has one fixed
+    Server; Scope resolves that dynamically per member (ADR 0002). Falling back
+    to the Default Server is a pragmatic choice: it degrades gracefully via the
+    same overlay-only path as an unreachable OpenNMS (AD-16) when there is no
+    Default Server, or it too is unreachable.
+    """
+    server = OpenNMSServer.objects.filter(is_default=True).first()
+    if server is None:
+        raise OpenNMSError("No default OpenNMS Server is configured.")
+    return OpenNMSClient.from_server(server)
+
+
 def get_detector_catalog(client=None, force_refresh=False):
     """The merged detector catalog (cached; degrades to the overlay when offline)."""
     return _get_catalog(
@@ -120,7 +137,7 @@ def get_asset_fields(client=None, force_refresh=False):
     created = None
     try:
         if client is None:
-            client = created = OpenNMSClient.from_config()
+            client = created = _default_client()
     except OpenNMSError:
         return ASSET_FIELDS
     try:
@@ -163,7 +180,7 @@ def _discover(method_name, client):
     created = None
     try:
         if client is None:
-            client = created = OpenNMSClient.from_config()
+            client = created = _default_client()
     except OpenNMSError:
         return [], True
     try:

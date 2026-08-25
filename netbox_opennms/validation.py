@@ -74,6 +74,15 @@ def validate_resolution(resolution, removing=False):
             "object(s) — see the requisition page for the full list."
         )
 
+    # A Server conflict blocks like a filter conflict (never a warning): syncing
+    # would have to guess which OpenNMS Server the Requisition belongs to.
+    if resolution.server_conflict is not None:
+        result.errors.append(
+            f"{resolution.foreign_source}: {resolution.server_conflict} — adjust "
+            "the Scope bindings (or Monitoring Exclusions) so every member agrees "
+            "on one Server before syncing."
+        )
+
     try:
         validate_location_name(resolution.requisition.location)
     except ValueError as exc:

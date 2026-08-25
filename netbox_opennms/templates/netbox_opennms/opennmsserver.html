@@ -1,0 +1,35 @@
+{# Copyright 2026 Ronny Trommer <ronny@no42.org> #}
+{# SPDX-License-Identifier: MIT #}
+{% extends 'generic/object.html' %}
+{% load helpers %}
+
+{% block content %}
+  <div class="row">
+    <div class="col col-md-6">
+      <div class="card">
+        <h2 class="card-header">OpenNMS Server</h2>
+        <table class="table table-hover attr-table">
+          <tr><th scope="row">Name</th><td>{{ object.name }}</td></tr>
+          <tr><th scope="row">URL</th><td>{{ object.url }}</td></tr>
+          <tr><th scope="row">Username</th><td>{{ object.username|placeholder }}</td></tr>
+          <tr><th scope="row">Password</th><td>{% if object.password %}Configured{% else %}<span class="text-danger">Not configured</span>{% endif %}</td></tr>
+          <tr><th scope="row">Headers</th><td>{% if object.headers %}Configured{% else %}{{ ''|placeholder }}{% endif %}</td></tr>
+          <tr><th scope="row">Default location</th><td>{{ object.default_location|placeholder }}</td></tr>
+          <tr><th scope="row">Default Server</th><td>{% checkmark object.is_default %}</td></tr>
+        </table>
+      </div>
+    </div>
+    <div class="col col-md-6">
+      <div class="card">
+        <h2 class="card-header">Scope</h2>
+        <table class="table table-hover attr-table">
+          <tr><th scope="row">Tenant groups</th><td>{% for tg in object.tenant_groups.all %}{{ tg|linkify }}{% if not forloop.last %}, {% endif %}{% empty %}{{ ''|placeholder }}{% endfor %}</td></tr>
+          <tr><th scope="row">Tenants</th><td>{% for t in object.tenants.all %}{{ t|linkify }}{% if not forloop.last %}, {% endif %}{% empty %}{{ ''|placeholder }}{% endfor %}</td></tr>
+          <tr><th scope="row">Site groups</th><td>{% for sg in object.site_groups.all %}{{ sg|linkify }}{% if not forloop.last %}, {% endif %}{% empty %}{{ ''|placeholder }}{% endfor %}</td></tr>
+          <tr><th scope="row">Sites</th><td>{% for s in object.sites.all %}{{ s|linkify }}{% if not forloop.last %}, {% endif %}{% empty %}{{ ''|placeholder }}{% endfor %}</td></tr>
+          <tr><th scope="row">Locations</th><td>{% for l in object.locations.all %}{{ l|linkify }}{% if not forloop.last %}, {% endif %}{% empty %}{{ ''|placeholder }}{% endfor %}</td></tr>
+        </table>
+      </div>
+    </div>
+  </div>
+{% endblock %}

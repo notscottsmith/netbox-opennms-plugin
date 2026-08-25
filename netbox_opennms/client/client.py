@@ -12,7 +12,6 @@ import logging
 from urllib.parse import quote
 
 import requests
-from netbox.plugins import get_plugin_config
 from requests.auth import HTTPBasicAuth
 
 from .discovery import parse_plugins
@@ -26,7 +25,6 @@ from .errors import (
 logger = logging.getLogger("netbox_opennms")
 
 DEFAULT_TIMEOUT = 10
-PLUGIN_NAME = "netbox_opennms"
 
 
 class OpenNMSClient:
@@ -42,29 +40,27 @@ class OpenNMSClient:
         self._session.auth = HTTPBasicAuth(username, password)
 
     @classmethod
-    def from_config(cls):
-        """Build a client from PLUGINS_CONFIG (credentials never come from models)."""
-        base_url = get_plugin_config(PLUGIN_NAME, "opennms_url")
-        if not base_url:
-            raise OpenNMSError(
-                "OpenNMS URL is not configured "
-                "(set PLUGINS_CONFIG['netbox_opennms']['opennms_url'])."
-            )
-        if not base_url.startswith(("https://", "http://")):
-            raise OpenNMSError("OpenNMS URL must start with https:// or http://.")
-        if base_url.startswith("http://"):
+    def from_server(cls, server):
+        """Build a client for one ``OpenNMSServer`` row (ADR 0002).
+
+        Credentials are decrypted transparently by the model's encrypted fields
+        (ADR 0005, superseding the prior AD-13 — credentials now live in the DB,
+        never in ``PLUGINS_CONFIG``). ``server.headers`` (ADR 0004, e.g. a
+        Cloudflare Access service-token pair for a Server behind a Tunnel) is
+        merged into every outbound request via the session.
+        """
+        if server.url.startswith("http://"):
             logger.warning(
-                "OpenNMS URL uses http:// — credentials are sent in cleartext; "
-                "use https:// (AD-13)."
+                "OpenNMS Server %r URL uses http:// — credentials are sent in "
+                "cleartext; use https://.",
+                server.name,
             )
-        username = get_plugin_config(PLUGIN_NAME, "opennms_username")
-        password = get_plugin_config(PLUGIN_NAME, "opennms_password")
-        if not username or not password:
-            raise OpenNMSError(
-                "OpenNMS credentials are not configured "
-                "(set opennms_username and opennms_password)."
-            )
-        return cls(base_url=base_url, username=username, password=password)
+        client = cls(
+            base_url=server.url, username=server.username, password=server.password
+        )
+        if server.headers:
+            client._session.headers.update(server.headers)
+        return client
 
     def close(self):
         self._session.close()
@@ -229,8 +225,9 @@ class OpenNMSClient:
     def import_requisition(self, foreign_source, rescan_existing="false"):
         """Activate the staged requisition (async — OpenNMS returns ``202``).
 
-        ``rescan_existing`` comes from ``import_mode`` config (AD-13). A ``202`` is
-        success here (accepted for import) — never read as "provisioned" (AD-12).
+        ``rescan_existing`` comes from the plugin-wide ``import_mode`` setting. A
+        ``202`` is success here (accepted for import) — never read as
+        "provisioned" (AD-12).
         """
         return self._request(
             "PUT",

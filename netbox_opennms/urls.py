@@ -12,8 +12,10 @@ from .models import (
     MonitoredInterface,
     MonitoredService,
     MonitoringDetector,
+    MonitoringExclusion,
     MonitoringOverride,
     MonitoringPolicy,
+    OpenNMSServer,
     Requisition,
 )
 
@@ -75,6 +77,9 @@ urlpatterns = (
            MonitoredInterface),
     *_crud("asset-mappings", "assetmapping", "AssetMapping", AssetMapping),
     *_crud("metadata-entries", "metadataentry", "MetadataEntry", MetadataEntry),
+    *_crud("opennms-servers", "opennmsserver", "OpenNMSServer", OpenNMSServer),
+    *_crud("monitoring-exclusions", "monitoringexclusion", "MonitoringExclusion",
+           MonitoringExclusion),
     path(
         "sync/",
         views.SyncPreviewView.as_view(),

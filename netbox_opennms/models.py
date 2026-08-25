@@ -31,6 +31,7 @@ from .choices import (
     ServiceChoices,
 )
 from .derivation import validate_location_name, validate_requisition_name
+from .fields import EncryptedJSONField, EncryptedTextField
 from .presets import (
     detector_required_params,
     policy_required_params,
@@ -562,6 +563,110 @@ class MetadataEntry(NetBoxModel):
             )
 
 
+class OpenNMSServer(NetBoxModel):
+    """One OpenNMS instance this NetBox manages monitoring intent for (ADR 0002).
+
+    An MSP customer typically maps to one Server. Scope (the five ``ManyToMany``
+    fields below, mirroring core's ``ConfigContext``) decides which Devices/VMs
+    resolve to this Server — see ``scope.resolve_scope`` for the most-specific-
+    wins precedence engine (location > site > site group > tenant > tenant
+    group). The **Default Server** (``is_default=True``) carries no Scope
+    bindings and is the fallback when nothing more specific matches; at most one
+    may exist (enforced here), and it may not carry Scope bindings (enforced in
+    ``OpenNMSServerForm``, where the M2M data is available pre-save).
+
+    Credentials (``username``/``password``) and ``headers`` (ADR 0004, e.g. a
+    Cloudflare Access service-token pair for a server behind a Tunnel) are
+    Fernet-encrypted at rest (ADR 0005, superseding the prior AD-13).
+    """
+
+    name = models.CharField(max_length=100, unique=True)
+    url = models.CharField(max_length=255)
+    username = EncryptedTextField()
+    password = EncryptedTextField()
+    # Merged into every outbound request to this server (ADR 0004).
+    headers = EncryptedJSONField(default=dict, blank=True)
+    # Which OpenNMS Monitoring Location a member falls back to when it (and its
+    # Requisition) set none — blank means the render leaves it unset.
+    default_location = models.CharField(max_length=255, blank=True, default="")
+    is_default = models.BooleanField(
+        default=False,
+        help_text="Fallback Server used when no Scope binding matches an object.",
+    )
+    tenant_groups = models.ManyToManyField(
+        to="tenancy.TenantGroup", blank=True, related_name="+"
+    )
+    tenants = models.ManyToManyField(to="tenancy.Tenant", blank=True, related_name="+")
+    site_groups = models.ManyToManyField(
+        to="dcim.SiteGroup", blank=True, related_name="+"
+    )
+    sites = models.ManyToManyField(to="dcim.Site", blank=True, related_name="+")
+    locations = models.ManyToManyField(to="dcim.Location", blank=True, related_name="+")
+
+    class Meta:
+        ordering = ("name",)
+        verbose_name = "OpenNMS server"
+        verbose_name_plural = "OpenNMS servers"
+
+    def __str__(self):
+        return self.name
+
+    def get_absolute_url(self):
+        return reverse("plugins:netbox_opennms:opennmsserver", args=[self.pk])
+
+    def clean(self):
+        super().clean()
+        if not self.url.startswith(("http://", "https://")):
+            raise ValidationError({"url": "URL must start with http:// or https://."})
+        if self.default_location:
+            try:
+                validate_location_name(self.default_location)
+            except ValueError as exc:
+                raise ValidationError({"default_location": str(exc)}) from exc
+        if (
+            self.is_default
+            and OpenNMSServer.objects.filter(is_default=True)
+            .exclude(pk=self.pk)
+            .exists()
+        ):
+            raise ValidationError(
+                {"is_default": "Only one OpenNMS Server may be the Default Server."}
+            )
+
+
+class MonitoringExclusion(NetBoxModel):
+    """Disable monitoring for a whole Scope level, without per-device overrides.
+
+    Reuses the identical five-level Scope/precedence engine as ``OpenNMSServer``
+    (``scope.resolve_scope``, ADR 0003): exclusion is just another possible
+    resolution outcome, so a more specific inclusion — a site bound directly to
+    a Server, or a per-device ``MonitoringOverride`` — re-enables monitoring
+    underneath an excluded ancestor.
+    """
+
+    description = models.CharField(max_length=200, blank=True)
+    tenant_groups = models.ManyToManyField(
+        to="tenancy.TenantGroup", blank=True, related_name="+"
+    )
+    tenants = models.ManyToManyField(to="tenancy.Tenant", blank=True, related_name="+")
+    site_groups = models.ManyToManyField(
+        to="dcim.SiteGroup", blank=True, related_name="+"
+    )
+    sites = models.ManyToManyField(to="dcim.Site", blank=True, related_name="+")
+    locations = models.ManyToManyField(to="dcim.Location", blank=True, related_name="+")
+
+    class Meta:
+        ordering = ("pk",)
+        verbose_name = "monitoring exclusion"
+        verbose_name_plural = "monitoring exclusions"
+
+    def __str__(self):
+        return self.description or f"Monitoring exclusion #{self.pk}"
+
+    def get_absolute_url(self):
+        return reverse("plugins:netbox_opennms:monitoringexclusion", args=[self.pk])
+
+
 class DeployedForeignSource(models.Model):
     """A Foreign Source name NetBox has pushed to OpenNMS — the reconciler's
     ownership record (review #4).
@@ -570,10 +675,19 @@ class DeployedForeignSource(models.Model):
     ``netbox.`` prefix to tell ours from foreign requisitions. A row is written when
     a sync succeeds and removed when the Foreign Source's shell is deleted, so
     ``orphaned_foreign_sources`` scopes cleanup to exactly the names we manage and
-    never touches a requisition NetBox didn't create.
+    never touches a requisition NetBox didn't create. ``server`` records which
+    OpenNMS Server the name was last pushed to, so the reconciler and a manual
+    Remove of a Requisition-less name can find the right client to target.
     """
 
     name = models.CharField(max_length=100, unique=True)
+    server = models.ForeignKey(
+        to="netbox_opennms.OpenNMSServer",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
 
     class Meta:
         ordering = ("name",)

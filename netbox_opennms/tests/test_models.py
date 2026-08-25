@@ -11,15 +11,18 @@ from dcim.models import (
     Site,
 )
 from django.core.exceptions import ValidationError
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, connection, transaction
 from django.test import TestCase
 from ipam.models import IPAddress
+from tenancy.models import Tenant
 
 from netbox_opennms.models import (
     MonitoredService,
     MonitoringDetector,
+    MonitoringExclusion,
     MonitoringOverride,
     MonitoringPolicy,
+    OpenNMSServer,
     Requisition,
     object_ip_pks,
     override_ip_pks,
@@ -218,3 +221,81 @@ class OverrideAndServiceTest(TestCase):
             MonitoredService.objects.create(
                 override=override, ip_address=self.ip, name="ICMP"
             )
+
+
+class OpenNMSServerTest(TestCase):
+    def test_str_is_name(self):
+        server = OpenNMSServer.objects.create(name="Acme", url="https://onms.example")
+        self.assertEqual(str(server), "Acme")
+
+    def test_url_must_have_a_scheme(self):
+        server = OpenNMSServer(name="Acme", url="onms.example")
+        with self.assertRaises(ValidationError):
+            server.clean()
+
+    def test_invalid_default_location_rejected(self):
+        server = OpenNMSServer(
+            name="Acme", url="https://onms.example", default_location="bad name"
+        )
+        with self.assertRaises(ValidationError):
+            server.clean()
+
+    def test_only_one_default_server_allowed(self):
+        OpenNMSServer.objects.create(
+            name="Acme", url="https://onms.example", is_default=True
+        )
+        other = OpenNMSServer(
+            name="Other", url="https://other.example", is_default=True
+        )
+        with self.assertRaises(ValidationError):
+            other.clean()
+
+    def test_editing_the_existing_default_server_is_allowed(self):
+        server = OpenNMSServer.objects.create(
+            name="Acme", url="https://onms.example", is_default=True
+        )
+        server.default_location = "Default"
+        server.clean()  # must not raise — excludes itself from the uniqueness check
+
+    def test_credentials_and_headers_are_encrypted_at_rest(self):
+        server = OpenNMSServer.objects.create(
+            name="Acme",
+            url="https://onms.example",
+            username="svc",
+            password="hunter2",
+            headers={"CF-Access-Client-Secret": "shh"},
+        )
+        table = OpenNMSServer._meta.db_table
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"SELECT username, password, headers FROM {table} WHERE id = %s",
+                [server.pk],
+            )
+            raw_username, raw_password, raw_headers = cursor.fetchone()
+        self.assertNotEqual(raw_username, "svc")
+        self.assertNotEqual(raw_password, "hunter2")
+        self.assertNotIn("shh", raw_headers)
+
+        server.refresh_from_db()
+        self.assertEqual(server.username, "svc")
+        self.assertEqual(server.password, "hunter2")
+        self.assertEqual(server.headers, {"CF-Access-Client-Secret": "shh"})
+
+
+class MonitoringExclusionTest(TestCase):
+    def test_str_falls_back_to_a_placeholder(self):
+        exclusion = MonitoringExclusion.objects.create()
+        self.assertEqual(str(exclusion), f"Monitoring exclusion #{exclusion.pk}")
+
+    def test_str_uses_description_when_set(self):
+        exclusion = MonitoringExclusion.objects.create(description="No monitoring")
+        self.assertEqual(str(exclusion), "No monitoring")
+
+    def test_scope_bindings_are_optional(self):
+        # A MonitoringExclusion with no bindings at all is valid but inert —
+        # matches nothing in scope.resolve_scope.
+        exclusion = MonitoringExclusion.objects.create(description="unbound")
+        tenant = Tenant.objects.create(name="Acme Corp", slug="acme-corp")
+        self.assertEqual(list(exclusion.tenants.all()), [])
+        exclusion.tenants.add(tenant)
+        self.assertEqual(list(exclusion.tenants.all()), [tenant])

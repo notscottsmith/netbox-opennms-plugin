@@ -17,5 +17,7 @@ router.register("monitored-services", views.MonitoredServiceViewSet)
 router.register("monitored-interfaces", views.MonitoredInterfaceViewSet)
 router.register("asset-mappings", views.AssetMappingViewSet)
 router.register("metadata-entries", views.MetadataEntryViewSet)
+router.register("opennms-servers", views.OpenNMSServerViewSet)
+router.register("monitoring-exclusions", views.MonitoringExclusionViewSet)
 
 urlpatterns = router.urls

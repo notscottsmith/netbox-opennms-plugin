@@ -10,8 +10,10 @@ from ..filtersets import (
     MonitoredInterfaceFilterSet,
     MonitoredServiceFilterSet,
     MonitoringDetectorFilterSet,
+    MonitoringExclusionFilterSet,
     MonitoringOverrideFilterSet,
     MonitoringPolicyFilterSet,
+    OpenNMSServerFilterSet,
     RequisitionFilterSet,
 )
 from ..models import (
@@ -20,8 +22,10 @@ from ..models import (
     MonitoredInterface,
     MonitoredService,
     MonitoringDetector,
+    MonitoringExclusion,
     MonitoringOverride,
     MonitoringPolicy,
+    OpenNMSServer,
     Requisition,
 )
 from .serializers import (
@@ -30,8 +34,10 @@ from .serializers import (
     MonitoredInterfaceSerializer,
     MonitoredServiceSerializer,
     MonitoringDetectorSerializer,
+    MonitoringExclusionSerializer,
     MonitoringOverrideSerializer,
     MonitoringPolicySerializer,
+    OpenNMSServerSerializer,
     RequisitionSerializer,
 )
 
@@ -84,3 +90,19 @@ class MetadataEntryViewSet(NetBoxModelViewSet):
     queryset = MetadataEntry.objects.select_related("requisition")
     serializer_class = MetadataEntrySerializer
     filterset_class = MetadataEntryFilterSet
+
+
+class OpenNMSServerViewSet(NetBoxModelViewSet):
+    queryset = OpenNMSServer.objects.prefetch_related(
+        "tenant_groups", "tenants", "site_groups", "sites", "locations"
+    )
+    serializer_class = OpenNMSServerSerializer
+    filterset_class = OpenNMSServerFilterSet
+
+
+class MonitoringExclusionViewSet(NetBoxModelViewSet):
+    queryset = MonitoringExclusion.objects.prefetch_related(
+        "tenant_groups", "tenants", "site_groups", "sites", "locations"
+    )
+    serializer_class = MonitoringExclusionSerializer
+    filterset_class = MonitoringExclusionFilterSet

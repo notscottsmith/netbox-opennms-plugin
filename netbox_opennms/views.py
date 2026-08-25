@@ -8,7 +8,6 @@ from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin, PermissionRequiredMixin
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.generic import View
-from netbox.plugins import get_plugin_config
 from netbox.views import generic
 from utilities.rqworker import any_workers_for_queue
 from utilities.views import GetReturnURLMixin
@@ -32,8 +31,10 @@ from .models import (
     MonitoredInterface,
     MonitoredService,
     MonitoringDetector,
+    MonitoringExclusion,
     MonitoringOverride,
     MonitoringPolicy,
+    OpenNMSServer,
     Requisition,
 )
 from .validation import validate_resolution
@@ -52,10 +53,12 @@ def _no_worker_running():
         return True
 
 
-def _location_warnings(locations):
+def _location_warnings(server, locations):
     """Best-effort warnings for chosen locations with no Minion (FR-5/AD-16)."""
+    if server is None:
+        return []
     try:
-        with OpenNMSClient.from_config() as client:
+        with OpenNMSClient.from_server(server) as client:
             missing = unknown_locations(client, locations)
     except Exception:
         return []
@@ -81,7 +84,8 @@ def _enqueue_foreign_source(request, foreign_source, allow_empty=False):
     if resolution is not None:
         locations.add(resolution.requisition.location)
         locations.update(node.location for node in resolution.nodes)
-    for warning in _location_warnings(locations):
+    server = resolution.server if resolution is not None else None
+    for warning in _location_warnings(server, locations):
         messages.warning(request, warning)
 
     return SyncForeignSourceJob.enqueue_sync(
@@ -430,6 +434,60 @@ class MetadataEntryBulkDeleteView(generic.BulkDeleteView):
     table = tables.MetadataEntryTable
 
 
+# --- OpenNMS Server ----------------------------------------------------------
+
+
+class OpenNMSServerView(generic.ObjectView):
+    queryset = OpenNMSServer.objects.all()
+
+
+class OpenNMSServerListView(generic.ObjectListView):
+    queryset = OpenNMSServer.objects.all()
+    table = tables.OpenNMSServerTable
+    filterset = filtersets.OpenNMSServerFilterSet
+
+
+class OpenNMSServerEditView(generic.ObjectEditView):
+    queryset = OpenNMSServer.objects.all()
+    form = forms.OpenNMSServerForm
+
+
+class OpenNMSServerDeleteView(generic.ObjectDeleteView):
+    queryset = OpenNMSServer.objects.all()
+
+
+class OpenNMSServerBulkDeleteView(generic.BulkDeleteView):
+    queryset = OpenNMSServer.objects.all()
+    table = tables.OpenNMSServerTable
+
+
+# --- Monitoring Exclusion ----------------------------------------------------
+
+
+class MonitoringExclusionView(generic.ObjectView):
+    queryset = MonitoringExclusion.objects.all()
+
+
+class MonitoringExclusionListView(generic.ObjectListView):
+    queryset = MonitoringExclusion.objects.all()
+    table = tables.MonitoringExclusionTable
+    filterset = filtersets.MonitoringExclusionFilterSet
+
+
+class MonitoringExclusionEditView(generic.ObjectEditView):
+    queryset = MonitoringExclusion.objects.all()
+    form = forms.MonitoringExclusionForm
+
+
+class MonitoringExclusionDeleteView(generic.ObjectDeleteView):
+    queryset = MonitoringExclusion.objects.all()
+
+
+class MonitoringExclusionBulkDeleteView(generic.BulkDeleteView):
+    queryset = MonitoringExclusion.objects.all()
+    table = tables.MonitoringExclusionTable
+
+
 # --- Sync actions -----------------------------------------------------------
 
 
@@ -536,46 +594,39 @@ class SyncPreviewView(LoginRequiredMixin, View):
 
 
 class OpenNMSConnectionTestView(PermissionRequiredMixin, View):
-    """"Connect OpenNMS" page: verify the CONFIGURED connection (Option D).
+    """"Connect OpenNMS" page: verify each configured Server's connection.
 
-    Probes the OpenNMS instance defined in ``PLUGINS_CONFIG`` for reachability and
-    valid credentials, and shows the effective URL/username (never the password)
-    read-only. The connection is configured in NetBox's plugin config
-    (``configuration.py`` / Helm ``pluginsConfig``), never here — so the view
-    accepts no user-supplied URL or credentials (which could send the stored
-    secret to an arbitrary host) and stores nothing (AD-13). Permission-gated,
-    like the dry-run, because it issues an outbound call with stored credentials.
+    One row per ``OpenNMSServer`` (ADR 0002), showing its effective URL/username
+    (never the password) read-only and a per-row "Test connection" button.
+    Credentials/headers live on the Server row, encrypted at rest (ADR 0005);
+    this view accepts no user-supplied URL or credentials and stores nothing.
+    Permission-gated, like the dry-run, because it issues an outbound call with
+    stored credentials.
     """
 
     permission_required = "netbox_opennms.view_requisition"
     template_name = "netbox_opennms/connection_test.html"
 
-    def _context(self):
-        # Show the effective connection so the user knows what will be tested;
-        # the password is reported only as set / not set, never rendered.
-        return {
-            "opennms_url": get_plugin_config("netbox_opennms", "opennms_url") or "",
-            "opennms_username": get_plugin_config(
-                "netbox_opennms", "opennms_username"
-            )
-            or "",
-            "password_set": bool(
-                get_plugin_config("netbox_opennms", "opennms_password")
-            ),
-        }
-
     def get(self, request):
-        return render(request, self.template_name, self._context())
+        return render(
+            request,
+            self.template_name,
+            {"servers": OpenNMSServer.objects.order_by("name")},
+        )
 
     def post(self, request):
+        server = get_object_or_404(OpenNMSServer, pk=request.POST.get("server_id"))
         try:
-            with OpenNMSClient.from_config() as client:
+            with OpenNMSClient.from_server(server) as client:
                 client.test_connection()
         except OpenNMSError as exc:
-            messages.error(request, f"OpenNMS connection failed: {exc}")
+            messages.error(
+                request, f"OpenNMS connection to {server.name!r} failed: {exc}"
+            )
         else:
             messages.success(
                 request,
-                "OpenNMS connection OK — reachable and credentials accepted.",
+                f"OpenNMS connection to {server.name!r} OK — reachable and "
+                "credentials accepted.",
             )
         return redirect("plugins:netbox_opennms:connection_test")

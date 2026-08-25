@@ -11,10 +11,48 @@ from .models import (
     MonitoredInterface,
     MonitoredService,
     MonitoringDetector,
+    MonitoringExclusion,
     MonitoringOverride,
     MonitoringPolicy,
+    OpenNMSServer,
     Requisition,
 )
+
+
+class OpenNMSServerTable(NetBoxTable):
+    name = tables.Column(linkify=True)
+    is_default = columns.BooleanColumn()
+
+    class Meta(NetBoxTable.Meta):
+        model = OpenNMSServer
+        fields = (
+            "pk",
+            "id",
+            "name",
+            "url",
+            "default_location",
+            "is_default",
+            "created",
+            "last_updated",
+            "actions",
+        )
+        default_columns = ("name", "url", "default_location", "is_default")
+
+
+class MonitoringExclusionTable(NetBoxTable):
+    description = tables.Column(linkify=True)
+
+    class Meta(NetBoxTable.Meta):
+        model = MonitoringExclusion
+        fields = (
+            "pk",
+            "id",
+            "description",
+            "created",
+            "last_updated",
+            "actions",
+        )
+        default_columns = ("description",)
 
 
 class RequisitionTable(NetBoxTable):

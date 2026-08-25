@@ -255,11 +255,12 @@ docker compose --profile opennms up -d</code></pre>
 
     <h3>Point at your own OpenNMS</h3>
     <p>
-      Edit
-      <a href="https://github.com/no42-org/netbox-opennms-plugin/blob/main/quickstart/configuration/plugins.py"><code>configuration/plugins.py</code></a>
-      — set <code>opennms_url</code>, <code>opennms_username</code>,
-      <code>opennms_password</code> — then <code>docker compose up -d</code> (no
-      <code>--profile opennms</code>). The plugin needs an account that can read/write
+      OpenNMS connections are <b>OpenNMS Server</b> records (URL, credentials,
+      optional headers, default location), managed from the NetBox UI/API — not
+      <code>configuration/plugins.py</code>. Boot the stack with
+      <code>docker compose up -d</code> (no <code>--profile opennms</code>), then
+      create a Server under <b>Plugins → NetBox OpenNMS → OpenNMS Servers</b>
+      pointing at your instance. The plugin needs an account that can read/write
       requisitions and trigger imports.
     </p>
 

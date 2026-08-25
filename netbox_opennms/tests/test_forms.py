@@ -16,11 +16,16 @@ from django.test import TestCase
 from extras.models import SavedFilter
 from ipam.models import IPAddress
 
-from netbox_opennms.forms import MonitoringOverrideForm, RequisitionForm
+from netbox_opennms.forms import (
+    MonitoringOverrideForm,
+    OpenNMSServerForm,
+    RequisitionForm,
+)
 from netbox_opennms.models import (
     MonitoredInterface,
     MonitoredService,
     MonitoringOverride,
+    OpenNMSServer,
 )
 
 
@@ -145,6 +150,54 @@ class MonitoredInterfaceValidationTest(TestCase):
         )
         with self.assertRaises(ValidationError):
             interface.clean()
+
+
+class OpenNMSServerFormTest(TestCase):
+    """ADR 0002: a Scope object may be bound directly to only one Server."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.site = Site.objects.create(name="Raleigh", slug="raleigh")
+
+    def _data(self, **overrides):
+        data = {
+            "name": "New Server",
+            "url": "https://new.example",
+            "username": "svc",
+            "password": "hunter2",
+            "headers": "{}",
+        }
+        data.update(overrides)
+        return data
+
+    def test_default_server_cannot_carry_scope_bindings(self):
+        form = OpenNMSServerForm(
+            data=self._data(is_default="on", sites=[self.site.pk])
+        )
+        self.assertFalse(form.is_valid())
+        self.assertIn("is_default", form.errors)
+
+    def test_site_already_bound_to_another_server_is_rejected(self):
+        OpenNMSServer.objects.create(
+            name="Existing", url="https://existing.example"
+        ).sites.add(self.site)
+        form = OpenNMSServerForm(data=self._data(sites=[self.site.pk]))
+        self.assertFalse(form.is_valid())
+        self.assertIn("sites", form.errors)
+
+    def test_unbound_site_is_accepted(self):
+        form = OpenNMSServerForm(data=self._data(sites=[self.site.pk]))
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_editing_the_server_that_already_owns_the_binding_is_allowed(self):
+        server = OpenNMSServer.objects.create(
+            name="Existing", url="https://existing.example"
+        )
+        server.sites.add(self.site)
+        form = OpenNMSServerForm(
+            data=self._data(name="Existing", sites=[self.site.pk]), instance=server
+        )
+        self.assertTrue(form.is_valid(), form.errors)
 
 
 class InterfaceServicePruneTest(TestCase):

@@ -4,7 +4,7 @@
 
 import logging
 
-from dcim.models import Device
+from dcim.models import Device, Location, Site, SiteGroup
 from django import forms
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
@@ -13,8 +13,10 @@ from django.utils.translation import gettext_lazy as _
 from extras.models import SavedFilter
 from ipam.models import IPAddress
 from netbox.forms import NetBoxModelForm
+from tenancy.models import Tenant, TenantGroup
 from utilities.forms.fields import (
     DynamicModelChoiceField,
+    DynamicModelMultipleChoiceField,
     JSONField,
 )
 from virtualization.models import VirtualMachine
@@ -28,10 +30,13 @@ from .models import (
     MonitoredInterface,
     MonitoredService,
     MonitoringDetector,
+    MonitoringExclusion,
     MonitoringOverride,
     MonitoringPolicy,
+    OpenNMSServer,
     Requisition,
 )
+from .scope import SCOPE_FIELDS, find_scope_collision
 
 logger = logging.getLogger("netbox_opennms")
 
@@ -383,6 +388,102 @@ class AssetMappingForm(NetBoxModelForm):
             choices=[(f, f) for f in fields],
             label=_("OpenNMS asset field"),
             help_text=_("Discovered from OpenNMS (falls back to the known field set)."),
+        )
+
+
+class _ScopeForm(NetBoxModelForm):
+    """Shared: the five-level Scope M2M fields (ADR 0002/0003)."""
+
+    tenant_groups = DynamicModelMultipleChoiceField(
+        queryset=TenantGroup.objects.all(), required=False, label=_("Tenant groups")
+    )
+    tenants = DynamicModelMultipleChoiceField(
+        queryset=Tenant.objects.all(), required=False, label=_("Tenants")
+    )
+    site_groups = DynamicModelMultipleChoiceField(
+        queryset=SiteGroup.objects.all(), required=False, label=_("Site groups")
+    )
+    sites = DynamicModelMultipleChoiceField(
+        queryset=Site.objects.all(), required=False, label=_("Sites")
+    )
+    locations = DynamicModelMultipleChoiceField(
+        queryset=Location.objects.all(), required=False, label=_("Locations")
+    )
+
+
+class OpenNMSServerForm(_ScopeForm):
+    """Add/edit an OpenNMS Server: connection, credentials, and Scope (ADR 0002)."""
+
+    headers = JSONField(
+        required=False,
+        label=_("Headers"),
+        help_text=_(
+            'Merged into every outbound request, e.g. {"CF-Access-Client-Id": '
+            '"...", "CF-Access-Client-Secret": "..."} for Cloudflare Access.'
+        ),
+    )
+
+    class Meta:
+        model = OpenNMSServer
+        fields = (
+            "name",
+            "url",
+            "username",
+            "password",
+            "headers",
+            "default_location",
+            "is_default",
+            "tenant_groups",
+            "tenants",
+            "site_groups",
+            "sites",
+            "locations",
+            "tags",
+        )
+        widgets = {
+            "password": forms.PasswordInput(render_value=True),
+        }
+
+    def clean(self):
+        super().clean()
+        if self.cleaned_data.get("is_default") and any(
+            self.cleaned_data.get(f) for f in SCOPE_FIELDS
+        ):
+            self.add_error(
+                "is_default", _("The Default Server may not carry Scope bindings.")
+            )
+        # A given object may be bound directly to only one Server at a time
+        # (ADR 0002) — a same-level collision is a data-entry mistake, not a
+        # legitimate case, so it's rejected here rather than left for
+        # resolve_scope() to arbitrarily pick one of the two at sync time.
+        for field in SCOPE_FIELDS:
+            other = find_scope_collision(
+                field,
+                self.cleaned_data.get(field),
+                exclude_pk=self.instance.pk or None,
+            )
+            if other is not None:
+                self.add_error(
+                    field,
+                    _('Already bound directly to Server "%(server)s".')
+                    % {"server": other},
+                )
+        return self.cleaned_data
+
+
+class MonitoringExclusionForm(_ScopeForm):
+    """Exclude a whole Scope level from monitoring (ADR 0003)."""
+
+    class Meta:
+        model = MonitoringExclusion
+        fields = (
+            "description",
+            "tenant_groups",
+            "tenants",
+            "site_groups",
+            "sites",
+            "locations",
+            "tags",
         )
 
 

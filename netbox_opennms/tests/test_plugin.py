@@ -29,14 +29,18 @@ class PluginConfigTestCase(SimpleTestCase):
         self.assertEqual(NetBoxOpenNMSConfig.min_version, "4.6.1")
 
     def test_config_defaults_resolve(self):
+        # Per-server connection settings (URL, credentials, default location)
+        # moved to OpenNMSServer rows (ADR 0002); only plugin-wide settings
+        # remain in PLUGINS_CONFIG.
         self.assertEqual(get_plugin_config("netbox_opennms", "import_mode"), "false")
-        for key in (
-            "opennms_url",
-            "opennms_username",
-            "opennms_password",
-            "default_location",
-        ):
-            self.assertEqual(get_plugin_config("netbox_opennms", key), "")
+        self.assertEqual(
+            get_plugin_config("netbox_opennms", "reconcile_orphans"), "true"
+        )
+
+    def test_secret_key_is_required(self):
+        self.assertEqual(
+            NetBoxOpenNMSConfig.required_settings, ["opennms_secret_key"]
+        )
 
     def test_models_module_present(self):
         from netbox_opennms.models import Requisition

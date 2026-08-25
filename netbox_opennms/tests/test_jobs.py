@@ -28,6 +28,7 @@ from netbox_opennms.models import (
     DeployedForeignSource,
     MonitoringDetector,
     MonitoringOverride,
+    OpenNMSServer,
     Requisition,
 )
 from netbox_opennms.translation import (
@@ -54,6 +55,9 @@ class SyncForeignSourceJobTest(TestCase):
             rule_class="org.opennms.netmgt.provision.detector.icmp.IcmpDetector",
         )
         cls.device = cls._make_device("rtr-1", "10.0.0.1/24")
+        cls.server = OpenNMSServer.objects.create(
+            name="Acme", url="https://onms.example/opennms", is_default=True
+        )
 
     @classmethod
     def _make_device(cls, name, ip, primary=True, role=None, site=None):
@@ -71,9 +75,9 @@ class SyncForeignSourceJobTest(TestCase):
         return SyncForeignSourceJob(job=mock.Mock())
 
     @mock.patch("netbox_opennms.jobs.advisory_lock")
-    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_config")
-    def test_posts_fs_then_requisition_then_import(self, mock_from_config, _lock):
-        client = mock_from_config.return_value.__enter__.return_value
+    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
+    def test_posts_fs_then_requisition_then_import(self, mock_from_server, _lock):
+        client = mock_from_server.return_value.__enter__.return_value
         client.import_requisition.return_value = mock.Mock(status_code=202)
 
         self._runner().run(foreign_source=FS)
@@ -97,27 +101,27 @@ class SyncForeignSourceJobTest(TestCase):
         )
 
     @mock.patch("netbox_opennms.jobs.advisory_lock")
-    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_config")
-    def test_render_error_marks_failed(self, mock_from_config, _lock):
+    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
+    def test_render_error_marks_failed(self, mock_from_server, _lock):
         MonitoringDetector.objects.create(
             requisition=self.requisition, name="bad", rule_class=""
         )
         with self.assertRaises(JobFailed):
             self._runner().run(foreign_source=FS)
-        mock_from_config.assert_not_called()
+        mock_from_server.assert_not_called()
 
     @mock.patch("netbox_opennms.jobs.advisory_lock")
-    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_config")
-    def test_opennms_error_marks_failed(self, mock_from_config, _lock):
-        client = mock_from_config.return_value.__enter__.return_value
+    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
+    def test_opennms_error_marks_failed(self, mock_from_server, _lock):
+        client = mock_from_server.return_value.__enter__.return_value
         client.post_requisition.side_effect = OpenNMSHTTPError("boom", status_code=500)
         with self.assertRaises(JobFailed):
             self._runner().run(foreign_source=FS)
 
     @mock.patch("netbox_opennms.jobs.advisory_lock")
-    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_config")
-    def test_202_is_accepted_not_provisioned(self, mock_from_config, _lock):
-        client = mock_from_config.return_value.__enter__.return_value
+    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
+    def test_202_is_accepted_not_provisioned(self, mock_from_server, _lock):
+        client = mock_from_server.return_value.__enter__.return_value
         client.import_requisition.return_value = mock.Mock(status_code=202)
         with self.assertLogs(
             "netbox.jobs.SyncForeignSourceJob", level="INFO"
@@ -129,16 +133,16 @@ class SyncForeignSourceJobTest(TestCase):
         self.assertNotIn("provisioned", output)
 
     @mock.patch("netbox_opennms.jobs.advisory_lock")
-    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_config")
-    def test_serializes_per_foreign_source(self, mock_from_config, mock_lock):
-        client = mock_from_config.return_value.__enter__.return_value
+    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
+    def test_serializes_per_foreign_source(self, mock_from_server, mock_lock):
+        client = mock_from_server.return_value.__enter__.return_value
         client.import_requisition.return_value = mock.Mock(status_code=202)
         self._runner().run(foreign_source=FS)
         mock_lock.assert_called_once_with(f"netbox_opennms:fs:{FS}")
 
     @mock.patch("netbox_opennms.jobs.advisory_lock")
-    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_config")
-    def test_conflict_freezes_sync(self, mock_from_config, _lock):
+    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
+    def test_conflict_freezes_sync(self, mock_from_server, _lock):
         # C1: an overlap blocks Sync of the involved Requisition — JobFailed with
         # the conflict error, and NOTHING is pushed to OpenNMS.
         Requisition.objects.create(
@@ -146,27 +150,27 @@ class SyncForeignSourceJobTest(TestCase):
         )
         with self.assertRaises(JobFailed):
             self._runner().run(foreign_source=FS)
-        mock_from_config.assert_not_called()
+        mock_from_server.assert_not_called()
 
-    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_config")
-    def test_reconcile_ignores_frozen_requisition(self, mock_from_config):
+    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
+    def test_reconcile_ignores_frozen_requisition(self, mock_from_server):
         # C5: a frozen (conflicted) Requisition counts as monitored — the drift
         # reconciler must never tear down the state the freeze protects.
-        DeployedForeignSource.objects.create(name=FS)
+        DeployedForeignSource.objects.create(name=FS, server=self.server)
         Requisition.objects.create(
             name="overlap", filter_params={"site": ["raleigh"]}
         )
-        client = mock_from_config.return_value.__enter__.return_value
+        client = mock_from_server.return_value.__enter__.return_value
         client.list_requisition_names.return_value = {FS}
         with mock.patch.object(SyncForeignSourceJob, "enqueue_sync") as enqueue:
             ReconcileOrphansJob(job=mock.Mock()).run()
         enqueue.assert_not_called()
 
     @mock.patch("netbox_opennms.jobs.advisory_lock")
-    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_config")
-    def test_sync_records_ownership(self, mock_from_config, _lock):
+    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
+    def test_sync_records_ownership(self, mock_from_server, _lock):
         # A successful sync records the FS name so the reconciler owns it (review #4).
-        client = mock_from_config.return_value.__enter__.return_value
+        client = mock_from_server.return_value.__enter__.return_value
         client.import_requisition.return_value = mock.Mock(status_code=202)
         self._runner().run(foreign_source=FS)
         self.assertTrue(DeployedForeignSource.objects.filter(name=FS).exists())
@@ -178,27 +182,28 @@ class SyncForeignSourceJobTest(TestCase):
         self.assertEqual(Job.objects.filter(name=f"OpenNMS sync: {FS}").count(), 1)
 
     @mock.patch("netbox_opennms.jobs.advisory_lock")
-    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_config")
-    def test_ungoverned_foreign_source_skips_import(self, mock_from_config, _lock):
+    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
+    def test_ungoverned_foreign_source_skips_import(self, mock_from_server, _lock):
         # No Requisition is named this → a Sync must not push anything.
         self._runner().run(foreign_source="netbox.durham.router")
-        mock_from_config.assert_not_called()
+        mock_from_server.assert_not_called()
 
     @mock.patch("netbox_opennms.jobs.advisory_lock")
-    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_config")
-    def test_no_monitorable_members_skips_import(self, mock_from_config, _lock):
+    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
+    def test_no_monitorable_members_skips_import(self, mock_from_server, _lock):
         # Genuinely empty (the sole member is EXCLUDED → monitored nowhere): a Sync
         # must not push an empty (mass-delete) requisition. A no-management-IP member
         # is NOT empty — it provisions as an interface-less node (RD-6/h).
         MonitoringOverride.objects.create(assigned_object=self.device, exclude=True)
         self._runner().run(foreign_source=FS)
-        mock_from_config.assert_not_called()
+        mock_from_server.assert_not_called()
 
     @mock.patch("netbox_opennms.jobs.advisory_lock")
-    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_config")
-    def test_remove_pushes_empty_requisition(self, mock_from_config, _lock):
-        client = mock_from_config.return_value.__enter__.return_value
+    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
+    def test_remove_pushes_empty_requisition(self, mock_from_server, _lock):
+        client = mock_from_server.return_value.__enter__.return_value
         client.import_requisition.return_value = mock.Mock(status_code=202)
+        DeployedForeignSource.objects.create(name=FS, server=self.server)
         Device.objects.filter(pk=self.device.pk).delete()
         self._runner().run(foreign_source=FS, allow_empty=True)
         requisition_xml = client.post_requisition.call_args.args[0]
@@ -206,20 +211,23 @@ class SyncForeignSourceJobTest(TestCase):
         client.import_requisition.assert_called_once()
 
     @mock.patch("netbox_opennms.jobs.advisory_lock")
-    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_config")
-    def test_remove_ungoverned_skips_definition(self, mock_from_config, _lock):
+    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
+    def test_remove_ungoverned_skips_definition(self, mock_from_server, _lock):
         # A bare Remove of a name with no Requisition has no definition to push —
         # only the empty requisition + import that clears the nodes.
-        client = mock_from_config.return_value.__enter__.return_value
+        client = mock_from_server.return_value.__enter__.return_value
         client.import_requisition.return_value = mock.Mock(status_code=202)
+        DeployedForeignSource.objects.create(
+            name="netbox.durham.router", server=self.server
+        )
         self._runner().run(foreign_source="netbox.durham.router", allow_empty=True)
         client.post_foreign_source.assert_not_called()
         client.post_requisition.assert_called_once()
         client.import_requisition.assert_called_once()
 
     @mock.patch("netbox_opennms.jobs.advisory_lock")
-    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_config")
-    def test_validation_error_marks_failed(self, mock_from_config, _lock):
+    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
+    def test_validation_error_marks_failed(self, mock_from_server, _lock):
         # An invalid location on the Requisition (ORM-set, bypassing clean) fails
         # the job before any push (it would 400 on import).
         Requisition.objects.filter(pk=self.requisition.pk).update(
@@ -227,18 +235,18 @@ class SyncForeignSourceJobTest(TestCase):
         )
         with self.assertRaises(JobFailed):
             self._runner().run(foreign_source=FS)
-        mock_from_config.assert_not_called()
+        mock_from_server.assert_not_called()
 
     @mock.patch("netbox_opennms.jobs.advisory_lock")
-    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_config")
+    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
     @mock.patch("netbox_opennms.jobs.get_plugin_config")
-    def test_invalid_import_mode_marks_failed(self, mock_cfg, mock_from_config, _lock):
+    def test_invalid_import_mode_marks_failed(self, mock_cfg, mock_from_server, _lock):
         mock_cfg.side_effect = lambda _plugin, key: (
             "bogus" if key == "import_mode" else ""
         )
         with self.assertRaises(JobFailed):
             self._runner().run(foreign_source=FS)
-        mock_from_config.assert_not_called()
+        mock_from_server.assert_not_called()
 
     def test_unknown_locations_helper(self):
         fake = mock.Mock()
@@ -251,9 +259,9 @@ class SyncForeignSourceJobTest(TestCase):
         fake.list_locations.assert_not_called()
 
     @mock.patch("netbox_opennms.jobs.advisory_lock")
-    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_config")
-    def test_unknown_location_logs_warning(self, mock_from_config, _lock):
-        client = mock_from_config.return_value.__enter__.return_value
+    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
+    def test_unknown_location_logs_warning(self, mock_from_server, _lock):
+        client = mock_from_server.return_value.__enter__.return_value
         client.import_requisition.return_value = mock.Mock(status_code=202)
         client.list_locations.return_value = {"Default"}
         Requisition.objects.filter(pk=self.requisition.pk).update(location="edge-1")
@@ -264,9 +272,9 @@ class SyncForeignSourceJobTest(TestCase):
         self.assertIn("edge-1", "\n".join(captured.output))
 
     @mock.patch("netbox_opennms.jobs.advisory_lock")
-    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_config")
-    def test_location_check_failure_does_not_fail_sync(self, mock_from_config, _lock):
-        client = mock_from_config.return_value.__enter__.return_value
+    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
+    def test_location_check_failure_does_not_fail_sync(self, mock_from_server, _lock):
+        client = mock_from_server.return_value.__enter__.return_value
         client.import_requisition.return_value = mock.Mock(status_code=202)
         client.list_locations.side_effect = OpenNMSHTTPError("boom", status_code=500)
         Requisition.objects.filter(pk=self.requisition.pk).update(location="edge-1")
@@ -274,37 +282,42 @@ class SyncForeignSourceJobTest(TestCase):
         client.import_requisition.assert_called_once()
 
     @mock.patch("netbox_opennms.jobs.advisory_lock")
-    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_config")
-    def test_ungoverned_remove_purges_shell(self, mock_from_config, _lock):
-        client = mock_from_config.return_value.__enter__.return_value
+    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
+    def test_ungoverned_remove_purges_shell(self, mock_from_server, _lock):
+        client = mock_from_server.return_value.__enter__.return_value
         client.import_requisition.return_value = mock.Mock(status_code=202)
+        DeployedForeignSource.objects.create(
+            name="netbox.durham.router", server=self.server
+        )
         self._runner().run(foreign_source="netbox.durham.router", allow_empty=True)
         client.delete_requisition.assert_called_once_with("netbox.durham.router")
         client.delete_foreign_source.assert_called_once_with("netbox.durham.router")
 
     @mock.patch("netbox_opennms.jobs.advisory_lock")
-    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_config")
+    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
     def test_remove_of_empty_requisition_tears_down_shell(
-        self, mock_from_config, _lock
+        self, mock_from_server, _lock
     ):
         # A Remove that resolves to ZERO nodes tears down the shell + the ownership
         # record, so the reconciler can't re-Remove it every interval (review #3).
-        client = mock_from_config.return_value.__enter__.return_value
+        client = mock_from_server.return_value.__enter__.return_value
         client.import_requisition.return_value = mock.Mock(status_code=202)
-        DeployedForeignSource.objects.create(name=FS)
+        DeployedForeignSource.objects.create(name=FS, server=self.server)
         Device.objects.filter(pk=self.device.pk).delete()
         self._runner().run(foreign_source=FS, allow_empty=True)
         client.delete_requisition.assert_called_once_with(FS)
         client.delete_foreign_source.assert_called_once_with(FS)
         self.assertFalse(DeployedForeignSource.objects.filter(name=FS).exists())
 
-    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_config")
-    def test_reconcile_enqueues_remove_for_orphans(self, mock_from_config):
+    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
+    def test_reconcile_enqueues_remove_for_orphans(self, mock_from_server):
         # Ownership is tracked by DeployedForeignSource, not a name prefix — so a
         # USER-named orphan (no netbox. prefix) is detected (review #4).
-        DeployedForeignSource.objects.create(name=FS)
-        DeployedForeignSource.objects.create(name="core-switches")
-        client = mock_from_config.return_value.__enter__.return_value
+        DeployedForeignSource.objects.create(name=FS, server=self.server)
+        DeployedForeignSource.objects.create(
+            name="core-switches", server=self.server
+        )
+        client = mock_from_server.return_value.__enter__.return_value
         client.list_requisition_names.return_value = {
             FS,  # managed + monitored (requisition + member) → kept
             "core-switches",  # managed, no requisition → orphan
@@ -321,9 +334,9 @@ class SyncForeignSourceJobTest(TestCase):
             ReconcileOrphansJob(job=mock.Mock()).run()
         enqueue.assert_not_called()
 
-    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_config")
-    def test_reconcile_swallows_opennms_error(self, mock_from_config):
-        mock_from_config.side_effect = OpenNMSError("down")
+    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
+    def test_reconcile_swallows_opennms_error(self, mock_from_server):
+        mock_from_server.side_effect = OpenNMSError("down")
         ReconcileOrphansJob(job=mock.Mock()).run()  # must not raise
 
     def test_reconcile_registered_as_recurring_system_job(self):
@@ -350,13 +363,13 @@ class SyncForeignSourceJobTest(TestCase):
         )
 
     @mock.patch("netbox_opennms.jobs.advisory_lock")
-    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_config")
+    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
     def test_remove_with_members_pushes_full_requisition(
-        self, mock_from_config, _lock
+        self, mock_from_server, _lock
     ):
         # A Remove of a still-populated FS pushes the FULL requisition (the
         # membership is intact) and must NOT tear down the shell (review #6).
-        client = mock_from_config.return_value.__enter__.return_value
+        client = mock_from_server.return_value.__enter__.return_value
         client.import_requisition.return_value = mock.Mock(status_code=202)
         self._runner().run(foreign_source=FS, allow_empty=True)
         requisition_xml = client.post_requisition.call_args.args[0]
@@ -365,12 +378,13 @@ class SyncForeignSourceJobTest(TestCase):
         client.delete_foreign_source.assert_not_called()
 
     @mock.patch("netbox_opennms.jobs.advisory_lock")
-    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_config")
-    def test_remove_allowed_for_rejected_filter(self, mock_from_config, _lock):
+    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
+    def test_remove_allowed_for_rejected_filter(self, mock_from_server, _lock):
         # Review #3 (round 2): a rejected filter must NOT block a deliberate
         # Remove — that is the teardown escape hatch for a broken-filter FS.
-        client = mock_from_config.return_value.__enter__.return_value
+        client = mock_from_server.return_value.__enter__.return_value
         client.import_requisition.return_value = mock.Mock(status_code=202)
+        DeployedForeignSource.objects.create(name=FS, server=self.server)
         Requisition.objects.filter(pk=self.requisition.pk).update(
             filter_params={"bogus_key": ["x"]}
         )
@@ -381,8 +395,8 @@ class SyncForeignSourceJobTest(TestCase):
         client.delete_requisition.assert_called_once_with(FS)
 
     @mock.patch("netbox_opennms.jobs.advisory_lock")
-    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_config")
-    def test_rejected_filter_blocks_sync(self, mock_from_config, _lock):
+    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
+    def test_rejected_filter_blocks_sync(self, mock_from_server, _lock):
         # Review #8: an unknown-key filter fails the job loudly (JobFailed),
         # never a quiet skip with a green COMPLETED job.
         Requisition.objects.filter(pk=self.requisition.pk).update(
@@ -390,4 +404,4 @@ class SyncForeignSourceJobTest(TestCase):
         )
         with self.assertRaises(JobFailed):
             self._runner().run(foreign_source=FS)
-        mock_from_config.assert_not_called()
+        mock_from_server.assert_not_called()

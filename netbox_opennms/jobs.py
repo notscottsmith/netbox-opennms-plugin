@@ -40,8 +40,9 @@ from .membership import (
     matching_requisitions,
     monitored_foreign_sources,
     resolve,
+    resolve_target_server,
 )
-from .models import DeployedForeignSource, MonitoringOverride
+from .models import DeployedForeignSource, MonitoringOverride, OpenNMSServer
 from .translation import (
     RenderError,
     render_foreign_source_definition,
@@ -112,14 +113,9 @@ class SyncForeignSourceJob(JobRunner):
         )
 
     def run(self, foreign_source, allow_empty=False, **kwargs):
-        # Validate config once (it applies to the whole job).
-        default_location = get_plugin_config(PLUGIN_NAME, "default_location")
-        if default_location:
-            try:
-                validate_location_name(default_location)
-            except ValueError as exc:
-                self.logger.error(f"Configured default_location is invalid: {exc}")
-                raise JobFailed() from exc
+        # Validate config once (it applies to the whole job). default_location is
+        # now per-Server (ADR 0002) — validated in _render_and_replace once the
+        # target Server is known.
         rescan = str(get_plugin_config(PLUGIN_NAME, "import_mode")).strip().lower()
         if rescan not in ("true", "false", "dbonly"):
             self.logger.error(
@@ -131,13 +127,10 @@ class SyncForeignSourceJob(JobRunner):
             self._render_and_replace(
                 foreign_source,
                 allow_empty=allow_empty,
-                default_location=default_location,
                 rescan=rescan,
             )
 
-    def _render_and_replace(
-        self, foreign_source, allow_empty, default_location, rescan
-    ):
+    def _render_and_replace(self, foreign_source, allow_empty, rescan):
         """Render-and-replace ONE Foreign Source (AD-5). Returns True if a push
         happened, False if skipped (not governed / empty and not allow_empty).
 
@@ -152,11 +145,11 @@ class SyncForeignSourceJob(JobRunner):
             )
             return False
 
-        # Validate FIRST (FR-8/AD-12): conflicts (C1 freeze) and rejected filters
-        # fail the job loudly even when they resolve to ZERO nodes — the quiet
-        # empty-skip below must never swallow a blocking error (review #8). A
-        # Remove is exempt from the rejected-filter block (the teardown escape
-        # hatch); conflicts still block it.
+        # Validate FIRST (FR-8/AD-12): conflicts (C1 freeze), rejected filters, and
+        # Server conflicts fail the job loudly even when they resolve to ZERO nodes
+        # — the quiet empty-skip below must never swallow a blocking error (review
+        # #8). A Remove is exempt from the rejected-filter block (the teardown
+        # escape hatch); conflicts still block it.
         validation = validate_resolution(resolution, removing=allow_empty)
         for warning in validation.warnings:
             self.logger.warning(warning)
@@ -174,6 +167,28 @@ class SyncForeignSourceJob(JobRunner):
                 "— skipped; use Remove to clear the Foreign Source."
             )
             return False
+
+        # The target Server (ADR 0002): resolve_target_server's fallback only
+        # matters for the deployed-then-emptied case here — validation above
+        # already guarantees a non-empty `resolution.nodes` resolves cleanly to
+        # exactly one Server (a disagreement is a blocking ServerConflict).
+        server = resolve_target_server(resolution, foreign_source)
+        if server is None:
+            self.logger.info(
+                f"{foreign_source} has no resolved or previously-deployed "
+                "OpenNMS Server — skipped."
+            )
+            return False
+
+        default_location = server.default_location
+        if default_location:
+            try:
+                validate_location_name(default_location)
+            except ValueError as exc:
+                self.logger.error(
+                    f"Server {server.name!r} default_location is invalid: {exc}"
+                )
+                raise JobFailed() from exc
 
         nodes = resolution.nodes if resolution is not None else []
         locations = {default_location}
@@ -197,18 +212,23 @@ class SyncForeignSourceJob(JobRunner):
             raise JobFailed() from exc
 
         try:
-            with OpenNMSClient.from_config() as client:
+            with OpenNMSClient.from_server(server) as client:
                 # Order matters (AD-11): definition first, then requisition, then
                 # import. A bare Remove (no assignment) has no definition to push.
                 if fs_xml is not None:
                     client.post_foreign_source(fs_xml)
                 client.post_requisition(requisition_xml)
                 client.import_requisition(foreign_source, rescan_existing=rescan)
-                # Record ownership so the reconciler can find this FS as an orphan
-                # later even though its (user-chosen) name has no netbox. prefix.
-                # Only when we actually pushed nodes — an empty push is a teardown.
+                # Record ownership (+ which Server) so the reconciler can find this
+                # FS as an orphan later even though its (user-chosen) name has no
+                # netbox. prefix. Only when we actually pushed nodes — an empty
+                # push is a teardown. `update_or_create` (not `get_or_create`) so a
+                # Foreign Source moved to a new Server (a Scope binding changed)
+                # updates its ownership record instead of keeping the old Server.
                 if nodes:
-                    DeployedForeignSource.objects.get_or_create(name=foreign_source)
+                    DeployedForeignSource.objects.update_or_create(
+                        name=foreign_source, defaults={"server": server}
+                    )
                 # Best-effort advisory (FR-5/AD-16): warn on an unknown location.
                 try:
                     for location in unknown_locations(client, locations):
@@ -343,19 +363,28 @@ def sync_status_for(target):
     }
 
 
-def orphaned_foreign_sources(client):
+def orphaned_foreign_sources(client, server):
     """Foreign Sources OpenNMS holds that NetBox manages but no longer monitors.
 
     The reconciliation core (pure given a ``client``, so it tests against a fake).
     Requisition names are user-chosen, so ownership is tracked in
     ``DeployedForeignSource`` (written on each successful push) rather than a
     ``netbox.`` name prefix (review #4): orphans = (OpenNMS requisitions ∩ our
-    managed names) − currently monitored. Scoped to managed names, so a requisition
-    NetBox never created is never touched. Catches every drift cause uniformly:
-    last-member departure, membership move, requisition rename, and deletion.
+    managed names for THIS Server) − currently monitored. Scoped per Server
+    (ADR 0002 — each Server has its own requisition namespace) and to managed
+    names, so a requisition NetBox never created is never touched. Catches every
+    drift cause uniformly: last-member departure, membership move, requisition
+    rename, and deletion. A Foreign Source that migrated to a different Server
+    (its Scope binding changed) is not caught here — it is deployed and managed
+    under the new Server, and the old Server's stale copy is a known, accepted
+    limitation (no automatic cross-Server cleanup).
     """
     deployed = set(client.list_requisition_names())
-    managed = set(DeployedForeignSource.objects.values_list("name", flat=True))
+    managed = set(
+        DeployedForeignSource.objects.filter(server=server).values_list(
+            "name", flat=True
+        )
+    )
     return sorted((deployed & managed) - set(monitored_foreign_sources()))
 
 
@@ -370,8 +399,10 @@ class ReconcileOrphansJob(JobRunner):
     Remove for each orphan (which clears the nodes AND deletes the now-empty
     shell, so it doesn't recur). Opt-out via ``reconcile_orphans`` config.
 
-    Best-effort: an OpenNMS outage logs and returns (no raise), so a transient
-    failure doesn't mark the recurring system job failed.
+    Runs once per ``OpenNMSServer`` (ADR 0002 — each Server has its own
+    requisition namespace to reconcile). Best-effort per Server: an outage on one
+    Server logs and continues to the next, so a transient failure never fails the
+    recurring system job, nor blocks reconciliation of the other Servers.
     """
 
     class Meta:
@@ -381,18 +412,25 @@ class ReconcileOrphansJob(JobRunner):
         if str(get_plugin_config(PLUGIN_NAME, "reconcile_orphans")).lower() != "true":
             self.logger.info("reconcile_orphans disabled — skipping.")
             return
-        try:
-            with OpenNMSClient.from_config() as client:
-                orphans = orphaned_foreign_sources(client)
-        except OpenNMSError as exc:
-            self.logger.warning(f"reconcile skipped — OpenNMS error: {exc}")
-            return
-        if not orphans:
+        any_orphans = False
+        for server in OpenNMSServer.objects.all():
+            try:
+                with OpenNMSClient.from_server(server) as client:
+                    orphans = orphaned_foreign_sources(client, server)
+            except OpenNMSError as exc:
+                self.logger.warning(
+                    f"reconcile skipped for Server {server.name!r} — OpenNMS "
+                    f"error: {exc}"
+                )
+                continue
+            if not orphans:
+                continue
+            any_orphans = True
+            for foreign_source in orphans:
+                SyncForeignSourceJob.enqueue_sync(foreign_source, allow_empty=True)
+                self.logger.info(
+                    f"reconcile: enqueued Remove for orphaned Foreign Source "
+                    f"{foreign_source} (Server {server.name!r})."
+                )
+        if not any_orphans:
             self.logger.info("reconcile: no orphaned Foreign Sources.")
-            return
-        for foreign_source in orphans:
-            SyncForeignSourceJob.enqueue_sync(foreign_source, allow_empty=True)
-            self.logger.info(
-                f"reconcile: enqueued Remove for orphaned Foreign Source "
-                f"{foreign_source}."
-            )

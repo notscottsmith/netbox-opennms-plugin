@@ -14,6 +14,7 @@ from netbox_opennms.client import (
     OpenNMSHTTPError,
     OpenNMSTransportError,
 )
+from netbox_opennms.models import OpenNMSServer
 
 
 def _client():
@@ -346,19 +347,33 @@ class OpenNMSClientTest(SimpleTestCase):
         _, url = mock_request.call_args.args
         self.assertTrue(url.endswith("/rest/foreignSourcesConfig/assets"))
 
-    def test_from_config_requires_url(self):
-        with mock.patch(
-            "netbox_opennms.client.client.get_plugin_config", return_value=""
-        ):
-            with self.assertRaises(OpenNMSError):
-                OpenNMSClient.from_config()
+    def test_from_server_builds_client_with_credentials(self):
+        server = OpenNMSServer(
+            name="Acme",
+            url="https://onms.example/opennms/",
+            username="svc",
+            password="secret",
+        )
+        client = OpenNMSClient.from_server(server)
+        self.assertEqual(client.base_url, "https://onms.example/opennms")
+        self.assertEqual(client._session.auth.username, "svc")
+        self.assertEqual(client._session.auth.password, "secret")
 
-    def test_from_config_requires_credentials(self):
-        def fake(_plugin, key):
-            return "https://onms.example/opennms" if key == "opennms_url" else ""
+    def test_from_server_merges_headers(self):
+        server = OpenNMSServer(
+            name="Acme",
+            url="https://onms.example/opennms/",
+            username="svc",
+            password="secret",
+            headers={"CF-Access-Client-Id": "abc"},
+        )
+        client = OpenNMSClient.from_server(server)
+        self.assertEqual(client._session.headers["CF-Access-Client-Id"], "abc")
 
-        with mock.patch(
-            "netbox_opennms.client.client.get_plugin_config", side_effect=fake
-        ):
-            with self.assertRaises(OpenNMSError):
-                OpenNMSClient.from_config()
+    def test_from_server_warns_on_http_url(self):
+        server = OpenNMSServer(
+            name="Acme", url="http://onms.example/opennms/",
+            username="svc", password="secret",
+        )
+        with self.assertLogs("netbox_opennms", level="WARNING"):
+            OpenNMSClient.from_server(server)

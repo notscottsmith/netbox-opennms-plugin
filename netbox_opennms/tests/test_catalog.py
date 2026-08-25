@@ -17,7 +17,12 @@ from netbox_opennms.catalog import (
     CatalogParam,
 )
 from netbox_opennms.client import DiscoveredParam, DiscoveredPlugin, OpenNMSError
-from netbox_opennms.models import MonitoringDetector, MonitoringPolicy, Requisition
+from netbox_opennms.models import (
+    MonitoringDetector,
+    MonitoringPolicy,
+    OpenNMSServer,
+    Requisition,
+)
 from netbox_opennms.presets import DETECTOR_PRESETS, POLICY_PRESETS
 
 ICMP_CLASS = DETECTOR_PRESETS["icmp"]["class"]
@@ -124,6 +129,35 @@ class CatalogMergeTest(SimpleTestCase):
         catalog.refresh_catalogs()
         catalog.get_detector_catalog(client=client)
         self.assertEqual(client.calls, 2)
+
+
+class DefaultClientTest(TestCase):
+    """``_default_client()`` (RD-1): catalog discovery has no per-Requisition
+    Server (ADR 0002), so it falls back to the Default OpenNMS Server.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.addCleanup(cache.clear)
+
+    def test_builds_a_client_for_the_default_server(self):
+        server = OpenNMSServer.objects.create(
+            name="Acme", url="https://onms.example/opennms", is_default=True
+        )
+        with mock.patch.object(catalog.OpenNMSClient, "from_server") as mock_ctor:
+            catalog._default_client()
+        mock_ctor.assert_called_once_with(server)
+
+    def test_raises_when_no_default_server_is_configured(self):
+        with self.assertRaises(OpenNMSError):
+            catalog._default_client()
+
+    def test_get_detector_catalog_degrades_when_no_default_server(self):
+        # No client passed and no Default Server exists → the same graceful
+        # overlay-only degradation as an unreachable OpenNMS (AD-16).
+        cat = catalog.get_detector_catalog()
+        self.assertTrue(cat.live_unavailable)
+        self.assertIsNotNone(cat.by_preset("icmp"))
 
 
 class AssetFieldsTest(SimpleTestCase):

@@ -105,7 +105,7 @@ def validate_requisition_name(name):
     return name
 
 
-def _site_for(target):
+def site_for(target):
     """Resolve a target's site: a VM falls back to its cluster's scope (4.x)."""
     site = getattr(target, "site", None)
     if site is None:
@@ -144,7 +144,7 @@ def foreign_source_for(target):
             "foreign_source_for() expects a Device or VirtualMachine, "
             f"got {type(target).__name__}."
         )
-    site = _site_for(target)
+    site = site_for(target)
     role = getattr(target, "role", None)
     site_slug = site.slug if (site and site.slug) else "no-site"
     role_slug = role.slug if (role and role.slug) else "no-role"

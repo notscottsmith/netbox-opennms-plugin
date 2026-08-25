@@ -12,17 +12,21 @@ from dcim.models import (
     Manufacturer,
     Site,
 )
+from django.test import TestCase
 from ipam.models import IPAddress
 from utilities.testing import APIViewTestCases
 
+from netbox_opennms.api.serializers import OpenNMSServerSerializer
 from netbox_opennms.models import (
     AssetMapping,
     MetadataEntry,
     MonitoredInterface,
     MonitoredService,
     MonitoringDetector,
+    MonitoringExclusion,
     MonitoringOverride,
     MonitoringPolicy,
+    OpenNMSServer,
     Requisition,
 )
 
@@ -206,6 +210,117 @@ class AssetMappingAPITest(_NoGraphQL, APIViewTestCases.APIViewTestCase):
             {"requisition": req.pk, "netbox_source": "role", "asset_field": "category"},
             {"requisition": req.pk, "netbox_source": "site", "asset_field": "building"},
             {"requisition": req.pk, "netbox_source": "rack", "asset_field": "rack"},
+        ]
+
+
+class OpenNMSServerAPITest(_NoGraphQL, APIViewTestCases.APIViewTestCase):
+    model = OpenNMSServer
+    view_namespace = "plugins-api:netbox_opennms"
+    brief_fields = ["display", "id", "name", "url"]
+
+    @classmethod
+    def setUpTestData(cls):
+        for name in ("s1", "s2", "s3"):
+            OpenNMSServer.objects.create(
+                name=name, url=f"https://{name}.example", username="svc", password="x"
+            )
+        cls.create_data = [
+            {
+                "name": "s4",
+                "server_url": "https://s4.example",
+                "username": "svc",
+                "password": "hunter2",
+            },
+            {
+                "name": "s5",
+                "server_url": "https://s5.example",
+                "username": "svc",
+                "password": "hunter2",
+            },
+            {
+                "name": "s6",
+                "server_url": "https://s6.example",
+                "username": "svc",
+                "password": "hunter2",
+            },
+        ]
+
+
+class OpenNMSServerSerializerScopeCollisionTest(TestCase):
+    """ADR 0002: mirrors OpenNMSServerForm's identical checks (test_forms.py) —
+    the API is an equally valid assignment surface."""
+
+    def test_default_server_cannot_carry_scope_bindings(self):
+        site = Site.objects.create(name="Raleigh", slug="raleigh")
+        serializer = OpenNMSServerSerializer(
+            data={
+                "name": "New",
+                "server_url": "https://new.example",
+                "username": "svc",
+                "password": "x",
+                "is_default": True,
+                "sites": [site.pk],
+            }
+        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("is_default", serializer.errors)
+
+    def test_promoting_an_existing_scoped_server_to_default_is_rejected(self):
+        site = Site.objects.create(name="Raleigh", slug="raleigh")
+        server = OpenNMSServer.objects.create(
+            name="Existing", url="https://existing.example"
+        )
+        server.sites.add(site)
+        serializer = OpenNMSServerSerializer(
+            instance=server, data={"is_default": True}, partial=True
+        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("is_default", serializer.errors)
+
+    def test_site_already_bound_to_another_server_is_rejected(self):
+        site = Site.objects.create(name="Raleigh", slug="raleigh")
+        OpenNMSServer.objects.create(
+            name="Existing", url="https://existing.example"
+        ).sites.add(site)
+        serializer = OpenNMSServerSerializer(
+            data={
+                "name": "New",
+                "server_url": "https://new.example",
+                "username": "svc",
+                "password": "x",
+                "sites": [site.pk],
+            }
+        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("sites", serializer.errors)
+
+    def test_unbound_site_is_accepted(self):
+        site = Site.objects.create(name="Raleigh", slug="raleigh")
+        serializer = OpenNMSServerSerializer(
+            data={
+                "name": "New",
+                "server_url": "https://new.example",
+                "username": "svc",
+                "password": "x",
+                "sites": [site.pk],
+            }
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
+
+class MonitoringExclusionAPITest(_NoGraphQL, APIViewTestCases.APIViewTestCase):
+    model = MonitoringExclusion
+    view_namespace = "plugins-api:netbox_opennms"
+    brief_fields = ["description", "display", "id", "url"]
+
+    @classmethod
+    def setUpTestData(cls):
+        for description in ("excl-1", "excl-2", "excl-3"):
+            MonitoringExclusion.objects.create(description=description)
+        cls.create_data = [
+            {"description": "excl-4"},
+            {"description": "excl-5"},
+            {"description": "excl-6"},
         ]
 
 

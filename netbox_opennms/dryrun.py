@@ -16,13 +16,9 @@ parsing is deliberately tolerant.
 
 from dataclasses import dataclass, field
 
-from netbox.plugins import get_plugin_config
-
 from .choices import InterfaceRoleChoices
 from .client import OpenNMSClient
-from .membership import resolve
-
-PLUGIN_NAME = "netbox_opennms"
+from .membership import resolve, resolve_target_server
 
 
 def _as_list(value, key=None):
@@ -61,6 +57,9 @@ class DryRun:
     # Non-empty = the Requisition is FROZEN (C1): the conflicts are reported
     # instead of a node diff, because no sync could push what the diff shows.
     conflicts: list = field(default_factory=list)
+    # Set = the Requisition's members don't agree on one OpenNMS Server (ADR
+    # 0002): reported instead of a node diff, for the same reason as conflicts.
+    server_conflict: str = ""
 
     @property
     def has_changes(self):
@@ -211,6 +210,11 @@ def diff(resolution, current_requisition, current_definition, default_location="
             # push that is blocked would only mislead (C1).
             result.conflicts = list(resolution.conflicts)
             return result
+        if resolution.server_conflict is not None:
+            # Same freeze, for the same reason: no sync could push what the diff
+            # would show, since it doesn't know which Server to push it to.
+            result.server_conflict = str(resolution.server_conflict)
+            return result
 
     desired = _desired_nodes(resolution, default_location)
     current = _current_nodes(current_requisition)
@@ -238,15 +242,27 @@ def diff(resolution, current_requisition, current_definition, default_location="
 def dry_run(foreign_source):
     """Fetch OpenNMS state for *foreign_source* and diff the rendered intent (R7).
 
-    Resolved FIRST: a frozen Requisition's report needs no remote data, so the
-    conflict freeze is shown even when OpenNMS is unreachable (review #6) — and
-    two live GETs are skipped when their result would be discarded anyway.
+    Resolved FIRST: a frozen Requisition's report needs no remote data, so a
+    conflict or Server-conflict freeze is shown even when OpenNMS is unreachable
+    (review #6) — and two live GETs are skipped when their result would be
+    discarded anyway.
+
+    The target Server (ADR 0002) is resolved via ``resolve_target_server``
+    (shared with ``jobs._render_and_replace``). With neither a clean resolution
+    nor a prior deployment, there is nothing live to compare against (never
+    synced and not currently resolvable): the rendered intent is reported
+    alone, as an all-added diff.
     """
-    default_location = get_plugin_config(PLUGIN_NAME, "default_location") or ""
     resolution = resolve(foreign_source)
-    if resolution is not None and resolution.conflicts:
-        return diff(resolution, None, None, default_location)
-    with OpenNMSClient.from_config() as client:
+    if resolution is not None and (resolution.conflicts or resolution.server_conflict):
+        return diff(resolution, None, None)
+
+    server = resolve_target_server(resolution, foreign_source)
+    if server is None:
+        return diff(resolution, None, None)
+
+    default_location = server.default_location
+    with OpenNMSClient.from_server(server) as client:
         current_requisition = client.get_requisition(foreign_source)
         current_definition = client.get_foreign_source(foreign_source)
     return diff(resolution, current_requisition, current_definition, default_location)

@@ -15,7 +15,10 @@ are monitored nowhere regardless (C3). This module answers:
 * what each unconflicted member **resolves to** after per-object overrides
   (``resolve_node`` → a ``NodeSpec`` the renderer emits),
 * which Requisitions **match** a given Device/VM (``matching_requisitions`` —
-  one match = governed, several = conflicted).
+  one match = governed, several = conflicted),
+* which **Server** a Requisition's members resolve to (``scope.resolve_scope``,
+  per member) — a Requisition renders to exactly one Server; members that
+  disagree are a blocking ``ServerConflict`` (multi-server support).
 
 It reads the ORM but performs no writes/network. The unknown-key guard is a
 **key-set diff** against the filtersets' known keys (NOT ``is_valid()``, which
@@ -42,7 +45,8 @@ from .choices import (
 )
 from .derivation import foreign_id_for
 from .enrichment import resolve_source
-from .models import MonitoringOverride, Requisition
+from .models import DeployedForeignSource, MonitoringOverride, Requisition
+from .scope import resolve_scope
 
 # select_related sets keeping resolve() query-lean for the primary-IP/site lookups.
 _DEVICE_RELATED = ("site", "role", "primary_ip4", "primary_ip6")
@@ -93,13 +97,36 @@ class Conflict:
 
 
 @dataclass
+class ServerConflict:
+    """A Requisition's non-excluded members don't unanimously resolve to one
+    Server (Scope resolution, ``scope.resolve_scope``) — blocks Sync. Also
+    raised when they unanimously resolve to NO Server (no Scope binding
+    matched and no Default Server exists): a Requisition must resolve to
+    exactly one Server, never zero.
+    """
+
+    servers: list = field(default_factory=list)
+
+    def __str__(self):
+        return (
+            f"Requisition members resolve to {len(self.servers)} different "
+            f"OpenNMS Servers ({', '.join(self.servers)}) — a Requisition must "
+            "resolve to exactly one Server."
+        )
+
+
+@dataclass
 class Resolution:
     """The resolved state of one Requisition: nodes, warnings, blocking states.
 
-    ``conflicts`` (filter overlap) and ``rejected`` (unknown-key / no-effective-
-    constraint filter) both block Sync via ``validate_resolution``; ``warnings``
-    never block. ``rejected`` is kept apart from ``warnings`` so the same text is
-    not reported twice (once as warning, once as error).
+    ``conflicts`` (filter overlap), ``rejected`` (unknown-key / no-effective-
+    constraint filter), and ``server_conflict`` (members disagree on, or none
+    resolve to, a Server) all block Sync via ``validate_resolution``;
+    ``warnings`` never block. ``rejected`` is kept apart from ``warnings`` so
+    the same text is not reported twice (once as warning, once as error).
+    ``server`` is the single ``OpenNMSServer`` every non-excluded member
+    resolved to (``None`` when there are no members yet, or when
+    ``server_conflict`` is set).
     """
 
     foreign_source: str
@@ -108,6 +135,8 @@ class Resolution:
     warnings: list = field(default_factory=list)
     conflicts: list = field(default_factory=list)
     rejected: list = field(default_factory=list)
+    server: object = None
+    server_conflict: object = None
 
 
 def _bare_ip(ip):
@@ -273,6 +302,40 @@ def _overrides_by_object(objects):
         for override in overrides:
             result[(ct_id, override.assigned_object_id)] = override
     return result
+
+
+def _is_excluded(key, overrides, scopes):
+    """True if ``key`` (``(ct_id, pk)``) is excluded either per-object
+    (``MonitoringOverride.exclude``) or via a Scope-level ``MonitoringExclusion``
+    binding (ADR 0003) — either one drops the object from conflict detection and
+    rendering identically (C3)."""
+    override = overrides.get(key)
+    if override is not None and override.exclude:
+        return True
+    return scopes[key].excluded
+
+
+def _server_label(server):
+    return server.name if server is not None else "no assigned Server"
+
+
+def _resolve_server(servers_seen):
+    """(server, server_conflict) from the distinct Servers a Requisition's
+    non-excluded, non-conflicted members resolved to (keyed by label, so members
+    sharing the same resolved value — including ``None`` — collapse together).
+
+    Zero members needs no Server yet. Unanimous agreement on a real Server wins.
+    Unanimous agreement on ``None`` (no Scope match and no Default Server) is
+    itself blocking — a Requisition must resolve to exactly one Server, never
+    zero. Disagreement (≥2 distinct labels) is likewise blocking.
+    """
+    if not servers_seen:
+        return None, None
+    if len(servers_seen) == 1:
+        (server,) = servers_seen.values()
+        if server is not None:
+            return server, None
+    return None, ServerConflict(servers=sorted(servers_seen))
 
 
 def _resolve_enrichment(obj, requisition):
@@ -455,16 +518,18 @@ def resolve_all():
             ct = ContentType.objects.get_for_model(type(obj))
             seen_objects.setdefault((ct.id, obj.pk), obj)
     overrides = _overrides_by_object(list(seen_objects.values()))
+    # Bulk-load each member's Scope resolution (Server / exclusion) once (ADR 0002).
+    scopes = {key: resolve_scope(obj) for key, obj in seen_objects.items()}
 
     # Conflict detection runs POST-exclusion (C3): an excluded object is monitored
     # nowhere regardless of how many filters match it — no ambiguity, no conflict.
+    # Exclusion is per-object (MonitoringOverride) OR Scope-level (MonitoringExclusion).
     claims = defaultdict(list)
     for requisition in requisitions:
         for obj in membership[requisition.pk]:
             ct = ContentType.objects.get_for_model(type(obj))
             key = (ct.id, obj.pk)
-            override = overrides.get(key)
-            if override is not None and override.exclude:
+            if _is_excluded(key, overrides, scopes):
                 continue
             claims[key].append(requisition.name)
     conflicted = {key: names for key, names in claims.items() if len(names) >= 2}
@@ -474,6 +539,7 @@ def resolve_all():
     for requisition in requisitions:
         warnings = req_warnings[requisition.pk]
         nodes, conflicts = [], []
+        servers_seen = {}
         for obj in membership[requisition.pk]:
             ct = ContentType.objects.get_for_model(type(obj))
             key = (ct.id, obj.pk)
@@ -486,6 +552,9 @@ def resolve_all():
                     )
                 )
                 continue
+            if _is_excluded(key, overrides, scopes):
+                continue
+            servers_seen[_server_label(scopes[key].server)] = scopes[key].server
             node, warning = resolve_node(obj, requisition, overrides.get(key))
             if warning:
                 warnings.append(warning)
@@ -493,6 +562,7 @@ def resolve_all():
                 nodes.append(node)
         nodes.sort(key=lambda n: n.foreign_id)
         conflicts.sort(key=lambda c: c.foreign_id)
+        server, server_conflict = _resolve_server(servers_seen)
         resolutions.append(
             Resolution(
                 requisition.name,
@@ -501,6 +571,8 @@ def resolve_all():
                 warnings=warnings,
                 conflicts=conflicts,
                 rejected=req_rejected[requisition.pk],
+                server=server,
+                server_conflict=server_conflict,
             )
         )
     return resolutions
@@ -517,6 +589,22 @@ def resolve(foreign_source):
         if resolution.foreign_source == foreign_source:
             return resolution
     return None
+
+
+def resolve_target_server(resolution, foreign_source):
+    """The Server (ADR 0002) to push *foreign_source* to, or ``None``.
+
+    ``resolution.server`` when it cleanly resolves, else the Server this
+    Foreign Source was last deployed to — the fallback that matters for a
+    Remove/empty resolution, which carries no members to resolve a Server
+    from. Shared by ``jobs._render_and_replace`` and ``dryrun.dry_run``.
+    """
+    server = resolution.server if resolution is not None else None
+    if server is None:
+        deployed = DeployedForeignSource.objects.filter(name=foreign_source).first()
+        if deployed is not None:
+            server = deployed.server
+    return server
 
 
 def matching_requisitions(target):
@@ -634,7 +722,9 @@ def monitored_foreign_sources():
     * ≥1 warning — a possibly-broken filter (stale value, members skipped):
       tearing down on a warning would let a NetBox rename silently delete live
       OpenNMS nodes (review #1) — the reconciler must never destroy state it
-      cannot prove is intentionally empty.
+      cannot prove is intentionally empty;
+    * a Server conflict — likewise blocked from syncing, so likewise blocked
+      from teardown.
 
     A requisition whose members were genuinely removed (or deliberately excluded)
     resolves cleanly empty and is reconciled away, as intended.
@@ -642,5 +732,5 @@ def monitored_foreign_sources():
     return sorted(
         r.foreign_source
         for r in resolve_all()
-        if r.nodes or r.conflicts or r.warnings or r.rejected
+        if r.nodes or r.conflicts or r.warnings or r.rejected or r.server_conflict
     )

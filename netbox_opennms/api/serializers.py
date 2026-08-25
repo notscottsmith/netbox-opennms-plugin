@@ -17,10 +17,13 @@ from ..models import (
     MonitoredInterface,
     MonitoredService,
     MonitoringDetector,
+    MonitoringExclusion,
     MonitoringOverride,
     MonitoringPolicy,
+    OpenNMSServer,
     Requisition,
 )
+from ..scope import SCOPE_FIELDS, find_scope_collision
 
 
 def _validate_location(value):
@@ -256,6 +259,108 @@ class AssetMappingSerializer(NetBoxModelSerializer):
             "last_updated",
         )
         brief_fields = ("id", "url", "display", "asset_field")
+
+
+class OpenNMSServerSerializer(NetBoxModelSerializer):
+    url = serializers.HyperlinkedIdentityField(
+        view_name="plugins-api:netbox_opennms-api:opennmsserver-detail"
+    )
+    # The model's own `url` field (the OpenNMS connection URL) collides with the
+    # self-link above, so it's exposed under a distinct API name.
+    server_url = serializers.CharField(source="url")
+    headers = serializers.JSONField(required=False, write_only=True)
+
+    class Meta:
+        model = OpenNMSServer
+        fields = (
+            "id",
+            "url",
+            "display",
+            "name",
+            "server_url",
+            "username",
+            "password",
+            "headers",
+            "default_location",
+            "is_default",
+            "tenant_groups",
+            "tenants",
+            "site_groups",
+            "sites",
+            "locations",
+            "tags",
+            "custom_fields",
+            "created",
+            "last_updated",
+        )
+        brief_fields = ("id", "url", "display", "name")
+        extra_kwargs = {"password": {"write_only": True}}
+
+    def validate_server_url(self, value):
+        if not value.startswith(("http://", "https://")):
+            raise serializers.ValidationError("URL must start with http:// or https://.")
+        return value
+
+    def validate_default_location(self, value):
+        return _validate_location(value)
+
+    def validate(self, data):
+        data = super().validate(data)
+        is_default = data.get("is_default", getattr(self.instance, "is_default", False))
+        if is_default:
+            existing = OpenNMSServer.objects.filter(is_default=True)
+            if self.instance is not None:
+                existing = existing.exclude(pk=self.instance.pk)
+            if existing.exists():
+                raise serializers.ValidationError(
+                    {"is_default": "Only one OpenNMS Server may be the Default Server."}
+                )
+
+            def _effective(f):
+                if f in data:
+                    return data[f]
+                return self.instance and getattr(self.instance, f).all()
+
+            if any(_effective(f) for f in SCOPE_FIELDS):
+                raise serializers.ValidationError(
+                    {"is_default": "The Default Server may not carry Scope bindings."}
+                )
+        # A given object may be bound directly to only one Server at a time
+        # (ADR 0002) — mirrors OpenNMSServerForm's identical check, since the
+        # API is an equally valid assignment surface.
+        exclude_pk = self.instance.pk if self.instance is not None else None
+        for field in SCOPE_FIELDS:
+            other = find_scope_collision(field, data.get(field), exclude_pk=exclude_pk)
+            if other is not None:
+                raise serializers.ValidationError(
+                    {field: f'Already bound directly to Server "{other}".'}
+                )
+        return data
+
+
+class MonitoringExclusionSerializer(NetBoxModelSerializer):
+    url = serializers.HyperlinkedIdentityField(
+        view_name="plugins-api:netbox_opennms-api:monitoringexclusion-detail"
+    )
+
+    class Meta:
+        model = MonitoringExclusion
+        fields = (
+            "id",
+            "url",
+            "display",
+            "description",
+            "tenant_groups",
+            "tenants",
+            "site_groups",
+            "sites",
+            "locations",
+            "tags",
+            "custom_fields",
+            "created",
+            "last_updated",
+        )
+        brief_fields = ("id", "url", "display", "description")
 
 
 class MetadataEntrySerializer(NetBoxModelSerializer):
