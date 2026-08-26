@@ -508,6 +508,7 @@ class DiscoveredNodeListView(generic.ObjectListView):
     table = tables.DiscoveredNodeTable
     filterset = filtersets.DiscoveredNodeFilterSet
     filterset_form = forms.DiscoveredNodeFilterForm
+    template_name = "netbox_opennms/discoverednode_list.html"
 
 
 class DiscoveredNodeDeleteView(generic.ObjectDeleteView):
@@ -726,6 +727,110 @@ class DiscoveredNodeImportView(GetReturnURLMixin, PermissionRequiredMixin, View)
             request, f"Imported {target} from OpenNMS node {node.label!r}."
         )
         return redirect(self.get_return_url(request, node))
+
+
+class DiscoveredNodeBulkImportView(GetReturnURLMixin, PermissionRequiredMixin, View):
+    """Import several red Discovery rows at once (issue #10).
+
+    Deliberately never calls ``import_node.build_proposal`` (or anything that
+    guesses tenant/site/role/manufacturer/platform from OpenNMS asset data) —
+    only ``import_node.parse_discovery_payload``, which carries IP interfaces
+    and services through verbatim. One bad automatic guess must not be
+    multipliable across a whole batch of new Devices, so every row in a batch
+    gets exactly the operator's one explicit field selection; nothing here is
+    ever pre-filled from a per-row detection.
+    """
+
+    default_return_url = "plugins:netbox_opennms:discoverednode_list"
+    template_name = "netbox_opennms/discoverednode_bulk_import.html"
+
+    def has_permission(self):
+        # As with DiscoveredNodeImportView, the specific dcim.add_device /
+        # virtualization.add_virtualmachine permission is checked in post()
+        # once the operator's chosen kind is known.
+        user = self.request.user
+        return user.has_perm("dcim.add_device") or user.has_perm(
+            "virtualization.add_virtualmachine"
+        )
+
+    @staticmethod
+    def _candidates():
+        return DiscoveredNode.objects.filter(
+            verdict="red", matched_object_id__isnull=True
+        ).order_by("label")
+
+    def get(self, request):
+        form = forms.DiscoveredNodeBulkImportForm()
+        return render(
+            request,
+            self.template_name,
+            {"form": form, "candidates": self._candidates()},
+        )
+
+    def post(self, request):
+        form = forms.DiscoveredNodeBulkImportForm(request.POST)
+        selected_pks = request.POST.getlist("nodes")
+        if not selected_pks:
+            form.add_error(None, "Select at least one Discovery row to import.")
+        if not form.is_valid():
+            return render(
+                request,
+                self.template_name,
+                {"form": form, "candidates": self._candidates()},
+            )
+        kind = form.cleaned_data["kind"]
+        perm = (
+            "dcim.add_device"
+            if kind == "device"
+            else "virtualization.add_virtualmachine"
+        )
+        if not request.user.has_perm(perm):
+            raise PermissionDenied(f"You do not have permission to create a {kind}.")
+
+        nodes = DiscoveredNode.objects.filter(
+            pk__in=selected_pks, verdict="red", matched_object_id__isnull=True
+        )
+        created = []
+        errors = []
+        for node in nodes:
+            row_data = dict(form.cleaned_data)
+            row_data["name"] = node.label
+            try:
+                with OpenNMSClient.from_server(node.server) as client:
+                    ip_interfaces = client.list_ip_interfaces(node.opennms_node_id)
+                    services_by_ip = {}
+                    for iface in ip_interfaces:
+                        ip = (
+                            iface.get("ipAddress")
+                            if isinstance(iface, dict)
+                            else None
+                        )
+                        if ip:
+                            services_by_ip[ip] = client.list_services(
+                                node.opennms_node_id, ip
+                            )
+            except OpenNMSError as exc:
+                errors.append(f"{node.label}: could not reach OpenNMS ({exc}).")
+                continue
+            interfaces, services = import_node.parse_discovery_payload(
+                ip_interfaces, services_by_ip
+            )
+            proposal = import_node.ImportProposal(
+                label=node.label, interfaces=interfaces, services=services
+            )
+            try:
+                target = import_node.import_node(node, kind, row_data, proposal)
+            except import_node.ImportRejected as exc:
+                errors.append(str(exc))
+                continue
+            created.append(target)
+
+        if created:
+            names = ", ".join(str(target) for target in created)
+            messages.success(request, f"Imported {len(created)} node(s): {names}.")
+        for error in errors:
+            messages.error(request, error)
+        return redirect(self.get_return_url(request))
 
 
 class UnmirroredRequisitionsView(PermissionRequiredMixin, View):

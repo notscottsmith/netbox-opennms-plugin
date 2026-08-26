@@ -202,6 +202,24 @@ def _service_name(raw):
     return raw.get("name")
 
 
+def parse_discovery_payload(ip_interfaces, services_by_ip):
+    """IP interfaces + services from raw OpenNMS payloads, with no field-guessing.
+
+    Split out of ``build_proposal`` so bulk import (#10) can reuse this half
+    without ever calling the other half (``_propose_field``/``_propose_role``/
+    ``asset_field_overrides``) — a bulk batch must apply only the operator's
+    explicit choice for the whole batch, never a per-row auto-detected guess.
+    """
+    interfaces = _parse_ip_interfaces(ip_interfaces)
+    services = []
+    for iface in interfaces:
+        for raw in (services_by_ip or {}).get(iface.ip_address, []):
+            name = _service_name(raw)
+            if name:
+                services.append(ServiceProposal(ip_address=iface.ip_address, name=name))
+    return interfaces, services
+
+
 def build_proposal(
     node, node_detail, ip_interfaces, services_by_ip, overrides, site_model
 ):
@@ -215,14 +233,7 @@ def build_proposal(
     """
     asset_record = (node_detail or {}).get("assetRecord") or {}
     categories = _parse_categories(node_detail or {})
-
-    interfaces = _parse_ip_interfaces(ip_interfaces)
-    services = []
-    for iface in interfaces:
-        for raw in (services_by_ip or {}).get(iface.ip_address, []):
-            name = _service_name(raw)
-            if name:
-                services.append(ServiceProposal(ip_address=iface.ip_address, name=name))
+    interfaces, services = parse_discovery_payload(ip_interfaces, services_by_ip)
 
     return ImportProposal(
         label=node.label,

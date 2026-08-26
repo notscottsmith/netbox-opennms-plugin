@@ -1,0 +1,12 @@
+{# Copyright 2026 Ronny Trommer <ronny@no42.org> #}
+{# SPDX-License-Identifier: MIT #}
+{% extends 'generic/object_list.html' %}
+
+{% block buttons %}
+  {{ block.super }}
+  {% if perms.dcim.add_device or perms.virtualization.add_virtualmachine %}
+    <a href="{% url 'plugins:netbox_opennms:discoverednode_bulk_import' %}" class="btn btn-outline-primary">
+      <i class="mdi mdi-database-import-outline"></i> Bulk import
+    </a>
+  {% endif %}
+{% endblock %}

@@ -112,6 +112,11 @@ urlpatterns = (
         name="discoverednode_bulk_delete",
     ),
     path(
+        "discovered-nodes/bulk-import/",
+        views.DiscoveredNodeBulkImportView.as_view(),
+        name="discoverednode_bulk_import",
+    ),
+    path(
         "discovered-nodes/<int:pk>/",
         views.DiscoveredNodeView.as_view(),
         name="discoverednode",

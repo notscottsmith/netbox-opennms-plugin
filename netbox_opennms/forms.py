@@ -575,20 +575,18 @@ class DiscoveredNodeLinkForm(forms.Form):
         )
 
 
-class DiscoveredNodeImportForm(forms.Form):
-    """Create a new Device/VM from a red Discovery row's proposal (issue #9).
+class DiscoveredNodeImportFieldsMixin(forms.Form):
+    """The fields ``import_node.import_node()`` needs from an operator, shared
+    between single-row import (#9) and bulk import (#10).
 
-    A plain form, not ``NetBoxModelForm``: it builds one of two different
-    model types depending on ``kind``, so its field set doesn't map 1:1 onto
-    either model's ``Meta.fields``. Every field mirrors an
-    ``import_node.FieldProposal`` the operator can accept or correct — nothing
-    here is ever applied without being shown first.
+    A plain ``forms.Form`` mixin, not ``NetBoxModelForm``: it builds one of
+    two different model types depending on ``kind``, so its field set doesn't
+    map 1:1 onto either model's ``Meta.fields``.
     """
 
     KIND_CHOICES = (("device", _("Device")), ("vm", _("Virtual Machine")))
 
     kind = forms.ChoiceField(choices=KIND_CHOICES, label=_("Object type"))
-    name = forms.CharField(label=_("Name"))
     site = DynamicModelChoiceField(
         queryset=Site.objects.all(), required=False, label=_("Site")
     )
@@ -629,6 +627,38 @@ class DiscoveredNodeImportForm(forms.Form):
         if error:
             self.add_error("location", error)
         return cleaned_data
+
+
+class DiscoveredNodeImportForm(DiscoveredNodeImportFieldsMixin):
+    """Create a new Device/VM from a red Discovery row's proposal (issue #9).
+
+    Every field mirrors an ``import_node.FieldProposal`` the operator can
+    accept or correct — nothing here is ever applied without being shown
+    first.
+    """
+
+    name = forms.CharField(label=_("Name"))
+    field_order = [
+        "kind",
+        "name",
+        "site",
+        "tenant",
+        "role",
+        "manufacturer",
+        "device_type",
+        "platform",
+        "location",
+    ]
+
+
+class DiscoveredNodeBulkImportForm(DiscoveredNodeImportFieldsMixin):
+    """One shared field set applied to every row in a bulk import (issue #10).
+
+    Deliberately has no per-row fields and no OpenNMS-derived initial values:
+    bulk import must never apply an auto-detected guess, only what the
+    operator explicitly chose for the whole batch. Each row's own ``name``
+    comes from its Discovery row's label, not from this form.
+    """
 
 
 class MetadataEntryForm(NetBoxModelForm):
