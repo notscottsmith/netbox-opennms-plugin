@@ -5,9 +5,11 @@
 import json
 from copy import deepcopy
 
+from dcim.models import Site
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin, PermissionRequiredMixin
 from django.contrib.contenttypes.models import ContentType
+from django.core.exceptions import PermissionDenied
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.generic import View
@@ -15,7 +17,7 @@ from netbox.views import generic
 from utilities.rqworker import any_workers_for_queue
 from utilities.views import GetReturnURLMixin
 
-from . import filtersets, forms, tables
+from . import filtersets, forms, import_node, tables
 from .client import OpenNMSClient, OpenNMSError
 from .dryrun import dry_run
 from .jobs import (
@@ -614,6 +616,115 @@ class DiscoveredNodeLinkView(GetReturnURLMixin, PermissionRequiredMixin, View):
             return render(request, self.template_name, {"object": node, "form": form})
         node.link_to(form.target)
         messages.success(request, f"Linked {node} to {form.target}.")
+        return redirect(self.get_return_url(request, node))
+
+
+class DiscoveredNodeImportView(GetReturnURLMixin, PermissionRequiredMixin, View):
+    """Create a new Device/VM from a red Discovery row's OpenNMS data (issue #9).
+
+    GET renders a reviewable proposal (tenant/site/role/manufacturer/platform
+    guessed from the node's OpenNMS asset record and categories; IP interfaces
+    and services shown read-only) so nothing is applied without the operator
+    seeing it first. POST commits it through ``import_node.import_node`` — the
+    only write path — which re-checks the ADR-0001 Server Conflict invariant
+    against the newly-created object and, on success, links ``node`` to it the
+    same way a manual link (#8) is.
+    """
+
+    default_return_url = "plugins:netbox_opennms:discoverednode_list"
+    template_name = "netbox_opennms/discoverednode_import.html"
+
+    def has_permission(self):
+        # The specific dcim.add_device / virtualization.add_virtualmachine
+        # permission is checked in post() once the operator's chosen kind is
+        # known; this only gates whether the import action exists at all.
+        user = self.request.user
+        return user.has_perm("dcim.add_device") or user.has_perm(
+            "virtualization.add_virtualmachine"
+        )
+
+    def _fetch(self, node):
+        """Live OpenNMS data for *node*, built into an import proposal."""
+        try:
+            with OpenNMSClient.from_server(node.server) as client:
+                detail = client.get_node(node.opennms_node_id) or {}
+                ip_interfaces = client.list_ip_interfaces(node.opennms_node_id)
+                services_by_ip = {}
+                for iface in ip_interfaces:
+                    ip = iface.get("ipAddress") if isinstance(iface, dict) else None
+                    if ip:
+                        services_by_ip[ip] = client.list_services(
+                            node.opennms_node_id, ip
+                        )
+        except OpenNMSError as exc:
+            return None, str(exc)
+        overrides = import_node.asset_field_overrides()
+        proposal = import_node.build_proposal(
+            node, detail, ip_interfaces, services_by_ip, overrides, Site
+        )
+        return proposal, None
+
+    def _initial(self, node, proposal):
+        initial = {"kind": "device", "name": node.label, "location": node.location}
+        if proposal is not None:
+            initial.update(
+                {
+                    "tenant": proposal.tenant.value,
+                    "site": proposal.site.value,
+                    "role": proposal.role.value,
+                    "manufacturer": proposal.manufacturer.value,
+                    "platform": proposal.platform.value,
+                }
+            )
+        return initial
+
+    def get(self, request, pk):
+        node = get_object_or_404(DiscoveredNode, pk=pk)
+        proposal, error = self._fetch(node)
+        form = forms.DiscoveredNodeImportForm(initial=self._initial(node, proposal))
+        return render(
+            request,
+            self.template_name,
+            {"object": node, "form": form, "proposal": proposal, "error": error},
+        )
+
+    def post(self, request, pk):
+        node = get_object_or_404(DiscoveredNode, pk=pk)
+        proposal, error = self._fetch(node)
+        form = forms.DiscoveredNodeImportForm(request.POST)
+        if error:
+            messages.error(request, f"Could not reach OpenNMS: {error}")
+            return render(
+                request,
+                self.template_name,
+                {"object": node, "form": form, "proposal": proposal, "error": error},
+            )
+        if not form.is_valid():
+            return render(
+                request,
+                self.template_name,
+                {"object": node, "form": form, "proposal": proposal},
+            )
+        kind = form.cleaned_data["kind"]
+        perm = (
+            "dcim.add_device"
+            if kind == "device"
+            else "virtualization.add_virtualmachine"
+        )
+        if not request.user.has_perm(perm):
+            raise PermissionDenied(f"You do not have permission to create a {kind}.")
+        try:
+            target = import_node.import_node(node, kind, form.cleaned_data, proposal)
+        except import_node.ImportRejected as exc:
+            messages.error(request, str(exc))
+            return render(
+                request,
+                self.template_name,
+                {"object": node, "form": form, "proposal": proposal},
+            )
+        messages.success(
+            request, f"Imported {target} from OpenNMS node {node.label!r}."
+        )
         return redirect(self.get_return_url(request, node))
 
 

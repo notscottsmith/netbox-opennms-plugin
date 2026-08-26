@@ -34,6 +34,11 @@
           <a href="{% url 'plugins:netbox_opennms:discoverednode_link' object.pk %}" class="btn btn-sm btn-outline-secondary">
             {% if object.matched_object %}Correct link{% else %}Link to NetBox object{% endif %}
           </a>
+          {% if object.verdict == "red" and not object.matched_object %}
+            <a href="{% url 'plugins:netbox_opennms:discoverednode_import' object.pk %}" class="btn btn-sm btn-outline-primary">
+              Import as new object
+            </a>
+          {% endif %}
         </div>
       </div>
     </div>

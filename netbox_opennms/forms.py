@@ -4,7 +4,16 @@
 
 import logging
 
-from dcim.models import Device, Location, Site, SiteGroup
+from dcim.models import (
+    Device,
+    DeviceRole,
+    DeviceType,
+    Location,
+    Manufacturer,
+    Platform,
+    Site,
+    SiteGroup,
+)
 from django import forms
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
@@ -23,6 +32,7 @@ from virtualization.models import VirtualMachine
 
 from .catalog import get_detector_catalog, get_policy_catalog
 from .choices import ObjectTypeChoices, ServiceChoices
+from .derivation import location_name_error
 from .membership import filter_errors
 from .models import (
     AssetMapping,
@@ -563,6 +573,62 @@ class DiscoveredNodeLinkForm(forms.Form):
         return self.cleaned_data.get("device") or self.cleaned_data.get(
             "virtual_machine"
         )
+
+
+class DiscoveredNodeImportForm(forms.Form):
+    """Create a new Device/VM from a red Discovery row's proposal (issue #9).
+
+    A plain form, not ``NetBoxModelForm``: it builds one of two different
+    model types depending on ``kind``, so its field set doesn't map 1:1 onto
+    either model's ``Meta.fields``. Every field mirrors an
+    ``import_node.FieldProposal`` the operator can accept or correct — nothing
+    here is ever applied without being shown first.
+    """
+
+    KIND_CHOICES = (("device", _("Device")), ("vm", _("Virtual Machine")))
+
+    kind = forms.ChoiceField(choices=KIND_CHOICES, label=_("Object type"))
+    name = forms.CharField(label=_("Name"))
+    site = DynamicModelChoiceField(
+        queryset=Site.objects.all(), required=False, label=_("Site")
+    )
+    tenant = DynamicModelChoiceField(
+        queryset=Tenant.objects.all(), required=False, label=_("Tenant")
+    )
+    role = DynamicModelChoiceField(
+        queryset=DeviceRole.objects.all(), required=False, label=_("Role")
+    )
+    manufacturer = DynamicModelChoiceField(
+        queryset=Manufacturer.objects.all(), required=False, label=_("Manufacturer")
+    )
+    device_type = DynamicModelChoiceField(
+        queryset=DeviceType.objects.all(),
+        required=False,
+        label=_("Device type"),
+        query_params={"manufacturer_id": "$manufacturer"},
+        help_text=_("Required to create a Device."),
+    )
+    platform = DynamicModelChoiceField(
+        queryset=Platform.objects.all(), required=False, label=_("Platform")
+    )
+    location = forms.CharField(
+        required=False,
+        label=_("OpenNMS location"),
+        help_text=_("The OpenNMS monitoring location, not a NetBox Location."),
+    )
+
+    def clean(self):
+        cleaned_data = super().clean()
+        kind = cleaned_data.get("kind")
+        if kind == "device":
+            for required in ("site", "role", "device_type"):
+                if not cleaned_data.get(required):
+                    self.add_error(required, _("Required to create a Device."))
+        location = cleaned_data.get("location") or ""
+        error = location_name_error(location)
+        if error:
+            self.add_error("location", error)
+        return cleaned_data
 
 
 class MetadataEntryForm(NetBoxModelForm):

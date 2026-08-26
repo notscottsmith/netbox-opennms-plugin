@@ -127,6 +127,11 @@ urlpatterns = (
         name="discoverednode_link",
     ),
     path(
+        "discovered-nodes/<int:pk>/import/",
+        views.DiscoveredNodeImportView.as_view(),
+        name="discoverednode_import",
+    ),
+    path(
         "discovered-nodes/<int:pk>/changelog/",
         ObjectChangeLogView.as_view(),
         name="discoverednode_changelog",

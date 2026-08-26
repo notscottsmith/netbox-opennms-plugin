@@ -1,0 +1,124 @@
+{# Copyright 2026 Ronny Trommer <ronny@no42.org> #}
+{# SPDX-License-Identifier: MIT #}
+{% extends 'base/layout.html' %}
+{% load form_helpers %}
+{% load helpers %}
+
+{% block title %}Import {{ object }}{% endblock %}
+
+{% block content %}
+  {% if error %}
+    <div class="alert alert-danger" role="alert">
+      <i class="mdi mdi-alert"></i> Could not reach OpenNMS: {{ error }}
+    </div>
+  {% endif %}
+  <div class="row">
+    <div class="col col-md-6">
+      {% if proposal %}
+        <div class="card">
+          <h2 class="card-header">Detected from OpenNMS</h2>
+          <div class="card-body">
+            <p class="text-muted mb-0">
+              Every field below is a correctable proposal — nothing is applied
+              until you save. "Detected, unmatched" means OpenNMS supplied a
+              value that couldn't be resolved to an existing NetBox object;
+              a dash means OpenNMS's data doesn't cover that field at all.
+            </p>
+          </div>
+          <table class="table table-hover attr-table mb-0">
+            <tr>
+              <th scope="row">Tenant</th>
+              <td>
+                {% if proposal.tenant.value %}<span class="badge text-bg-blue">Guessed</span> {{ proposal.tenant.value|linkify }}
+                {% elif proposal.tenant.detected %}<span class="badge text-bg-secondary">Detected, unmatched</span> {{ proposal.tenant.detected }}
+                {% else %}{{ ''|placeholder }}{% endif %}
+              </td>
+            </tr>
+            <tr>
+              <th scope="row">Site</th>
+              <td>
+                {% if proposal.site.value %}<span class="badge text-bg-blue">Guessed</span> {{ proposal.site.value|linkify }}
+                {% elif proposal.site.detected %}<span class="badge text-bg-secondary">Detected, unmatched</span> {{ proposal.site.detected }}
+                {% else %}{{ ''|placeholder }}{% endif %}
+              </td>
+            </tr>
+            <tr>
+              <th scope="row">Role</th>
+              <td>
+                {% if proposal.role.value %}<span class="badge text-bg-blue">Guessed</span> {{ proposal.role.value|linkify }}
+                {% elif proposal.role.detected %}<span class="badge text-bg-secondary">Detected, unmatched</span> {{ proposal.role.detected }}
+                {% else %}{{ ''|placeholder }}{% endif %}
+              </td>
+            </tr>
+            <tr>
+              <th scope="row">Manufacturer</th>
+              <td>
+                {% if proposal.manufacturer.value %}<span class="badge text-bg-blue">Guessed</span> {{ proposal.manufacturer.value|linkify }}
+                {% elif proposal.manufacturer.detected %}<span class="badge text-bg-secondary">Detected, unmatched</span> {{ proposal.manufacturer.detected }}
+                {% else %}{{ ''|placeholder }}{% endif %}
+              </td>
+            </tr>
+            <tr>
+              <th scope="row">Platform</th>
+              <td>
+                {% if proposal.platform.value %}<span class="badge text-bg-blue">Guessed</span> {{ proposal.platform.value|linkify }}
+                {% elif proposal.platform.detected %}<span class="badge text-bg-secondary">Detected, unmatched</span> {{ proposal.platform.detected }}
+                {% else %}{{ ''|placeholder }}{% endif %}
+              </td>
+            </tr>
+            <tr><th scope="row">OpenNMS location</th><td>{{ proposal.location|placeholder }}</td></tr>
+          </table>
+        </div>
+        <div class="card">
+          <h2 class="card-header">IP interfaces</h2>
+          <table class="table table-hover mb-0">
+            <thead><tr><th>IP Address</th><th>Role</th></tr></thead>
+            <tbody>
+              {% for iface in proposal.interfaces %}
+                <tr>
+                  <td>{{ iface.ip_address }}</td>
+                  <td>{% if iface.is_primary %}<span class="badge text-bg-green">Primary</span>{% else %}{{ iface.role }}{% endif %}</td>
+                </tr>
+              {% empty %}
+                <tr><td colspan="2">{{ ''|placeholder }}</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <div class="card">
+          <h2 class="card-header">Monitored services</h2>
+          <table class="table table-hover mb-0">
+            <thead><tr><th>IP Address</th><th>Service</th></tr></thead>
+            <tbody>
+              {% for svc in proposal.services %}
+                <tr><td>{{ svc.ip_address }}</td><td>{{ svc.name }}</td></tr>
+              {% empty %}
+                <tr><td colspan="2">{{ ''|placeholder }}</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <p class="text-muted">
+          IP interfaces and services are imported verbatim from OpenNMS as a
+          starting Monitoring Override — review it on the new object's page
+          after import.
+        </p>
+      {% endif %}
+    </div>
+    <div class="col col-md-6">
+      <form method="post">
+        {% csrf_token %}
+        <div class="card">
+          <h2 class="card-header">Import {{ object }} as a new NetBox object</h2>
+          <div class="card-body">
+            {% render_form form %}
+          </div>
+        </div>
+        <div class="float-end">
+          <a href="{{ object.get_absolute_url }}" class="btn btn-outline-secondary">Cancel</a>
+          <button type="submit" class="btn btn-primary">Import</button>
+        </div>
+      </form>
+    </div>
+  </div>
+{% endblock %}
