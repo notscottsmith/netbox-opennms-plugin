@@ -94,6 +94,11 @@ urlpatterns = (
         views.OpenNMSServerScanView.as_view(),
         name="opennmsserver_scan",
     ),
+    path(
+        "opennms-servers/<int:pk>/unmirrored-requisitions/",
+        views.UnmirroredRequisitionsView.as_view(),
+        name="opennmsserver_unmirrored_requisitions",
+    ),
     *_crud("monitoring-exclusions", "monitoringexclusion", "MonitoringExclusion",
            MonitoringExclusion),
     path(

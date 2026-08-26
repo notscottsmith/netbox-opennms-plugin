@@ -41,6 +41,7 @@ from .models import (
     OpenNMSServer,
     Requisition,
 )
+from .requisition_discovery import list_unmirrored
 from .scan import KIND_MODELS, scan_server
 from .validation import validate_resolution
 
@@ -614,6 +615,33 @@ class DiscoveredNodeLinkView(GetReturnURLMixin, PermissionRequiredMixin, View):
         node.link_to(form.target)
         messages.success(request, f"Linked {node} to {form.target}.")
         return redirect(self.get_return_url(request, node))
+
+
+class UnmirroredRequisitionsView(PermissionRequiredMixin, View):
+    """Foreign Sources on a Server with no matching NetBox Requisition (issue #11).
+
+    Read-only — computed live on each request (mirrors ``RequisitionDryRunView``)
+    rather than persisted like ``DiscoveredNode`` (#7), since there's no
+    per-row state (verdict, resolution) to track: a name is either mirrored
+    or it isn't, and no import action exists for Requisitions themselves.
+    """
+
+    permission_required = "netbox_opennms.view_opennmsserver"
+    template_name = "netbox_opennms/unmirrored_requisitions.html"
+
+    def get(self, request, pk):
+        server = get_object_or_404(OpenNMSServer, pk=pk)
+        error = None
+        names = None
+        try:
+            names = list_unmirrored(server)
+        except OpenNMSError as exc:
+            error = str(exc)
+        return render(
+            request,
+            self.template_name,
+            {"object": server, "names": names, "error": error},
+        )
 
 
 # --- Sync actions -----------------------------------------------------------

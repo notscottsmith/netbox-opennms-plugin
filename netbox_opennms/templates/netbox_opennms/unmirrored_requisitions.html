@@ -1,0 +1,31 @@
+{# Copyright 2026 Ronny Trommer <ronny@no42.org> #}
+{# SPDX-License-Identifier: MIT #}
+{% extends 'base/layout.html' %}
+
+{% block title %}Unmirrored Foreign Sources — {{ object.name }}{% endblock %}
+
+{% block content %}
+  <div class="card">
+    <h2 class="card-header">Unmirrored Foreign Sources — {{ object|linkify }}</h2>
+    <div class="card-body">
+      {% if error %}
+        <div class="alert alert-danger" role="alert">
+          <i class="mdi mdi-alert"></i> Could not reach OpenNMS: {{ error }}
+        </div>
+      {% elif not names %}
+        <div class="alert alert-info" role="alert">
+          Every Foreign Source on this Server has a corresponding NetBox Requisition.
+        </div>
+      {% else %}
+        <p class="text-muted">
+          These Foreign Sources exist in OpenNMS on this Server but have no
+          corresponding NetBox Requisition. This is informational only — no
+          import action exists for Requisitions themselves.
+        </p>
+        <ul>
+          {% for name in names %}<li><code>{{ name }}</code></li>{% endfor %}
+        </ul>
+      {% endif %}
+    </div>
+  </div>
+{% endblock %}
