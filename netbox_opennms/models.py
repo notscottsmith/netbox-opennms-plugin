@@ -738,8 +738,16 @@ class DiscoveredNode(NetBoxModel):
     a re-scan against unchanged state refreshes the same rows rather than
     creating duplicates. ``matched_object`` is set for a green/orange verdict
     (the NetBox Device/VM the OpenNMS node's Foreign ID resolved to) and left
-    unset for red — the attachment point later tickets (manual link, import)
-    resolve against.
+    unset for red — the attachment point manual linking (issue #8) and later
+    import resolve against.
+
+    ``resolution`` distinguishes a row whose match came from the scan's own
+    Foreign-ID reconciliation (``"scanned"``, the default) from one an
+    operator has manually linked (``"linked"``, issue #8). A re-scan's
+    upsert (``OpenNMSServerScanView``) never overwrites ``verdict``,
+    ``diff_detail``, or ``matched_object`` on a ``"linked"`` row — otherwise
+    a scan that can't itself resolve the node's Foreign ID would silently
+    erase the operator's decision on every re-scan.
     """
 
     server = models.ForeignKey(
@@ -774,6 +782,14 @@ class DiscoveredNode(NetBoxModel):
         ct_field="matched_object_type",
         fk_field="matched_object_id",
     )
+    resolution = models.CharField(
+        max_length=8,
+        choices=(
+            ("scanned", "Scanned"),
+            ("linked", "Manually linked"),
+        ),
+        default="scanned",
+    )
     last_scanned = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -792,6 +808,30 @@ class DiscoveredNode(NetBoxModel):
 
     def get_absolute_url(self):
         return reverse("plugins:netbox_opennms:discoverednode", args=[self.pk])
+
+    def link_to(self, target):
+        """Manually resolve this row to *target* (a Device or VirtualMachine).
+
+        The single write path for a manual link/correct action (issue #8),
+        so a linked row's fields are always set together — mirrors
+        ``OpenNMSServer.record_check_result``'s "one place, always
+        consistent" write. Marking ``resolution="linked"`` is what stops a
+        later re-scan from overwriting the decision (see the class
+        docstring).
+        """
+        self.matched_object = target
+        self.resolution = "linked"
+        self.verdict = "green"
+        self.diff_detail = []
+        self.save(
+            update_fields=[
+                "matched_object_type",
+                "matched_object_id",
+                "resolution",
+                "verdict",
+                "diff_detail",
+            ]
+        )
 
 
 def object_ip_pks(target):

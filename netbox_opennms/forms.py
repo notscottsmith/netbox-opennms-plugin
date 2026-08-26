@@ -532,6 +532,39 @@ class DiscoveredNodeFilterForm(NetBoxModelFilterSetForm):
     )
 
 
+class DiscoveredNodeLinkForm(forms.Form):
+    """Manually link (or correct) a Discovery row's matched NetBox object (issue #8).
+
+    A plain form, not a ``NetBoxModelForm`` — it drives a single targeted
+    action (``DiscoveredNode.link_to``) rather than editing the model's full
+    field set, the same "device XOR virtual_machine" shape as
+    ``MonitoringOverrideForm``.
+    """
+
+    device = DynamicModelChoiceField(
+        queryset=Device.objects.all(), required=False, label=_("Device")
+    )
+    virtual_machine = DynamicModelChoiceField(
+        queryset=VirtualMachine.objects.all(),
+        required=False,
+        label=_("Virtual Machine"),
+    )
+
+    def clean(self):
+        cleaned_data = super().clean()
+        device = cleaned_data.get("device")
+        virtual_machine = cleaned_data.get("virtual_machine")
+        if bool(device) == bool(virtual_machine):
+            raise ValidationError(_("Select exactly one of Device or Virtual Machine."))
+        return cleaned_data
+
+    @property
+    def target(self):
+        return self.cleaned_data.get("device") or self.cleaned_data.get(
+            "virtual_machine"
+        )
+
+
 class MetadataEntryForm(NetBoxModelForm):
     """Define a metadata triad at a scope on a Requisition (RD-3)."""
 

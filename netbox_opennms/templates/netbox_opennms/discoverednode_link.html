@@ -1,0 +1,26 @@
+{# Copyright 2026 Ronny Trommer <ronny@no42.org> #}
+{# SPDX-License-Identifier: MIT #}
+{% extends 'base/layout.html' %}
+{% load form_helpers %}
+
+{% block title %}Link {{ object }}{% endblock %}
+
+{% block content %}
+  <form method="post">
+    {% csrf_token %}
+    <div class="row">
+      <div class="col col-md-6">
+        <div class="card">
+          <h2 class="card-header">Link {{ object }} to a NetBox object</h2>
+          <div class="card-body">
+            {% render_form form %}
+          </div>
+        </div>
+        <div class="float-end">
+          <a href="{{ object.get_absolute_url }}" class="btn btn-outline-secondary">Cancel</a>
+          <button type="submit" class="btn btn-primary">Save</button>
+        </div>
+      </div>
+    </div>
+  </form>
+{% endblock %}

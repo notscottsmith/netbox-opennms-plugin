@@ -389,6 +389,7 @@ class DiscoveredNodeSerializer(NetBoxModelSerializer):
             "location",
             "verdict",
             "diff_detail",
+            "resolution",
             "matched_object_type",
             "matched_object_id",
             "matched_object",

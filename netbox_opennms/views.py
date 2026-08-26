@@ -538,33 +538,82 @@ class OpenNMSServerScanView(GetReturnURLMixin, PermissionRequiredMixin, View):
             )
             return redirect(return_url)
 
+        linked_ids = set(
+            server.discovered_nodes.filter(resolution="linked").values_list(
+                "opennms_node_id", flat=True
+            )
+        )
         seen_ids = []
         for match in matches:
             seen_ids.append(match.opennms_node_id)
-            matched_object_type = None
-            if match.matched_kind:
-                matched_object_type = ContentType.objects.get_for_model(
-                    KIND_MODELS[match.matched_kind]
+            defaults = {
+                "label": match.label,
+                "foreign_source": match.foreign_source,
+                "foreign_id": match.foreign_id,
+                "location": match.location,
+            }
+            # A manually-linked row's match came from the operator, not this
+            # scan's Foreign-ID reconciliation — never overwrite it (issue #8).
+            if match.opennms_node_id not in linked_ids:
+                matched_object_type = None
+                if match.matched_kind:
+                    matched_object_type = ContentType.objects.get_for_model(
+                        KIND_MODELS[match.matched_kind]
+                    )
+                defaults.update(
+                    {
+                        "verdict": match.verdict,
+                        "diff_detail": match.diff_detail,
+                        "matched_object_type": matched_object_type,
+                        "matched_object_id": match.matched_pk,
+                    }
                 )
             DiscoveredNode.objects.update_or_create(
                 server=server,
                 opennms_node_id=match.opennms_node_id,
-                defaults={
-                    "label": match.label,
-                    "foreign_source": match.foreign_source,
-                    "foreign_id": match.foreign_id,
-                    "location": match.location,
-                    "verdict": match.verdict,
-                    "diff_detail": match.diff_detail,
-                    "matched_object_type": matched_object_type,
-                    "matched_object_id": match.matched_pk,
-                },
+                defaults=defaults,
             )
         server.discovered_nodes.exclude(opennms_node_id__in=seen_ids).delete()
         messages.success(
             request, f"Discovery scan of {server.name!r} found {len(matches)} node(s)."
         )
         return redirect(return_url)
+
+
+class DiscoveredNodeLinkView(GetReturnURLMixin, PermissionRequiredMixin, View):
+    """Manually link (or correct) a Discovery row's matched NetBox object (issue #8).
+
+    Writes through ``DiscoveredNode.link_to``, which also marks the row
+    ``resolution="linked"`` so a later re-scan (``OpenNMSServerScanView``)
+    leaves the decision alone instead of recomputing it from the node's
+    Foreign ID.
+    """
+
+    permission_required = "netbox_opennms.change_discoverednode"
+    default_return_url = "plugins:netbox_opennms:discoverednode_list"
+    template_name = "netbox_opennms/discoverednode_link.html"
+
+    def get(self, request, pk):
+        node = get_object_or_404(DiscoveredNode, pk=pk)
+        initial = {}
+        if node.matched_object is not None:
+            field = (
+                "device"
+                if isinstance(node.matched_object, KIND_MODELS["device"])
+                else "virtual_machine"
+            )
+            initial[field] = node.matched_object
+        form = forms.DiscoveredNodeLinkForm(initial=initial)
+        return render(request, self.template_name, {"object": node, "form": form})
+
+    def post(self, request, pk):
+        node = get_object_or_404(DiscoveredNode, pk=pk)
+        form = forms.DiscoveredNodeLinkForm(request.POST)
+        if not form.is_valid():
+            return render(request, self.template_name, {"object": node, "form": form})
+        node.link_to(form.target)
+        messages.success(request, f"Linked {node} to {form.target}.")
+        return redirect(self.get_return_url(request, node))
 
 
 # --- Sync actions -----------------------------------------------------------

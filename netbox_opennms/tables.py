@@ -119,6 +119,7 @@ class DiscoveredNodeTable(NetBoxTable):
         """,
     )
     matched_object = tables.Column(linkify=True, verbose_name="Matched object")
+    resolution = tables.Column(verbose_name="Resolution")
 
     class Meta(NetBoxTable.Meta):
         model = DiscoveredNode
@@ -128,6 +129,7 @@ class DiscoveredNodeTable(NetBoxTable):
             "server",
             "label",
             "verdict",
+            "resolution",
             "foreign_source",
             "foreign_id",
             "location",
