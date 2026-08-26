@@ -5,13 +5,14 @@
 import json
 from copy import deepcopy
 
-from dcim.models import Device, Site
+from dcim.models import Cable, Device, Interface, Site
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin, PermissionRequiredMixin
 from django.contrib.contenttypes.models import ContentType
-from django.core.exceptions import PermissionDenied
-from django.http import JsonResponse
+from django.core.exceptions import PermissionDenied, ValidationError
+from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 from django.views.generic import View
 from netbox.views import generic
 from utilities.rqworker import any_workers_for_queue
@@ -1077,6 +1078,63 @@ def _node_links_badge(instance):
     return len(parse_node_links(_node_links_payload(instance))) or None
 
 
+# --- Discovered link → NetBox cable resolution (issue #16) -------------------
+
+
+def _remote_discovered_node(local_node, link):
+    """The ``DiscoveredNode`` for *link*'s remote endpoint, if any.
+
+    ``link.remote_node_id`` is the OpenNMS node id parsed out of the payload's
+    ``*Url`` field (see ``node_links._remote_node_id``) — every remote endpoint
+    OpenNMS reports lives on the *same* server as the local node, so matching
+    is scoped to ``local_node.server``.
+    """
+    if link.remote_node_id is None:
+        return None
+    return DiscoveredNode.objects.filter(
+        server=local_node.server, opennms_node_id=link.remote_node_id
+    ).first()
+
+
+def _cable_endpoints(local_object, local_node, link):
+    """Resolve *link* to ``(local_interface, remote_interface)``, or ``(None, reason)``.
+
+    Both endpoints must already be matched/imported NetBox Devices (#8/#9) with
+    an Interface named for the port OpenNMS reported, and neither interface may
+    already be cabled — anything else is "not-yet-actionable", per #16's
+    review-don't-guess principle, not an error.
+    """
+    if not isinstance(local_object, Device):
+        return None, "This object isn't a Device, and can't be cabled."
+    remote_node = _remote_discovered_node(local_node, link)
+    remote_object = remote_node.matched_object if remote_node else None
+    if remote_object is None:
+        return (
+            None,
+            "The remote node for this link hasn't been matched or imported "
+            "into NetBox yet.",
+        )
+    if not isinstance(remote_object, Device):
+        return (
+            None,
+            f"Remote object is a {remote_object._meta.verbose_name}, "
+            "which can't be cabled.",
+        )
+    local_interface = Interface.objects.filter(
+        device=local_object, name=link.local_port
+    ).first()
+    if local_interface is None:
+        return None, f"No interface named '{link.local_port}' on {local_object}."
+    remote_interface = Interface.objects.filter(
+        device=remote_object, name=link.remote_port
+    ).first()
+    if remote_interface is None:
+        return None, f"No interface named '{link.remote_port}' on {remote_object}."
+    if local_interface.cable_id or remote_interface.cable_id:
+        return None, "One of these interfaces is already connected to a cable."
+    return (local_interface, remote_interface), None
+
+
 class _NodeLinksView(generic.ObjectView):
     """OpenNMS-discovered neighbor links for a Device/VirtualMachine (#15).
 
@@ -1091,10 +1149,72 @@ class _NodeLinksView(generic.ObjectView):
     template_name = "netbox_opennms/node_links_tab.html"
 
     def get_extra_context(self, request, instance):
+        discovered_node = DiscoveredNode.for_object(instance)
+        links = parse_node_links(_node_links_payload(instance))
+        rows = []
+        for link in links:
+            endpoints, reason = (
+                (None, "No OpenNMS Discovery match for this object.")
+                if discovered_node is None
+                else _cable_endpoints(instance, discovered_node, link)
+            )
+            rows.append(
+                {
+                    "link": link,
+                    "local_interface": endpoints[0] if endpoints else None,
+                    "remote_interface": endpoints[1] if endpoints else None,
+                    "blocked_reason": reason,
+                }
+            )
         return {
-            "discovered_node": DiscoveredNode.for_object(instance),
-            "links": parse_node_links(_node_links_payload(instance)),
+            "discovered_node": discovered_node,
+            "links": links,
+            "link_rows": rows,
         }
+
+
+class NodeLinkCreateCableView(PermissionRequiredMixin, View):
+    """Turn a discovered Node Link into a real NetBox cable (issue #16).
+
+    The Node Links tab already resolved and displayed which two interfaces
+    this connects (``_cable_endpoints``); POST re-validates them (not already
+    cabled, still a clean pair) rather than re-deriving the link from a fresh
+    OpenNMS call — the operator is confirming the exact pairing they were shown.
+    """
+
+    permission_required = "dcim.add_cable"
+
+    def post(self, request):
+        try:
+            local_interface = get_object_or_404(
+                Interface, pk=request.POST.get("local_interface")
+            )
+            remote_interface = get_object_or_404(
+                Interface, pk=request.POST.get("remote_interface")
+            )
+        except (TypeError, ValueError) as exc:
+            raise Http404 from exc
+        return_url = reverse(
+            "dcim:device_opennms_node_links", args=[local_interface.device_id]
+        )
+        if local_interface.cable_id or remote_interface.cable_id:
+            messages.error(
+                request, "One of these interfaces is already connected to a cable."
+            )
+            return redirect(return_url)
+        cable = Cable(
+            a_terminations=[local_interface], b_terminations=[remote_interface]
+        )
+        try:
+            cable.full_clean()
+            cable.save()
+        except ValidationError as exc:
+            messages.error(request, f"Couldn't create cable: {exc}")
+            return redirect(return_url)
+        messages.success(
+            request, f"Created cable between {local_interface} and {remote_interface}."
+        )
+        return redirect(return_url)
 
 
 @register_model_view(Device, name="opennms_node_links", path="opennms-node-links")

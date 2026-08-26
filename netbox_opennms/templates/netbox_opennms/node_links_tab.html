@@ -31,15 +31,32 @@
                 <th>Local port</th>
                 <th>Remote device</th>
                 <th>Remote port</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
-              {% for link in links %}
+              {% for row in link_rows %}
                 <tr>
-                  <td>{{ link.protocol }}</td>
-                  <td>{{ link.local_port|placeholder }}</td>
-                  <td>{{ link.remote_device|placeholder }}</td>
-                  <td>{{ link.remote_port|placeholder }}</td>
+                  <td>{{ row.link.protocol }}</td>
+                  <td>{{ row.link.local_port|placeholder }}</td>
+                  <td>{{ row.link.remote_device|placeholder }}</td>
+                  <td>{{ row.link.remote_port|placeholder }}</td>
+                  <td class="text-end">
+                    {% if row.local_interface and perms.dcim.add_cable %}
+                      <form method="post" action="{% url 'plugins:netbox_opennms:node_link_create_cable' %}">
+                        {% csrf_token %}
+                        <input type="hidden" name="local_interface" value="{{ row.local_interface.pk }}">
+                        <input type="hidden" name="remote_interface" value="{{ row.remote_interface.pk }}">
+                        <button type="submit" class="btn btn-sm btn-primary">
+                          Create cable
+                        </button>
+                      </form>
+                    {% elif row.blocked_reason %}
+                      <span class="text-muted" title="{{ row.blocked_reason }}">
+                        Not actionable
+                      </span>
+                    {% endif %}
+                  </td>
                 </tr>
               {% endfor %}
             </tbody>

@@ -21,6 +21,7 @@ class ParseNodeLinksTest(SimpleTestCase):
                     "lldpLocalPort": "GigabitEthernet0/1",
                     "lldpRemChassisId": "aa:bb:cc:dd:ee:ff",
                     "ldpRemPort": "GigabitEthernet0/2",
+                    "lldpRemChassisIdUrl": "element/linkednode.jsp?node=42",
                 }
             ]
         }
@@ -32,9 +33,22 @@ class ParseNodeLinksTest(SimpleTestCase):
                     local_port="GigabitEthernet0/1",
                     remote_device="aa:bb:cc:dd:ee:ff",
                     remote_port="GigabitEthernet0/2",
+                    remote_node_id=42,
                 )
             ],
         )
+
+    def test_lldp_link_without_remote_url_has_no_node_id(self):
+        payload = {
+            "lldpLinkNodes": [
+                {
+                    "lldpLocalPort": "Gi0/1",
+                    "lldpRemChassisId": "aa:bb:cc:dd:ee:ff",
+                    "ldpRemPort": "Gi0/2",
+                }
+            ]
+        }
+        self.assertIsNone(parse_node_links(payload)[0].remote_node_id)
 
     def test_cdp_link(self):
         payload = {
@@ -108,7 +122,11 @@ class ParseNodeLinksTest(SimpleTestCase):
                 {
                     "bridgeLocalPort": "1",
                     "BridgeLinkRemoteNodes": [
-                        {"bridgeRemote": "switch-a", "bridgeRemotePort": "2"},
+                        {
+                            "bridgeRemote": "switch-a",
+                            "bridgeRemotePort": "2",
+                            "bridgeRemoteUrl": "element/linkednode.jsp?node=7",
+                        },
                         {"bridgeRemote": "switch-b", "bridgeRemotePort": "3"},
                     ],
                 }
@@ -122,6 +140,7 @@ class ParseNodeLinksTest(SimpleTestCase):
                     local_port="1",
                     remote_device="switch-a",
                     remote_port="2",
+                    remote_node_id=7,
                 ),
                 DiscoveredLink(
                     protocol="Bridge",
@@ -150,3 +169,11 @@ class ParseNodeLinksTest(SimpleTestCase):
     def test_bridge_link_with_no_remotes_yields_nothing(self):
         payload = {"bridgeLinkNodes": [{"bridgeLocalPort": "1"}]}
         self.assertEqual(parse_node_links(payload), [])
+
+    def test_malformed_remote_url_has_no_node_id(self):
+        payload = {
+            "lldpLinkNodes": [
+                {"lldpRemChassisIdUrl": "element/linkednode.jsp?node=not-a-number"}
+            ]
+        }
+        self.assertIsNone(parse_node_links(payload)[0].remote_node_id)

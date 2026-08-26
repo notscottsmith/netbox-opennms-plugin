@@ -143,6 +143,11 @@ urlpatterns = (
         kwargs={"model": DiscoveredNode},
     ),
     path(
+        "node-links/create-cable/",
+        views.NodeLinkCreateCableView.as_view(),
+        name="node_link_create_cable",
+    ),
+    path(
         "sync/",
         views.SyncPreviewView.as_view(),
         name="sync_preview",
