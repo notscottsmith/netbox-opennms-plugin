@@ -16,6 +16,7 @@ parsing is deliberately tolerant.
 
 from dataclasses import dataclass, field
 
+from .adoption import adopt_foreign_ids, existing_foreign_ids_by_label
 from .choices import InterfaceRoleChoices
 from .client import OpenNMSClient
 from .membership import resolve, resolve_target_server
@@ -265,4 +266,14 @@ def dry_run(foreign_source):
     with OpenNMSClient.from_server(server) as client:
         current_requisition = client.get_requisition(foreign_source)
         current_definition = client.get_foreign_source(foreign_source)
+
+    # Adoption parity (issue #5): show the SAME Foreign ID a Sync would actually
+    # push — an unambiguous node-label match against the live state reuses the
+    # existing Foreign ID rather than the freshly-derived one.
+    if resolution is not None and resolution.nodes:
+        adoption_warnings = adopt_foreign_ids(
+            resolution.nodes, existing_foreign_ids_by_label(current_requisition)
+        )
+        resolution.warnings.extend(adoption_warnings)
+
     return diff(resolution, current_requisition, current_definition, default_location)

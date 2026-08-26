@@ -19,7 +19,10 @@ related objects — callers in the render/sync paths should pass prefetched
 import re
 
 from dcim.models import Device, Site
+from netbox.plugins import get_plugin_config
 from virtualization.models import VirtualMachine
+
+PLUGIN_NAME = "netbox_opennms"
 
 # Characters OpenNMS forbids in a Foreign Source (requisition) name. ':' is
 # forbidden too — OpenNMS rejects it on import with HTTP 400 (caught by the
@@ -120,17 +123,25 @@ def site_for(target):
 def foreign_id_for(target):
     """Return the type-qualified OpenNMS Foreign ID for a Device/VM (AD-8).
 
-    ``device-{pk}`` / ``vm-{pk}`` — the type prefix keeps a Device and a VM with
-    the same primary key from colliding on node identity.
+    ``{foreign_id_prefix}-device-{pk}`` / ``{foreign_id_prefix}-vm-{pk}`` — the
+    type token keeps a Device and a VM with the same primary key from colliding
+    on node identity. ``foreign_id_prefix`` (default ``"netbox"``, issue #3) is a
+    plugin-wide setting read via ``get_plugin_config``, an in-memory lookup over
+    already-loaded settings — no network/DB access — so this stays pure and
+    deterministic. An empty prefix reproduces the legacy unprefixed format.
     """
+    prefix = get_plugin_config(PLUGIN_NAME, "foreign_id_prefix")
+    kind = None
     if isinstance(target, Device):
-        return f"device-{target.pk}"
-    if isinstance(target, VirtualMachine):
-        return f"vm-{target.pk}"
-    raise TypeError(
-        "foreign_id_for() expects a Device or VirtualMachine, "
-        f"got {type(target).__name__}."
-    )
+        kind = "device"
+    elif isinstance(target, VirtualMachine):
+        kind = "vm"
+    else:
+        raise TypeError(
+            "foreign_id_for() expects a Device or VirtualMachine, "
+            f"got {type(target).__name__}."
+        )
+    return f"{prefix}-{kind}-{target.pk}" if prefix else f"{kind}-{target.pk}"
 
 
 def foreign_source_for(target):

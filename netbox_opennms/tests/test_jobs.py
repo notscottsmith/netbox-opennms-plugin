@@ -82,9 +82,12 @@ class SyncForeignSourceJobTest(TestCase):
 
         self._runner().run(foreign_source=FS)
 
+        # get_requisition is the pre-render adoption check (issue #4); it must
+        # happen before anything is pushed, but before that ordering assertion.
         call_names = [c[0] for c in client.mock_calls]
+        self.assertEqual(call_names[0], "get_requisition")
         self.assertEqual(
-            call_names[:3],
+            call_names[1:4],
             ["post_foreign_source", "post_requisition", "import_requisition"],
         )
         self.assertEqual(
@@ -405,3 +408,77 @@ class SyncForeignSourceJobTest(TestCase):
         with self.assertRaises(JobFailed):
             self._runner().run(foreign_source=FS)
         mock_from_server.assert_not_called()
+
+    @mock.patch("netbox_opennms.jobs.advisory_lock")
+    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
+    def test_adoption_reuses_existing_foreign_id(self, mock_from_server, _lock):
+        # Issue #4: an unambiguous node-label match against OpenNMS's live state
+        # reuses the existing Foreign ID instead of the freshly-derived one, so
+        # taking over a hand-managed Foreign Source keeps its history.
+        client = mock_from_server.return_value.__enter__.return_value
+        client.get_requisition.return_value = {
+            "node": [{"node-label": "rtr-1", "foreign-id": "legacy-42"}]
+        }
+        client.import_requisition.return_value = mock.Mock(status_code=202)
+        self._runner().run(foreign_source=FS)
+        client.get_requisition.assert_called_once_with(FS)
+        requisition_xml = client.post_requisition.call_args.args[0]
+        self.assertIn(b'foreign-id="legacy-42"', requisition_xml)
+        self.assertNotIn(
+            f"netbox-device-{self.device.pk}".encode(), requisition_xml
+        )
+
+    @mock.patch("netbox_opennms.jobs.advisory_lock")
+    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
+    def test_adoption_no_match_uses_derived_id(self, mock_from_server, _lock):
+        client = mock_from_server.return_value.__enter__.return_value
+        client.get_requisition.return_value = {
+            "node": [{"node-label": "someone-else", "foreign-id": "other-1"}]
+        }
+        client.import_requisition.return_value = mock.Mock(status_code=202)
+        self._runner().run(foreign_source=FS)
+        requisition_xml = client.post_requisition.call_args.args[0]
+        self.assertIn(f"netbox-device-{self.device.pk}".encode(), requisition_xml)
+
+    @mock.patch("netbox_opennms.jobs.advisory_lock")
+    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
+    def test_adoption_ambiguous_match_falls_back_and_warns(
+        self, mock_from_server, _lock
+    ):
+        client = mock_from_server.return_value.__enter__.return_value
+        client.get_requisition.return_value = {
+            "node": [
+                {"node-label": "rtr-1", "foreign-id": "legacy-42"},
+                {"node-label": "rtr-1", "foreign-id": "legacy-43"},
+            ]
+        }
+        client.import_requisition.return_value = mock.Mock(status_code=202)
+        with self.assertLogs(
+            "netbox.jobs.SyncForeignSourceJob", level="WARNING"
+        ) as captured:
+            self._runner().run(foreign_source=FS)
+        self.assertIn("ambiguous", "\n".join(captured.output))
+        requisition_xml = client.post_requisition.call_args.args[0]
+        self.assertIn(f"netbox-device-{self.device.pk}".encode(), requisition_xml)
+
+    @mock.patch("netbox_opennms.jobs.advisory_lock")
+    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
+    def test_adoption_unreachable_opennms_fails_job(self, mock_from_server, _lock):
+        client = mock_from_server.return_value.__enter__.return_value
+        client.get_requisition.side_effect = OpenNMSHTTPError("down", status_code=503)
+        with self.assertRaises(JobFailed):
+            self._runner().run(foreign_source=FS)
+        client.post_requisition.assert_not_called()
+
+    @mock.patch("netbox_opennms.jobs.advisory_lock")
+    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
+    def test_adoption_skipped_when_never_synced(self, mock_from_server, _lock):
+        # A brand-new Foreign Source (never synced) behaves as today: the GET
+        # still runs (it's the only way to know that), returns None, and the
+        # derived id is used untouched.
+        client = mock_from_server.return_value.__enter__.return_value
+        client.get_requisition.return_value = None
+        client.import_requisition.return_value = mock.Mock(status_code=202)
+        self._runner().run(foreign_source=FS)
+        requisition_xml = client.post_requisition.call_args.args[0]
+        self.assertIn(f"netbox-device-{self.device.pk}".encode(), requisition_xml)

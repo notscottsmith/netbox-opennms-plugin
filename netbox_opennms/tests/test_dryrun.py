@@ -256,3 +256,55 @@ class DryRunFetchTest(TestCase):
         result = dry_run(FS)
         mock_from_server.assert_not_called()
         self.assertTrue(result.server_conflict)
+
+    @mock.patch("netbox_opennms.dryrun.OpenNMSClient.from_server")
+    def test_adopted_node_shown_unchanged_not_added_and_removed(
+        self, mock_from_server
+    ):
+        # Issue #5: dry-run must show the SAME Foreign ID a Sync would actually
+        # push — an unambiguous label match reuses the existing Foreign ID, so
+        # an otherwise-identical node reads as unchanged, not a spurious
+        # added+removed pair (two different Foreign IDs for the same node).
+        client = mock_from_server.return_value.__enter__.return_value
+        client.get_requisition.return_value = {
+            "node": [
+                {
+                    "foreign-id": "legacy-42",
+                    "node-label": "rtr-1",
+                    "interface": [
+                        {
+                            "ip-addr": "10.0.0.1",
+                            "snmp-primary": "P",
+                            "monitored-service": [],
+                        }
+                    ],
+                }
+            ]
+        }
+        client.get_foreign_source.return_value = None
+        result = dry_run(FS)
+        self.assertEqual(result.added, [])
+        self.assertEqual(result.removed, [])
+        self.assertEqual(result.unchanged, 1)
+
+    @mock.patch("netbox_opennms.dryrun.OpenNMSClient.from_server")
+    def test_non_adopted_node_shows_freshly_derived_id(self, mock_from_server):
+        client = mock_from_server.return_value.__enter__.return_value
+        client.get_requisition.return_value = None
+        client.get_foreign_source.return_value = None
+        result = dry_run(FS)
+        self.assertEqual(len(result.added), 1)
+        self.assertTrue(result.added[0].foreign_id.startswith("netbox-device-"))
+
+    @mock.patch("netbox_opennms.dryrun.OpenNMSClient.from_server")
+    def test_ambiguous_adoption_match_warns(self, mock_from_server):
+        client = mock_from_server.return_value.__enter__.return_value
+        client.get_requisition.return_value = {
+            "node": [
+                {"foreign-id": "legacy-42", "node-label": "rtr-1"},
+                {"foreign-id": "legacy-43", "node-label": "rtr-1"},
+            ]
+        }
+        client.get_foreign_source.return_value = None
+        result = dry_run(FS)
+        self.assertTrue(any("ambiguous" in w for w in result.warnings))

@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 """Tests for the Foreign Source derivation (AD-14)."""
 
+from unittest import mock
+
 from dcim.models import (
     Device,
     DeviceRole,
@@ -14,6 +16,7 @@ from django.test import SimpleTestCase, TestCase
 from virtualization.models import Cluster, ClusterType, VirtualMachine
 
 from netbox_opennms.derivation import (
+    foreign_id_for,
     foreign_source_for,
     validate_foreign_source_name,
     validate_location_name,
@@ -85,6 +88,46 @@ class ForeignSourceDerivationTest(TestCase):
             foreign_source_for(self.site)
         with self.assertRaises(TypeError):
             foreign_source_for(None)
+
+
+class ForeignIdDerivationTest(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        site = Site.objects.create(name="Raleigh", slug="raleigh")
+        role = DeviceRole.objects.create(name="Core Router", slug="core-router")
+        manufacturer = Manufacturer.objects.create(name="Acme", slug="acme")
+        device_type = DeviceType.objects.create(
+            manufacturer=manufacturer, model="Model 1", slug="model-1"
+        )
+        cls.device = Device.objects.create(
+            name="rtr-1", device_type=device_type, role=role, site=site
+        )
+        cluster_type = ClusterType.objects.create(name="Type 1", slug="type-1")
+        cluster = Cluster.objects.create(name="c1", type=cluster_type, scope=site)
+        cls.vm = VirtualMachine.objects.create(name="vm-1", cluster=cluster, role=role)
+
+    @mock.patch("netbox_opennms.derivation.get_plugin_config")
+    def test_default_prefix(self, mock_cfg):
+        mock_cfg.return_value = "netbox"
+        self.assertEqual(foreign_id_for(self.device), f"netbox-device-{self.device.pk}")
+        self.assertEqual(foreign_id_for(self.vm), f"netbox-vm-{self.vm.pk}")
+
+    @mock.patch("netbox_opennms.derivation.get_plugin_config")
+    def test_custom_prefix(self, mock_cfg):
+        mock_cfg.return_value = "acme"
+        self.assertEqual(foreign_id_for(self.device), f"acme-device-{self.device.pk}")
+
+    @mock.patch("netbox_opennms.derivation.get_plugin_config")
+    def test_empty_prefix_reproduces_legacy_format(self, mock_cfg):
+        mock_cfg.return_value = ""
+        self.assertEqual(foreign_id_for(self.device), f"device-{self.device.pk}")
+        self.assertEqual(foreign_id_for(self.vm), f"vm-{self.vm.pk}")
+
+    @mock.patch("netbox_opennms.derivation.get_plugin_config")
+    def test_non_device_or_vm_raises(self, mock_cfg):
+        mock_cfg.return_value = "netbox"
+        with self.assertRaises(TypeError):
+            foreign_id_for(None)
 
 
 class ForeignSourceNameValidationTest(SimpleTestCase):

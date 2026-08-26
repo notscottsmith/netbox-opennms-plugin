@@ -116,7 +116,7 @@ class MembershipTest(TestCase):
         self._requisition()
         resolution = resolve(FS)
         self.assertEqual(
-            [n.foreign_id for n in resolution.nodes], [f"device-{device.pk}"]
+            [n.foreign_id for n in resolution.nodes], [f"netbox-device-{device.pk}"]
         )
 
     def test_membership_includes_vm_by_site_and_role(self):
@@ -126,7 +126,7 @@ class MembershipTest(TestCase):
         resolution = resolve(FS)
         self.assertEqual(
             {n.foreign_id for n in resolution.nodes},
-            {f"device-{device.pk}", f"vm-{vm.pk}"},
+            {f"netbox-device-{device.pk}", f"netbox-vm-{vm.pk}"},
         )
 
     def test_vm_matched_by_site_via_cluster_scope(self):
@@ -142,7 +142,7 @@ class MembershipTest(TestCase):
         vm.primary_ip4 = ip
         vm.save()
         self._requisition()
-        self.assertIn(f"vm-{vm.pk}", [n.foreign_id for n in resolve(FS).nodes])
+        self.assertIn(f"netbox-vm-{vm.pk}", [n.foreign_id for n in resolve(FS).nodes])
 
     def test_cross_type_key_requires_each_type_constrained(self):
         # object_types='both' + a Device-only key would claim every VM — rejected (#3).
@@ -179,7 +179,7 @@ class MembershipTest(TestCase):
             self.assertEqual(resolution.nodes, [])  # conflicted → rendered nowhere
             self.assertEqual(len(resolution.conflicts), 1)
             conflict = resolution.conflicts[0]
-            self.assertEqual(conflict.foreign_id, f"device-{device.pk}")
+            self.assertEqual(conflict.foreign_id, f"netbox-device-{device.pk}")
             self.assertEqual(conflict.requisition_names, ["a", "b"])
 
     def test_matching_requisitions_single_then_conflicted(self):
@@ -209,11 +209,11 @@ class MembershipTest(TestCase):
         by_name = {r.foreign_source: r for r in resolve_all()}
         self.assertEqual(
             [n.foreign_id for n in by_name["zz-routers"].nodes],
-            [f"device-{d1.pk}"],
+            [f"netbox-device-{d1.pk}"],
         )
         self.assertEqual(
             [n.foreign_id for n in by_name["aa-servers"].nodes],
-            [f"device-{d2.pk}"],
+            [f"netbox-device-{d2.pk}"],
         )
         self.assertEqual(by_name["zz-routers"].conflicts, [])
         self.assertEqual(by_name["aa-servers"].conflicts, [])
@@ -237,11 +237,11 @@ class MembershipTest(TestCase):
         self.assertEqual(by_name["routers"].conflicts, [])
         self.assertEqual(
             [n.foreign_id for n in by_name["critical"].nodes],
-            [f"device-{tagged.pk}"],
+            [f"netbox-device-{tagged.pk}"],
         )
         self.assertEqual(
             [n.foreign_id for n in by_name["routers"].nodes],
-            [f"device-{plain.pk}"],
+            [f"netbox-device-{plain.pk}"],
         )
 
     def test_frozen_requisition_counts_as_monitored(self):
@@ -287,10 +287,10 @@ class MembershipTest(TestCase):
         by_name = {r.foreign_source: r for r in resolve_all()}
         a = by_name["a"]
         self.assertEqual(
-            [c.foreign_id for c in a.conflicts], [f"device-{shared.pk}"]
+            [c.foreign_id for c in a.conflicts], [f"netbox-device-{shared.pk}"]
         )
         self.assertEqual(
-            [n.foreign_id for n in a.nodes], [f"device-{only_a.pk}"]
+            [n.foreign_id for n in a.nodes], [f"netbox-device-{only_a.pk}"]
         )
         b = by_name["b"]
         self.assertEqual(len(b.conflicts), 1)
@@ -304,7 +304,7 @@ class MembershipTest(TestCase):
         self._requisition(name="b", filter_params={"site": ["raleigh"]})
         conflicts = requisition_conflicts(a)
         self.assertEqual(len(conflicts), 1)
-        self.assertEqual(conflicts[0].foreign_id, f"device-{device.pk}")
+        self.assertEqual(conflicts[0].foreign_id, f"netbox-device-{device.pk}")
         self.assertEqual(conflicts[0].requisition_names, ["a", "b"])
 
     # --- server resolution (multi-server, ADR 0002) -------------------------
@@ -381,7 +381,7 @@ class MembershipTest(TestCase):
         node, warning = resolve_node(device, req, None)
         self.assertIsNone(warning)
         self.assertEqual(node.node_label, "rtr-1")
-        self.assertEqual(node.foreign_id, f"device-{device.pk}")
+        self.assertEqual(node.foreign_id, f"netbox-device-{device.pk}")
         self.assertEqual(node.interfaces[0].role, "P")
         self.assertEqual(node.interfaces[0].ip, "10.0.0.1")
 
@@ -495,7 +495,7 @@ class MembershipTest(TestCase):
         resolution = resolve(FS)
         self.assertEqual(
             [n.foreign_id for n in resolution.nodes],
-            sorted([f"device-{d1.pk}", f"device-{d2.pk}", f"device-{d3.pk}"]),
+            sorted([f"netbox-device-{d1.pk}", f"netbox-device-{d2.pk}", f"netbox-device-{d3.pk}"]),
         )
         self.assertEqual(len(resolution.warnings), 1)
 

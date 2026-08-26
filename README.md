@@ -204,6 +204,10 @@ PLUGINS_CONFIG = {
         # pushed Foreign Source, so it only ever touches requisitions the plugin
         # created, never a foreign one. "true" / "false"; needs an RQ worker.
         "reconcile_orphans": "true",
+        # Prefix applied to every Foreign ID this plugin derives, e.g.
+        # "netbox-device-42". Change with care: it is node identity, not just a
+        # label — see "Adopting a pre-existing OpenNMS node" below.
+        "foreign_id_prefix": "netbox",
     },
 }
 ```
@@ -344,11 +348,26 @@ save-never-blocks rule but has **no warning channel** — after automated writes
 check the Sync preview (or the requisition page) for conflicts.
 
 Node identity is the pair *(Foreign Source, type-qualified Foreign ID)* —
-`device-{pk}` / `vm-{pk}` — so a re-sync updates a node in place and renaming a
+`{foreign_id_prefix}-device-{pk}` / `{foreign_id_prefix}-vm-{pk}` (prefix
+configurable, default `netbox`) — so a re-sync updates a node in place and renaming a
 Device only relabels it (never a duplicate). Moving an object between Requisitions
 (a filter change) changes its Foreign Source, which OpenNMS treats as a new node;
 the per-node **dry-run** surfaces such moves — and every add / remove / change
 against the live OpenNMS state — before you Sync.
+
+### Adopting a pre-existing OpenNMS node
+
+Pointing a Requisition at a Foreign Source that already has real nodes in
+OpenNMS — created by hand, by another tool, or by an older version of this
+plugin — does not duplicate them. Before every Sync, the plugin checks the
+Foreign Source's current OpenNMS state and, for any NetBox object whose node
+label unambiguously matches an existing node there, reuses that node's
+existing Foreign ID instead of deriving a fresh one — regardless of what
+scheme produced it. If a label matches more than one node on either side, that
+label is excluded from adoption (falls back to the derived Foreign ID) and a
+warning is surfaced alongside other per-node sync warnings. The Sync preview
+(dry-run) reflects the same adopted Foreign IDs, so it always matches what a
+real Sync would push.
 
 ## Development & contributing
 

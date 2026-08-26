@@ -36,6 +36,9 @@ class PluginConfigTestCase(SimpleTestCase):
         self.assertEqual(
             get_plugin_config("netbox_opennms", "reconcile_orphans"), "true"
         )
+        self.assertEqual(
+            get_plugin_config("netbox_opennms", "foreign_id_prefix"), "netbox"
+        )
 
     def test_secret_key_is_required(self):
         self.assertEqual(

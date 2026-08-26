@@ -34,6 +34,7 @@ from netbox.jobs import JobRunner, system_job
 from netbox.plugins import get_plugin_config
 from virtualization.models import VirtualMachine
 
+from .adoption import adopt_foreign_ids, existing_foreign_ids_by_label
 from .client import OpenNMSClient, OpenNMSError
 from .derivation import validate_location_name
 from .membership import (
@@ -197,22 +198,43 @@ class SyncForeignSourceJob(JobRunner):
             locations.update(node.location for node in nodes)
 
         try:
-            requisition_xml = render_requisition(
-                foreign_source, nodes, default_location=default_location
-            )
-            fs_xml = (
-                render_foreign_source_definition(
-                    foreign_source, resolution.requisition
-                )
-                if resolution is not None
-                else None
-            )
-        except RenderError as exc:
-            self.logger.error(f"Cannot render {foreign_source}: {exc}")
-            raise JobFailed() from exc
-
-        try:
             with OpenNMSClient.from_server(server) as client:
+                # Adoption (issue #4): before rendering, check what OpenNMS
+                # already has under this Foreign Source and reuse an existing
+                # node's Foreign ID for any unambiguous node-label match, so
+                # taking over a Foreign Source populated by hand or other
+                # tooling retains its OpenNMS-side state. Unreachable OpenNMS
+                # here fails the job like any other client failure.
+                if nodes:
+                    try:
+                        current_requisition = client.get_requisition(foreign_source)
+                    except OpenNMSError as exc:
+                        self.logger.error(
+                            "Cannot check existing OpenNMS state for "
+                            f"{foreign_source}: {exc}"
+                        )
+                        raise JobFailed() from exc
+                    adoption_warnings = adopt_foreign_ids(
+                        nodes, existing_foreign_ids_by_label(current_requisition)
+                    )
+                    for warning in adoption_warnings:
+                        self.logger.warning(warning)
+
+                try:
+                    requisition_xml = render_requisition(
+                        foreign_source, nodes, default_location=default_location
+                    )
+                    fs_xml = (
+                        render_foreign_source_definition(
+                            foreign_source, resolution.requisition
+                        )
+                        if resolution is not None
+                        else None
+                    )
+                except RenderError as exc:
+                    self.logger.error(f"Cannot render {foreign_source}: {exc}")
+                    raise JobFailed() from exc
+
                 # Order matters (AD-11): definition first, then requisition, then
                 # import. A bare Remove (no assignment) has no definition to push.
                 if fs_xml is not None:

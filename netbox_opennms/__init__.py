@@ -52,6 +52,9 @@ class NetBoxOpenNMSConfig(PluginConfig):
         # NetBox no longer governs (last member left / moved / unassigned). "true"
         # / "false". Touches only the plugin's own namespace.
         "reconcile_orphans": "true",
+        # Prefix applied to every Foreign ID this plugin derives (AD-8). Change
+        # with care: it is part of node identity, not just a label (issue #3).
+        "foreign_id_prefix": "netbox",
     }
 
     def ready(self):
