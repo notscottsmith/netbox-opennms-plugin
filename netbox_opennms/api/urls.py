@@ -19,5 +19,6 @@ router.register("asset-mappings", views.AssetMappingViewSet)
 router.register("metadata-entries", views.MetadataEntryViewSet)
 router.register("opennms-servers", views.OpenNMSServerViewSet)
 router.register("monitoring-exclusions", views.MonitoringExclusionViewSet)
+router.register("discovered-nodes", views.DiscoveredNodeViewSet)
 
 urlpatterns = router.urls

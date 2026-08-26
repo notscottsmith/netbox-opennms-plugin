@@ -377,3 +377,99 @@ class OpenNMSClientTest(SimpleTestCase):
         )
         with self.assertLogs("netbox_opennms", level="WARNING"):
             OpenNMSClient.from_server(server)
+
+    # --- Discovery (issue #7) ------------------------------------------------
+
+    @mock.patch.object(requests.Session, "request")
+    def test_list_nodes_parses_wrapped_form(self, mock_request):
+        mock_request.return_value = mock.Mock(
+            status_code=200,
+            ok=True,
+            json=mock.Mock(
+                return_value={"node": [{"id": 1, "label": "rtr-1"}, "not-a-dict"]}
+            ),
+        )
+        nodes = _client().list_nodes()
+        self.assertEqual(nodes, [{"id": 1, "label": "rtr-1"}])
+        method, url = mock_request.call_args.args
+        self.assertEqual(method, "GET")
+        self.assertEqual(url, "https://onms.example/opennms/api/v2/nodes")
+        self.assertEqual(mock_request.call_args.kwargs["params"], {"limit": 0})
+
+    @mock.patch.object(requests.Session, "request")
+    def test_list_nodes_parses_bare_list(self, mock_request):
+        mock_request.return_value = mock.Mock(
+            status_code=200, ok=True,
+            json=mock.Mock(return_value=[{"id": 1, "label": "rtr-1"}]),
+        )
+        self.assertEqual(_client().list_nodes(), [{"id": 1, "label": "rtr-1"}])
+
+    @mock.patch.object(requests.Session, "request")
+    def test_list_nodes_unparseable_raises(self, mock_request):
+        mock_request.return_value = mock.Mock(
+            status_code=200, ok=True, json=mock.Mock(side_effect=ValueError("x"))
+        )
+        with self.assertRaises(OpenNMSError):
+            _client().list_nodes()
+
+    @mock.patch.object(requests.Session, "request")
+    def test_get_node_returns_json(self, mock_request):
+        mock_request.return_value = mock.Mock(
+            status_code=200, ok=True, json=mock.Mock(return_value={"id": 1})
+        )
+        self.assertEqual(_client().get_node(1), {"id": 1})
+        method, url = mock_request.call_args.args
+        self.assertEqual(method, "GET")
+        self.assertEqual(url, "https://onms.example/opennms/api/v2/nodes/1")
+
+    @mock.patch.object(requests.Session, "request")
+    def test_get_node_404_returns_none(self, mock_request):
+        mock_request.return_value = mock.Mock(status_code=404, ok=False)
+        self.assertIsNone(_client().get_node(1))
+
+    @mock.patch.object(requests.Session, "request")
+    def test_list_ip_interfaces_parses_wrapped_form(self, mock_request):
+        mock_request.return_value = mock.Mock(
+            status_code=200,
+            ok=True,
+            json=mock.Mock(return_value={"ipInterface": [{"ipAddress": "10.0.0.1"}]}),
+        )
+        ifaces = _client().list_ip_interfaces(1)
+        self.assertEqual(ifaces, [{"ipAddress": "10.0.0.1"}])
+        _, url = mock_request.call_args.args
+        self.assertEqual(
+            url, "https://onms.example/opennms/api/v2/nodes/1/ipinterfaces"
+        )
+
+    @mock.patch.object(requests.Session, "request")
+    def test_list_ip_interfaces_unparseable_raises(self, mock_request):
+        mock_request.return_value = mock.Mock(
+            status_code=200, ok=True, json=mock.Mock(side_effect=ValueError("x"))
+        )
+        with self.assertRaises(OpenNMSError):
+            _client().list_ip_interfaces(1)
+
+    @mock.patch.object(requests.Session, "request")
+    def test_list_services_parses_wrapped_form_and_quotes_ip(self, mock_request):
+        mock_request.return_value = mock.Mock(
+            status_code=200,
+            ok=True,
+            json=mock.Mock(
+                return_value={"service": [{"serviceType": {"name": "ICMP"}}]}
+            ),
+        )
+        services = _client().list_services(1, "10.0.0.1")
+        self.assertEqual(services, [{"serviceType": {"name": "ICMP"}}])
+        _, url = mock_request.call_args.args
+        self.assertEqual(
+            url,
+            "https://onms.example/opennms/api/v2/nodes/1/ipinterfaces/10.0.0.1/services",
+        )
+
+    @mock.patch.object(requests.Session, "request")
+    def test_list_services_unparseable_raises(self, mock_request):
+        mock_request.return_value = mock.Mock(
+            status_code=200, ok=True, json=mock.Mock(side_effect=ValueError("x"))
+        )
+        with self.assertRaises(OpenNMSError):
+            _client().list_services(1, "10.0.0.1")

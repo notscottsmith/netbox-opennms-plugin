@@ -7,6 +7,7 @@ from copy import deepcopy
 
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin, PermissionRequiredMixin
+from django.contrib.contenttypes.models import ContentType
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.generic import View
@@ -29,6 +30,7 @@ from .membership import (
 )
 from .models import (
     AssetMapping,
+    DiscoveredNode,
     MetadataEntry,
     MonitoredInterface,
     MonitoredService,
@@ -39,6 +41,7 @@ from .models import (
     OpenNMSServer,
     Requisition,
 )
+from .scan import KIND_MODELS, scan_server
 from .validation import validate_resolution
 
 # Sync jobs are enqueued without an instance, so they run on the default RQ
@@ -488,6 +491,80 @@ class MonitoringExclusionDeleteView(generic.ObjectDeleteView):
 class MonitoringExclusionBulkDeleteView(generic.BulkDeleteView):
     queryset = MonitoringExclusion.objects.all()
     table = tables.MonitoringExclusionTable
+
+
+# --- Discovery (issue #7) ----------------------------------------------------
+
+
+class DiscoveredNodeView(generic.ObjectView):
+    queryset = DiscoveredNode.objects.all()
+
+
+class DiscoveredNodeListView(generic.ObjectListView):
+    queryset = DiscoveredNode.objects.all()
+    table = tables.DiscoveredNodeTable
+    filterset = filtersets.DiscoveredNodeFilterSet
+    filterset_form = forms.DiscoveredNodeFilterForm
+
+
+class DiscoveredNodeDeleteView(generic.ObjectDeleteView):
+    queryset = DiscoveredNode.objects.all()
+
+
+class DiscoveredNodeBulkDeleteView(generic.BulkDeleteView):
+    queryset = DiscoveredNode.objects.all()
+    table = tables.DiscoveredNodeTable
+
+
+class OpenNMSServerScanView(GetReturnURLMixin, PermissionRequiredMixin, View):
+    """Run a Discovery scan against a Server and upsert its ``DiscoveredNode`` rows.
+
+    Re-running a scan is idempotent: matches are upserted keyed on
+    ``(server, opennms_node_id)`` (issue #7's unique constraint), and any row
+    for a node no longer present on the server is deleted.
+    """
+
+    permission_required = "netbox_opennms.add_discoverednode"
+    default_return_url = "plugins:netbox_opennms:opennmsserver_list"
+
+    def post(self, request, pk):
+        server = get_object_or_404(OpenNMSServer, pk=pk)
+        return_url = request.META.get("HTTP_REFERER") or server.get_absolute_url()
+        try:
+            matches = scan_server(server)
+        except OpenNMSError as exc:
+            messages.error(
+                request, f"OpenNMS Discovery scan of {server.name!r} failed: {exc}"
+            )
+            return redirect(return_url)
+
+        seen_ids = []
+        for match in matches:
+            seen_ids.append(match.opennms_node_id)
+            matched_object_type = None
+            if match.matched_kind:
+                matched_object_type = ContentType.objects.get_for_model(
+                    KIND_MODELS[match.matched_kind]
+                )
+            DiscoveredNode.objects.update_or_create(
+                server=server,
+                opennms_node_id=match.opennms_node_id,
+                defaults={
+                    "label": match.label,
+                    "foreign_source": match.foreign_source,
+                    "foreign_id": match.foreign_id,
+                    "location": match.location,
+                    "verdict": match.verdict,
+                    "diff_detail": match.diff_detail,
+                    "matched_object_type": matched_object_type,
+                    "matched_object_id": match.matched_pk,
+                },
+            )
+        server.discovered_nodes.exclude(opennms_node_id__in=seen_ids).delete()
+        messages.success(
+            request, f"Discovery scan of {server.name!r} found {len(matches)} node(s)."
+        )
+        return redirect(return_url)
 
 
 # --- Sync actions -----------------------------------------------------------

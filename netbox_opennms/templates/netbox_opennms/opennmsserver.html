@@ -34,6 +34,16 @@
               </form>
             </td>
           </tr>
+          <tr>
+            <th scope="row">Discovery</th>
+            <td>
+              <a href="{% url 'plugins:netbox_opennms:discoverednode_list' %}?server_id={{ object.pk }}">{{ object.discovered_nodes.count }} discovered node(s)</a>
+              <form method="post" action="{% url 'plugins:netbox_opennms:opennmsserver_scan' object.pk %}" class="mt-2">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-sm btn-outline-secondary">Scan for nodes</button>
+              </form>
+            </td>
+          </tr>
         </table>
       </div>
     </div>

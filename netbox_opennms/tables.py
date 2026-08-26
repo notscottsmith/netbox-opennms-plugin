@@ -7,6 +7,7 @@ from netbox.tables import NetBoxTable, columns
 
 from .models import (
     AssetMapping,
+    DiscoveredNode,
     MetadataEntry,
     MonitoredInterface,
     MonitoredService,
@@ -44,6 +45,20 @@ class OpenNMSServerTable(NetBoxTable):
         verbose_name="",
         orderable=False,
     )
+    scan_action = tables.TemplateColumn(
+        template_code="""
+            <form method="post"
+                  action="{% url 'plugins:netbox_opennms:opennmsserver_scan'
+                                  record.pk %}">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-sm btn-outline-secondary">
+                Scan
+              </button>
+            </form>
+        """,
+        verbose_name="",
+        orderable=False,
+    )
 
     class Meta(NetBoxTable.Meta):
         model = OpenNMSServer
@@ -56,6 +71,7 @@ class OpenNMSServerTable(NetBoxTable):
             "is_default",
             "last_check_status",
             "test_action",
+            "scan_action",
             "created",
             "last_updated",
             "actions",
@@ -67,6 +83,7 @@ class OpenNMSServerTable(NetBoxTable):
             "is_default",
             "last_check_status",
             "test_action",
+            "scan_action",
         )
 
 
@@ -84,6 +101,50 @@ class MonitoringExclusionTable(NetBoxTable):
             "actions",
         )
         default_columns = ("description",)
+
+
+class DiscoveredNodeTable(NetBoxTable):
+    label = tables.Column(linkify=True)
+    server = tables.Column(linkify=True)
+    verdict = tables.TemplateColumn(
+        template_code="""
+            {% if record.verdict == "green" %}
+              <span class="badge text-bg-green">Matches</span>
+            {% elif record.verdict == "orange" %}
+              <span class="badge text-bg-orange"
+                    title="{{ record.diff_detail|join:'; ' }}">Differs</span>
+            {% else %}
+              <span class="badge text-bg-red">Missing from NetBox</span>
+            {% endif %}
+        """,
+    )
+    matched_object = tables.Column(linkify=True, verbose_name="Matched object")
+
+    class Meta(NetBoxTable.Meta):
+        model = DiscoveredNode
+        fields = (
+            "pk",
+            "id",
+            "server",
+            "label",
+            "verdict",
+            "foreign_source",
+            "foreign_id",
+            "location",
+            "matched_object",
+            "last_scanned",
+            "created",
+            "last_updated",
+            "actions",
+        )
+        default_columns = (
+            "server",
+            "label",
+            "verdict",
+            "foreign_id",
+            "matched_object",
+            "last_scanned",
+        )
 
 
 class RequisitionTable(NetBoxTable):

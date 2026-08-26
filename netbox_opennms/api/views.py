@@ -6,6 +6,7 @@ from netbox.api.viewsets import NetBoxModelViewSet
 
 from ..filtersets import (
     AssetMappingFilterSet,
+    DiscoveredNodeFilterSet,
     MetadataEntryFilterSet,
     MonitoredInterfaceFilterSet,
     MonitoredServiceFilterSet,
@@ -18,6 +19,7 @@ from ..filtersets import (
 )
 from ..models import (
     AssetMapping,
+    DiscoveredNode,
     MetadataEntry,
     MonitoredInterface,
     MonitoredService,
@@ -30,6 +32,7 @@ from ..models import (
 )
 from .serializers import (
     AssetMappingSerializer,
+    DiscoveredNodeSerializer,
     MetadataEntrySerializer,
     MonitoredInterfaceSerializer,
     MonitoredServiceSerializer,
@@ -106,3 +109,9 @@ class MonitoringExclusionViewSet(NetBoxModelViewSet):
     )
     serializer_class = MonitoringExclusionSerializer
     filterset_class = MonitoringExclusionFilterSet
+
+
+class DiscoveredNodeViewSet(NetBoxModelViewSet):
+    queryset = DiscoveredNode.objects.select_related("server", "matched_object_type")
+    serializer_class = DiscoveredNodeSerializer
+    filterset_class = DiscoveredNodeFilterSet

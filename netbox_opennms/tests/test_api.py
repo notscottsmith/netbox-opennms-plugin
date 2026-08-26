@@ -19,6 +19,7 @@ from utilities.testing import APIViewTestCases
 from netbox_opennms.api.serializers import OpenNMSServerSerializer
 from netbox_opennms.models import (
     AssetMapping,
+    DiscoveredNode,
     MetadataEntry,
     MonitoredInterface,
     MonitoredService,
@@ -321,6 +322,42 @@ class MonitoringExclusionAPITest(_NoGraphQL, APIViewTestCases.APIViewTestCase):
             {"description": "excl-4"},
             {"description": "excl-5"},
             {"description": "excl-6"},
+        ]
+
+
+class DiscoveredNodeAPITest(_NoGraphQL, APIViewTestCases.APIViewTestCase):
+    model = DiscoveredNode
+    view_namespace = "plugins-api:netbox_opennms"
+    brief_fields = ["display", "id", "label", "url", "verdict"]
+
+    @classmethod
+    def setUpTestData(cls):
+        server = OpenNMSServer.objects.create(
+            name="dn-api", url="https://dn-api.example"
+        )
+        for i in range(3):
+            DiscoveredNode.objects.create(
+                server=server, opennms_node_id=i, label=f"node-{i}", verdict="red"
+            )
+        cls.create_data = [
+            {
+                "server": server.pk,
+                "opennms_node_id": 10,
+                "label": "node-10",
+                "verdict": "red",
+            },
+            {
+                "server": server.pk,
+                "opennms_node_id": 11,
+                "label": "node-11",
+                "verdict": "red",
+            },
+            {
+                "server": server.pk,
+                "opennms_node_id": 12,
+                "label": "node-12",
+                "verdict": "red",
+            },
         ]
 
 

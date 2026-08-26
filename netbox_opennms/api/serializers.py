@@ -13,6 +13,7 @@ from ..membership import filter_errors
 from ..models import (
     ASSIGNMENT_MODELS,
     AssetMapping,
+    DiscoveredNode,
     MetadataEntry,
     MonitoredInterface,
     MonitoredService,
@@ -361,6 +362,50 @@ class MonitoringExclusionSerializer(NetBoxModelSerializer):
             "last_updated",
         )
         brief_fields = ("id", "url", "display", "description")
+
+
+class DiscoveredNodeSerializer(NetBoxModelSerializer):
+    url = serializers.HyperlinkedIdentityField(
+        view_name="plugins-api:netbox_opennms-api:discoverednode-detail"
+    )
+    matched_object_type = ContentTypeField(
+        queryset=ContentType.objects.filter(ASSIGNMENT_MODELS),
+        allow_null=True,
+        required=False,
+    )
+    matched_object = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = DiscoveredNode
+        fields = (
+            "id",
+            "url",
+            "display",
+            "server",
+            "opennms_node_id",
+            "label",
+            "foreign_source",
+            "foreign_id",
+            "location",
+            "verdict",
+            "diff_detail",
+            "matched_object_type",
+            "matched_object_id",
+            "matched_object",
+            "last_scanned",
+            "tags",
+            "custom_fields",
+            "created",
+            "last_updated",
+        )
+        brief_fields = ("id", "url", "display", "label", "verdict")
+
+    def get_matched_object(self, obj):
+        if obj.matched_object is None:
+            return None
+        serializer = get_serializer_for_model(obj.matched_object)
+        context = {"request": self.context["request"]}
+        return serializer(obj.matched_object, nested=True, context=context).data
 
 
 class MetadataEntrySerializer(NetBoxModelSerializer):

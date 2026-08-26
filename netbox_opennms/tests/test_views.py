@@ -15,6 +15,7 @@ from utilities.testing import ViewTestCases
 
 from netbox_opennms.models import (
     AssetMapping,
+    DiscoveredNode,
     MetadataEntry,
     MonitoredInterface,
     MonitoredService,
@@ -313,6 +314,31 @@ class MonitoringExclusionViewTest(
         cls.form_data = {
             "description": "excl-4",
         }
+
+
+class DiscoveredNodeViewTest(
+    ViewTestCases.GetObjectViewTestCase,
+    ViewTestCases.GetObjectChangelogViewTestCase,
+    ViewTestCases.DeleteObjectViewTestCase,
+    ViewTestCases.ListObjectsViewTestCase,
+    ViewTestCases.BulkDeleteObjectsViewTestCase,
+):
+    # No Create/Edit views: a DiscoveredNode is only ever produced by a scan
+    # (OpenNMSServerScanView), never hand-entered (issue #7).
+    model = DiscoveredNode
+
+    def _get_base_url(self):
+        return "plugins:netbox_opennms:discoverednode_{}"
+
+    @classmethod
+    def setUpTestData(cls):
+        server = OpenNMSServer.objects.create(
+            name="Acme", url="https://onms.example"
+        )
+        for i, verdict in enumerate(("green", "orange", "red")):
+            DiscoveredNode.objects.create(
+                server=server, opennms_node_id=i, label=f"node-{i}", verdict=verdict
+            )
 
 
 class MetadataEntryViewTest(

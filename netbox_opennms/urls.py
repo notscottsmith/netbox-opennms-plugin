@@ -8,6 +8,7 @@ from netbox.views.generic import ObjectChangeLogView
 from . import views
 from .models import (
     AssetMapping,
+    DiscoveredNode,
     MetadataEntry,
     MonitoredInterface,
     MonitoredService,
@@ -88,8 +89,39 @@ urlpatterns = (
         views.OpenNMSServerTestAjaxView.as_view(),
         name="opennmsserver_test_ajax",
     ),
+    path(
+        "opennms-servers/<int:pk>/scan/",
+        views.OpenNMSServerScanView.as_view(),
+        name="opennmsserver_scan",
+    ),
     *_crud("monitoring-exclusions", "monitoringexclusion", "MonitoringExclusion",
            MonitoringExclusion),
+    path(
+        "discovered-nodes/",
+        views.DiscoveredNodeListView.as_view(),
+        name="discoverednode_list",
+    ),
+    path(
+        "discovered-nodes/delete/",
+        views.DiscoveredNodeBulkDeleteView.as_view(),
+        name="discoverednode_bulk_delete",
+    ),
+    path(
+        "discovered-nodes/<int:pk>/",
+        views.DiscoveredNodeView.as_view(),
+        name="discoverednode",
+    ),
+    path(
+        "discovered-nodes/<int:pk>/delete/",
+        views.DiscoveredNodeDeleteView.as_view(),
+        name="discoverednode_delete",
+    ),
+    path(
+        "discovered-nodes/<int:pk>/changelog/",
+        ObjectChangeLogView.as_view(),
+        name="discoverednode_changelog",
+        kwargs={"model": DiscoveredNode},
+    ),
     path(
         "sync/",
         views.SyncPreviewView.as_view(),

@@ -200,6 +200,88 @@ class OpenNMSClient:
                 f"OpenNMS returned an unparseable {path} response."
             ) from exc
 
+    def list_nodes(self):
+        """Every node OpenNMS currently holds (Discovery scan, issue #7).
+
+        ``GET /api/v2/nodes`` (JSON) — the server's actual live inventory,
+        independent of the Foreign Sources this plugin manages. Read-only.
+        Parsed defensively like the other v2 list endpoints (bare list, or a
+        wrapper keyed by ``node``).
+        """
+        response = self._request(
+            "GET",
+            "/api/v2/nodes",
+            headers={"Accept": "application/json"},
+            params={"limit": 0},
+        )
+        try:
+            payload = response.json()
+            entries = (
+                payload if isinstance(payload, list) else payload.get("node", [])
+            )
+            return [n for n in entries if isinstance(n, dict)]
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise OpenNMSError(
+                "OpenNMS returned an unparseable nodes response."
+            ) from exc
+
+    def get_node(self, node_id):
+        """One node's detail as JSON, or ``None`` if it no longer exists.
+
+        ``GET /api/v2/nodes/{id}``. A 404 (deleted between listing and detail
+        fetch) returns ``None`` rather than raising, like ``get_requisition``.
+        """
+        return self._get_json_or_none(f"/api/v2/nodes/{node_id}")
+
+    def list_ip_interfaces(self, node_id):
+        """A node's IP interfaces (Discovery scan, issue #7).
+
+        ``GET /api/v2/nodes/{id}/ipinterfaces`` (JSON).
+        """
+        response = self._request(
+            "GET",
+            f"/api/v2/nodes/{node_id}/ipinterfaces",
+            headers={"Accept": "application/json"},
+            params={"limit": 0},
+        )
+        try:
+            payload = response.json()
+            entries = (
+                payload
+                if isinstance(payload, list)
+                else payload.get("ipInterface", [])
+            )
+            return [i for i in entries if isinstance(i, dict)]
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise OpenNMSError(
+                f"OpenNMS returned an unparseable ipinterfaces response for "
+                f"node {node_id}."
+            ) from exc
+
+    def list_services(self, node_id, ip_address):
+        """A node's monitored services on one IP interface (Discovery, issue #7).
+
+        ``GET /api/v2/nodes/{id}/ipinterfaces/{ip}/services`` (JSON).
+        """
+        response = self._request(
+            "GET",
+            f"/api/v2/nodes/{node_id}/ipinterfaces/"
+            f"{quote(ip_address, safe='')}/services",
+            headers={"Accept": "application/json"},
+            params={"limit": 0},
+        )
+        try:
+            payload = response.json()
+            entries = (
+                payload if isinstance(payload, list) else payload.get("service", [])
+            )
+            return [s for s in entries if isinstance(s, dict)]
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise OpenNMSError(
+                f"OpenNMS returned an unparseable services response for "
+                f"node {node_id}/{ip_address}."
+            ) from exc
+
     def post_foreign_source(self, xml_bytes):
         """Apply a foreign-source definition (auto-detection config) — AD-5/AD-11.
 

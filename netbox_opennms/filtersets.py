@@ -7,6 +7,7 @@ from netbox.filtersets import NetBoxModelFilterSet
 
 from .models import (
     AssetMapping,
+    DiscoveredNode,
     MetadataEntry,
     MonitoredInterface,
     MonitoredService,
@@ -128,6 +129,17 @@ class AssetMappingFilterSet(NetBoxModelFilterSet):
     def search(self, queryset, name, value):
         if value:
             return queryset.filter(asset_field__icontains=value)
+        return queryset
+
+
+class DiscoveredNodeFilterSet(NetBoxModelFilterSet):
+    class Meta:
+        model = DiscoveredNode
+        fields = ("id", "server", "verdict", "foreign_source", "foreign_id")
+
+    def search(self, queryset, name, value):
+        if value:
+            return queryset.filter(label__icontains=value)
         return queryset
 
 

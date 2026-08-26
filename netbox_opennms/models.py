@@ -729,6 +729,71 @@ class DeployedForeignSource(models.Model):
         return self.name
 
 
+class DiscoveredNode(NetBoxModel):
+    """One OpenNMS node found by a Discovery scan, with its NetBox match
+    verdict (issue #7).
+
+    Populated by scanning an ``OpenNMSServer``'s live node inventory
+    (``scan.scan_server``) and upserting by ``(server, opennms_node_id)``, so
+    a re-scan against unchanged state refreshes the same rows rather than
+    creating duplicates. ``matched_object`` is set for a green/orange verdict
+    (the NetBox Device/VM the OpenNMS node's Foreign ID resolved to) and left
+    unset for red — the attachment point later tickets (manual link, import)
+    resolve against.
+    """
+
+    server = models.ForeignKey(
+        to="netbox_opennms.OpenNMSServer",
+        on_delete=models.CASCADE,
+        related_name="discovered_nodes",
+    )
+    opennms_node_id = models.PositiveIntegerField()
+    label = models.CharField(max_length=255)
+    foreign_source = models.CharField(max_length=100, blank=True, default="")
+    foreign_id = models.CharField(max_length=100, blank=True, default="")
+    location = models.CharField(max_length=255, blank=True, default="")
+    verdict = models.CharField(
+        max_length=6,
+        choices=(
+            ("green", "Matches NetBox"),
+            ("orange", "Differs from NetBox"),
+            ("red", "Missing from NetBox"),
+        ),
+    )
+    diff_detail = models.JSONField(blank=True, default=list)
+    matched_object_type = models.ForeignKey(
+        to="contenttypes.ContentType",
+        on_delete=models.PROTECT,
+        limit_choices_to=ASSIGNMENT_MODELS,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    matched_object_id = models.PositiveBigIntegerField(null=True, blank=True)
+    matched_object = GenericForeignKey(
+        ct_field="matched_object_type",
+        fk_field="matched_object_id",
+    )
+    last_scanned = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("server", "label")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("server", "opennms_node_id"),
+                name="%(app_label)s_%(class)s_unique_server_node",
+            ),
+        ]
+        verbose_name = "discovered node"
+        verbose_name_plural = "discovered nodes"
+
+    def __str__(self):
+        return self.label or f"Node #{self.opennms_node_id}"
+
+    def get_absolute_url(self):
+        return reverse("plugins:netbox_opennms:discoverednode", args=[self.pk])
+
+
 def object_ip_pks(target):
     """PKs of the IPs assigned to a Device/VM's interfaces (its own addresses)."""
     pks = set()

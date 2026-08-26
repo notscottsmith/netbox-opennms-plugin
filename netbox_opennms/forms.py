@@ -12,7 +12,7 @@ from django.db.models import Q
 from django.utils.translation import gettext_lazy as _
 from extras.models import SavedFilter
 from ipam.models import IPAddress
-from netbox.forms import NetBoxModelForm
+from netbox.forms import NetBoxModelFilterSetForm, NetBoxModelForm
 from tenancy.models import Tenant, TenantGroup
 from utilities.forms.fields import (
     DynamicModelChoiceField,
@@ -26,6 +26,7 @@ from .choices import ObjectTypeChoices, ServiceChoices
 from .membership import filter_errors
 from .models import (
     AssetMapping,
+    DiscoveredNode,
     MetadataEntry,
     MonitoredInterface,
     MonitoredService,
@@ -515,6 +516,20 @@ class MonitoringExclusionForm(_ScopeForm):
             "locations",
             "tags",
         )
+
+
+class DiscoveredNodeFilterForm(NetBoxModelFilterSetForm):
+    """Filter the Discovery scan results list by match verdict (issue #7)."""
+
+    model = DiscoveredNode
+
+    server = DynamicModelMultipleChoiceField(
+        queryset=OpenNMSServer.objects.all(), required=False
+    )
+    verdict = forms.MultipleChoiceField(
+        choices=DiscoveredNode._meta.get_field("verdict").choices,
+        required=False,
+    )
 
 
 class MetadataEntryForm(NetBoxModelForm):
