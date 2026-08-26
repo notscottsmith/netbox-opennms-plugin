@@ -7,7 +7,7 @@ from netbox.plugins import PluginMenuButton, PluginMenuItem
 menu_items = (
     PluginMenuItem(
         link="plugins:netbox_opennms:opennmsserver_list",
-        link_text="OpenNMS Servers",
+        link_text="Servers",
         buttons=(
             PluginMenuButton(
                 link="plugins:netbox_opennms:opennmsserver_add",
@@ -52,9 +52,5 @@ menu_items = (
     PluginMenuItem(
         link="plugins:netbox_opennms:sync_preview",
         link_text="Sync Preview",
-    ),
-    PluginMenuItem(
-        link="plugins:netbox_opennms:connection_test",
-        link_text="Connect OpenNMS",
     ),
 )

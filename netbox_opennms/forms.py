@@ -422,6 +422,35 @@ class OpenNMSServerForm(_ScopeForm):
             '"...", "CF-Access-Client-Secret": "..."} for Cloudflare Access.'
         ),
     )
+    # A <select>, not a ChoiceField: the option list is populated client-side
+    # from OpenNMSClient.list_locations() after a successful "Test connection"
+    # (server_test_connection.js), so a submitted value legitimately won't be
+    # among the choices rendered server-side. CharField doesn't validate
+    # against the widget's choices, only OpenNMSServer.clean() does (via
+    # validate_location_name) — the widget is UX only.
+    #
+    # NOT rendered as HTML `disabled`: a disabled <select> is excluded from
+    # form submission entirely, which would silently blank out an existing
+    # Server's default_location on any save that doesn't re-run the test. The
+    # "test to populate" gating is CSS/JS-only (server_test_connection.js
+    # toggles the "onms-location-pending" class) so the current value always
+    # keeps posting normally.
+    default_location = forms.CharField(
+        required=False,
+        label=_("Default location"),
+        help_text=_(
+            "Which OpenNMS monitoring location a member falls back to. Test "
+            "the connection to populate this from the Server's known locations."
+        ),
+        widget=forms.Select(choices=(), attrs={"class": "onms-location-pending"}),
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        current = self.instance.default_location if self.instance.pk else ""
+        self.fields["default_location"].widget.choices = (
+            [(current, current)] if current else []
+        )
 
     class Meta:
         model = OpenNMSServer
@@ -441,6 +470,7 @@ class OpenNMSServerForm(_ScopeForm):
             "tags",
         )
         widgets = {
+            "username": forms.TextInput(),
             "password": forms.PasswordInput(render_value=True),
         }
 

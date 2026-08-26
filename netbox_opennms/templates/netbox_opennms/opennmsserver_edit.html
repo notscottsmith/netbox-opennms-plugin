@@ -1,0 +1,13 @@
+{# Copyright 2026 Ronny Trommer <ronny@no42.org> #}
+{# SPDX-License-Identifier: MIT #}
+{% extends 'generic/object_edit.html' %}
+{% load static %}
+
+{% block javascript %}
+  {{ block.super }}
+  <script>
+    window.OPENNMS_SERVER_TEST_AJAX_URL = "{% url 'plugins:netbox_opennms:opennmsserver_test_ajax' %}";
+    window.OPENNMS_SERVER_ID = "{% if object.pk %}{{ object.pk }}{% endif %}";
+  </script>
+  <script src="{% static 'netbox_opennms/server_test_connection.js' %}"></script>
+{% endblock %}

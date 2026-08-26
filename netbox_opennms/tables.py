@@ -22,6 +22,28 @@ from .models import (
 class OpenNMSServerTable(NetBoxTable):
     name = tables.Column(linkify=True)
     is_default = columns.BooleanColumn()
+    last_check_status = tables.TemplateColumn(
+        template_code="""
+            {% if record.last_check_status == "ok" %}
+              <span class="badge text-bg-green">OK</span>
+            {% elif record.last_check_status == "failed" %}
+              <span class="badge text-bg-red" title="{{ record.last_check_message }}">Failed</span>
+            {% else %}
+              <span class="badge text-bg-secondary">Untested</span>
+            {% endif %}
+        """,
+        verbose_name="Status",
+    )
+    test_action = tables.TemplateColumn(
+        template_code="""
+            <form method="post" action="{% url 'plugins:netbox_opennms:opennmsserver_test' record.pk %}">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-sm btn-outline-primary">Test</button>
+            </form>
+        """,
+        verbose_name="",
+        orderable=False,
+    )
 
     class Meta(NetBoxTable.Meta):
         model = OpenNMSServer
@@ -32,11 +54,20 @@ class OpenNMSServerTable(NetBoxTable):
             "url",
             "default_location",
             "is_default",
+            "last_check_status",
+            "test_action",
             "created",
             "last_updated",
             "actions",
         )
-        default_columns = ("name", "url", "default_location", "is_default")
+        default_columns = (
+            "name",
+            "url",
+            "default_location",
+            "is_default",
+            "last_check_status",
+            "test_action",
+        )
 
 
 class MonitoringExclusionTable(NetBoxTable):

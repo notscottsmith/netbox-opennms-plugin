@@ -19,6 +19,7 @@ from ipam.models import IPAddress
 
 from netbox_opennms.client import OpenNMSError, OpenNMSHTTPError
 from netbox_opennms.jobs import (
+    CheckServerHealthJob,
     ReconcileOrphansJob,
     SyncForeignSourceJob,
     unknown_locations,
@@ -411,6 +412,39 @@ class SyncForeignSourceJobTest(TestCase):
 
     @mock.patch("netbox_opennms.jobs.advisory_lock")
     @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
+    def test_unhealthy_server_hard_blocks_sync(self, mock_from_server, _lock):
+        # A Server whose last health check FAILED refuses Sync/Remove/Move —
+        # this covers the single entry point shared by all three.
+        OpenNMSServer.objects.filter(pk=self.server.pk).update(
+            last_check_status="failed", last_check_message="connection refused"
+        )
+        with self.assertRaises(JobFailed):
+            self._runner().run(foreign_source=FS)
+        mock_from_server.assert_not_called()
+
+    @mock.patch("netbox_opennms.jobs.advisory_lock")
+    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
+    def test_unchecked_server_is_not_blocked(self, mock_from_server, _lock):
+        # "unknown" (never checked) must behave as today — only a confirmed
+        # "failed" blocks a sync.
+        client = mock_from_server.return_value.__enter__.return_value
+        client.import_requisition.return_value = mock.Mock(status_code=202)
+        self.assertEqual(self.server.last_check_status, "unknown")
+        self._runner().run(foreign_source=FS)
+        client.import_requisition.assert_called_once()
+
+    @mock.patch("netbox_opennms.jobs.advisory_lock")
+    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
+    def test_healthy_server_is_not_blocked(self, mock_from_server, _lock):
+        OpenNMSServer.objects.filter(pk=self.server.pk).update(last_check_status="ok")
+        client = mock_from_server.return_value.__enter__.return_value
+        client.import_requisition.return_value = mock.Mock(status_code=202)
+        self._runner().run(foreign_source=FS)
+        client.import_requisition.assert_called_once()
+
+
+    @mock.patch("netbox_opennms.jobs.advisory_lock")
+    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
     def test_adoption_reuses_existing_foreign_id(self, mock_from_server, _lock):
         # Issue #4: an unambiguous node-label match against OpenNMS's live state
         # reuses the existing Foreign ID instead of the freshly-derived one, so
@@ -482,3 +516,40 @@ class SyncForeignSourceJobTest(TestCase):
         self._runner().run(foreign_source=FS)
         requisition_xml = client.post_requisition.call_args.args[0]
         self.assertIn(f"netbox-device-{self.device.pk}".encode(), requisition_xml)
+
+
+class CheckServerHealthJobTest(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.good = OpenNMSServer.objects.create(name="Good", url="https://good.example")
+        cls.bad = OpenNMSServer.objects.create(name="Bad", url="https://bad.example")
+
+    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
+    def test_checks_every_server_independently(self, mock_from_server):
+        def from_server(server):
+            client = mock.Mock()
+            client.__enter__ = mock.Mock(return_value=client)
+            client.__exit__ = mock.Mock(return_value=False)
+            if server.pk == self.bad.pk:
+                client.test_connection.side_effect = OpenNMSError("unreachable")
+            return client
+
+        mock_from_server.side_effect = from_server
+        CheckServerHealthJob(job=mock.Mock()).run()
+
+        self.good.refresh_from_db()
+        self.bad.refresh_from_db()
+        self.assertEqual(self.good.last_check_status, "ok")
+        self.assertEqual(self.bad.last_check_status, "failed")
+        self.assertIn("unreachable", self.bad.last_check_message)
+
+    def test_registered_as_recurring_system_job(self):
+        from netbox.registry import registry
+
+        from netbox_opennms.jobs import HEALTH_CHECK_INTERVAL_MINUTES
+
+        self.assertIn(CheckServerHealthJob, registry["system_jobs"])
+        self.assertEqual(
+            registry["system_jobs"][CheckServerHealthJob]["interval"],
+            HEALTH_CHECK_INTERVAL_MINUTES,
+        )

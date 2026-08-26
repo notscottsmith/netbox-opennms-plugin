@@ -230,7 +230,7 @@ docker compose --profile opennms up -d</code></pre>
     </figure>
 
     <h3>Do a sync (Web UI)</h3>
-    <p>Open <code>http://localhost:8000/</code> (admin / admin) → <b>Plugins → NetBox
+    <p>Open <code>http://localhost:8000/</code> (admin / admin) → <b>Plugins →
       OpenNMS</b>:</p>
     <ol>
       <li><em>(or run <code>./seed.sh</code> and skip to step 4)</em> Create the
@@ -248,9 +248,13 @@ docker compose --profile opennms up -d</code></pre>
         name.</li>
     </ol>
     <div class="note">
-      Test connectivity first at <b>Connect OpenNMS</b>
-      (<code>/plugins/opennms/connection-test/</code>) — it probes reachability +
-      credentials before you sync.
+      Test connectivity first — a <b>Test connection</b> action is built into the
+      <b>Servers</b> list, each Server's detail page, and its add/edit form. It
+      probes reachability + credentials, persists an OK/Failed badge on the
+      Server, and (on success) populates the add/edit form's Default location
+      dropdown from OpenNMS's live location list. A Server last known to have
+      failed hard-blocks Sync/Remove/Move until it passes again; an hourly
+      background job re-checks every Server automatically.
     </div>
 
     <h3>Point at your own OpenNMS</h3>

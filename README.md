@@ -183,7 +183,7 @@ new plugin version, bump `image.tag`, and `helm upgrade`.
 Plugin-wide behaviour is set in `PLUGINS_CONFIG`; the OpenNMS connection itself
 (URL, credentials, optional headers, default monitoring location) is **not** —
 it lives on one or more **OpenNMS Server** records, managed from the NetBox
-UI/API (**Plugins → NetBox OpenNMS → OpenNMS Servers**), so an MSP-style NetBox
+UI/API (**Plugins → OpenNMS → Servers**), so an MSP-style NetBox
 instance can point different tenants/sites/locations at different OpenNMS
 instances. Credentials and headers are encrypted at rest with the Fernet key
 below — never stored in plaintext.
@@ -226,9 +226,18 @@ Scope bindings (or **Monitoring Exclusions**, the equivalent scope hierarchy for
 excluding a whole tenant/site/location from monitoring) are adjusted so every
 member agrees on one Server.
 
-You can verify a Server's connection from the UI at **Plugins → NetBox OpenNMS
-→ Connect OpenNMS** (permission-gated; it tests the stored connection and never
-persists anything you type in).
+Connection testing is built into the Servers area itself (permission-gated on
+`change_opennmsserver`): a **Test connection** action on the Servers list row,
+the Server detail page, and the add/edit form. The result is persisted onto
+the Server (visible as an OK/Failed/Untested badge everywhere) and an hourly
+background job (`CheckServerHealthJob`, needs an RQ worker) re-checks every
+Server automatically. A Server whose last known check explicitly **failed**
+hard-blocks Sync/Remove/Move against it — a never-checked Server is not
+blocked, only a confirmed-unreachable one. The add/edit form's **Default
+location** is a dropdown populated from the live OpenNMS location list
+(`Test connection` fetches it) — greyed out until a successful test in that
+browser session; an existing Server's saved location is unaffected by an
+ordinary save that doesn't re-test.
 
 ### `import_mode` values
 

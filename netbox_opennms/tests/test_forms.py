@@ -199,6 +199,31 @@ class OpenNMSServerFormTest(TestCase):
         )
         self.assertTrue(form.is_valid(), form.errors)
 
+    def test_default_location_choices_seeded_from_current_value(self):
+        server = OpenNMSServer.objects.create(
+            name="Existing", url="https://existing.example",
+            default_location="edge-1",
+        )
+        form = OpenNMSServerForm(instance=server)
+        self.assertIn(
+            ("edge-1", "edge-1"), form.fields["default_location"].widget.choices
+        )
+
+    def test_new_server_has_no_default_location_choices(self):
+        form = OpenNMSServerForm()
+        self.assertEqual(list(form.fields["default_location"].widget.choices), [])
+
+    def test_default_location_value_outside_choices_still_saves(self):
+        # A value the JS added client-side after "Test connection" (not among the
+        # server-rendered <option>s) must still validate and save (CharField).
+        form = OpenNMSServerForm(
+            data=self._data(default_location="edge-9-not-in-choices")
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(
+            form.cleaned_data["default_location"], "edge-9-not-in-choices"
+        )
+
 
 class InterfaceServicePruneTest(TestCase):
     @classmethod

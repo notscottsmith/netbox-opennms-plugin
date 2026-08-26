@@ -281,6 +281,36 @@ class OpenNMSServerTest(TestCase):
         self.assertEqual(server.password, "hunter2")
         self.assertEqual(server.headers, {"CF-Access-Client-Secret": "shh"})
 
+    def test_is_healthy_when_never_checked(self):
+        server = OpenNMSServer.objects.create(name="Acme", url="https://onms.example")
+        self.assertEqual(server.last_check_status, "unknown")
+        self.assertTrue(server.is_healthy)
+
+    def test_record_check_result_ok_clears_message(self):
+        server = OpenNMSServer.objects.create(
+            name="Acme", url="https://onms.example",
+            last_check_status="failed", last_check_message="boom",
+        )
+        server.record_check_result(True)
+        self.assertEqual(server.last_check_status, "ok")
+        self.assertEqual(server.last_check_message, "")
+        self.assertIsNotNone(server.last_check_time)
+        self.assertTrue(server.is_healthy)
+
+    def test_record_check_result_failure_keeps_message(self):
+        server = OpenNMSServer.objects.create(name="Acme", url="https://onms.example")
+        server.record_check_result(False, "connection refused")
+        self.assertEqual(server.last_check_status, "failed")
+        self.assertEqual(server.last_check_message, "connection refused")
+        self.assertFalse(server.is_healthy)
+
+    def test_record_check_result_persists(self):
+        server = OpenNMSServer.objects.create(name="Acme", url="https://onms.example")
+        server.record_check_result(False, "boom")
+        server.refresh_from_db()
+        self.assertEqual(server.last_check_status, "failed")
+        self.assertEqual(server.last_check_message, "boom")
+
 
 class MonitoringExclusionTest(TestCase):
     def test_str_falls_back_to_a_placeholder(self):

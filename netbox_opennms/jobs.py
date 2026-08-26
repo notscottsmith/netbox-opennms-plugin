@@ -56,6 +56,10 @@ PLUGIN_NAME = "netbox_opennms"
 # evaluated at import, before plugin config is available; operators disable the
 # pass entirely via the ``reconcile_orphans`` config flag, not the cadence.
 RECONCILE_INTERVAL_MINUTES = 60
+# How often each OpenNMS Server's health is checked (minutes). Underpins the
+# Sync/Remove/Move hard-block in SyncForeignSourceJob, so unlike the
+# reconciler this has no config opt-out — it must always run.
+HEALTH_CHECK_INTERVAL_MINUTES = 60
 
 
 def unknown_locations(client, locations):
@@ -180,6 +184,18 @@ class SyncForeignSourceJob(JobRunner):
                 "OpenNMS Server — skipped."
             )
             return False
+
+        # Hard-block: a Server whose last known health check explicitly FAILED
+        # refuses every Sync/Remove/Move (this method is the single entry point
+        # for all three) until the connection is restored — a never-checked
+        # Server ("unknown") is not blocked, only one confirmed unreachable.
+        if server.last_check_status == "failed":
+            self.logger.error(
+                f"Server {server.name!r} is marked unhealthy "
+                f"({server.last_check_message or 'no detail'}) — refusing sync "
+                "until the connection is restored."
+            )
+            raise JobFailed()
 
         default_location = server.default_location
         if default_location:
@@ -456,3 +472,32 @@ class ReconcileOrphansJob(JobRunner):
                 )
         if not any_orphans:
             self.logger.info("reconcile: no orphaned Foreign Sources.")
+
+
+@system_job(interval=HEALTH_CHECK_INTERVAL_MINUTES)
+class CheckServerHealthJob(JobRunner):
+    """Periodically test every OpenNMS Server and record the result.
+
+    Drives the Servers list/detail status badge and the Sync/Remove/Move
+    hard-block in ``SyncForeignSourceJob`` — a Server unreachable at the last
+    check refuses further syncs until this (or a manual "Test connection")
+    confirms it's back. Best-effort per Server: one failing Server doesn't
+    stop the others from being checked.
+    """
+
+    class Meta:
+        name = "OpenNMS server health check"
+
+    def run(self, *args, **kwargs):
+        for server in OpenNMSServer.objects.all():
+            try:
+                with OpenNMSClient.from_server(server) as client:
+                    client.test_connection()
+            except OpenNMSError as exc:
+                server.record_check_result(False, str(exc))
+                self.logger.warning(
+                    f"Server {server.name!r} health check failed: {exc}"
+                )
+            else:
+                server.record_check_result(True)
+                self.logger.info(f"Server {server.name!r} health check OK.")

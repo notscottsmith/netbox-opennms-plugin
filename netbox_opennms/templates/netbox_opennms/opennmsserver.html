@@ -16,6 +16,24 @@
           <tr><th scope="row">Headers</th><td>{% if object.headers %}Configured{% else %}{{ ''|placeholder }}{% endif %}</td></tr>
           <tr><th scope="row">Default location</th><td>{{ object.default_location|placeholder }}</td></tr>
           <tr><th scope="row">Default Server</th><td>{% checkmark object.is_default %}</td></tr>
+          <tr>
+            <th scope="row">Connection status</th>
+            <td>
+              {% if object.last_check_status == "ok" %}
+                <span class="badge text-bg-green">OK</span>
+              {% elif object.last_check_status == "failed" %}
+                <span class="badge text-bg-red" title="{{ object.last_check_message }}">Failed</span>
+                {% if object.last_check_message %}<div class="small text-danger mt-1">{{ object.last_check_message }}</div>{% endif %}
+              {% else %}
+                <span class="badge text-bg-secondary">Untested</span>
+              {% endif %}
+              {% if object.last_check_time %}<div class="small text-muted mt-1">Last checked {{ object.last_check_time }}</div>{% endif %}
+              <form method="post" action="{% url 'plugins:netbox_opennms:opennmsserver_test' object.pk %}" class="mt-2">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-sm btn-outline-primary">Test connection</button>
+              </form>
+            </td>
+          </tr>
         </table>
       </div>
     </div>

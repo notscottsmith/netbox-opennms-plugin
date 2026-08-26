@@ -18,6 +18,7 @@ from django.contrib.contenttypes.fields import GenericForeignKey
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.urls import reverse
+from django.utils import timezone
 from netbox.models import NetBoxModel
 
 from .choices import (
@@ -593,6 +594,20 @@ class OpenNMSServer(NetBoxModel):
         default=False,
         help_text="Fallback Server used when no Scope binding matches an object.",
     )
+    # Health check state (manual "Test connection" + hourly CheckServerHealthJob):
+    # "failed" hard-blocks Sync/Remove/Move against this Server (SyncForeignSourceJob).
+    # "unknown" (never checked) does not block — only a confirmed failure does.
+    last_check_status = models.CharField(
+        max_length=10,
+        choices=(
+            ("unknown", "Unknown"),
+            ("ok", "OK"),
+            ("failed", "Failed"),
+        ),
+        default="unknown",
+    )
+    last_check_time = models.DateTimeField(null=True, blank=True)
+    last_check_message = models.CharField(max_length=500, blank=True, default="")
     tenant_groups = models.ManyToManyField(
         to="tenancy.TenantGroup", blank=True, related_name="+"
     )
@@ -613,6 +628,22 @@ class OpenNMSServer(NetBoxModel):
 
     def get_absolute_url(self):
         return reverse("plugins:netbox_opennms:opennmsserver", args=[self.pk])
+
+    def record_check_result(self, ok, message=""):
+        """Persist a connection-test outcome (manual test or the hourly health
+        check job) — the single write path so both stay consistent."""
+        self.last_check_status = "ok" if ok else "failed"
+        self.last_check_time = timezone.now()
+        self.last_check_message = "" if ok else message
+        self.save(
+            update_fields=["last_check_status", "last_check_time", "last_check_message"]
+        )
+
+    @property
+    def is_healthy(self):
+        """False only once a check has explicitly failed — never-checked ("unknown")
+        is not treated as unhealthy (see SyncForeignSourceJob's health guard)."""
+        return self.last_check_status != "failed"
 
     def clean(self):
         super().clean()

@@ -21,7 +21,7 @@ class NetBoxOpenNMSConfig(PluginConfig):
     """
 
     name = "netbox_opennms"
-    verbose_name = "NetBox OpenNMS"
+    verbose_name = "OpenNMS"
     description = (
         "Provision NetBox devices and virtual machines into OpenNMS "
         "via the REST provisioning API."

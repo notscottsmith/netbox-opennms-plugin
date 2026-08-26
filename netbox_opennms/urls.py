@@ -78,6 +78,16 @@ urlpatterns = (
     *_crud("asset-mappings", "assetmapping", "AssetMapping", AssetMapping),
     *_crud("metadata-entries", "metadataentry", "MetadataEntry", MetadataEntry),
     *_crud("opennms-servers", "opennmsserver", "OpenNMSServer", OpenNMSServer),
+    path(
+        "opennms-servers/<int:pk>/test/",
+        views.OpenNMSServerTestView.as_view(),
+        name="opennmsserver_test",
+    ),
+    path(
+        "opennms-servers/test-ajax/",
+        views.OpenNMSServerTestAjaxView.as_view(),
+        name="opennmsserver_test_ajax",
+    ),
     *_crud("monitoring-exclusions", "monitoringexclusion", "MonitoringExclusion",
            MonitoringExclusion),
     path(
@@ -94,10 +104,5 @@ urlpatterns = (
         "sync/foreign-source/",
         views.ForeignSourceSyncView.as_view(),
         name="foreign_source_sync",
-    ),
-    path(
-        "connection-test/",
-        views.OpenNMSConnectionTestView.as_view(),
-        name="connection_test",
     ),
 )

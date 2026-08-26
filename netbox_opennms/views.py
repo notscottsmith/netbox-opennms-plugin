@@ -2,10 +2,12 @@
 # SPDX-License-Identifier: MIT
 """UI views for plugin models (Requisition redesign)."""
 
+import json
 from copy import deepcopy
 
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin, PermissionRequiredMixin
+from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.generic import View
 from netbox.views import generic
@@ -593,40 +595,80 @@ class SyncPreviewView(LoginRequiredMixin, View):
         )
 
 
-class OpenNMSConnectionTestView(PermissionRequiredMixin, View):
-    """"Connect OpenNMS" page: verify each configured Server's connection.
+class OpenNMSServerTestView(PermissionRequiredMixin, View):
+    """Test an already-saved Server's connection from the list row or detail page.
 
-    One row per ``OpenNMSServer`` (ADR 0002), showing its effective URL/username
-    (never the password) read-only and a per-row "Test connection" button.
-    Credentials/headers live on the Server row, encrypted at rest (ADR 0005);
-    this view accepts no user-supplied URL or credentials and stores nothing.
-    Permission-gated, like the dry-run, because it issues an outbound call with
-    stored credentials.
+    Persists the outcome onto the Server row (``record_check_result``) so it's
+    visible as a badge everywhere and feeds ``SyncForeignSourceJob``'s health
+    guard — unlike the old standalone "Connect OpenNMS" page, this result is
+    not a one-shot flash message.
     """
 
-    permission_required = "netbox_opennms.view_requisition"
-    template_name = "netbox_opennms/connection_test.html"
+    permission_required = "netbox_opennms.change_opennmsserver"
 
-    def get(self, request):
-        return render(
-            request,
-            self.template_name,
-            {"servers": OpenNMSServer.objects.order_by("name")},
-        )
-
-    def post(self, request):
-        server = get_object_or_404(OpenNMSServer, pk=request.POST.get("server_id"))
+    def post(self, request, pk):
+        server = get_object_or_404(OpenNMSServer, pk=pk)
         try:
             with OpenNMSClient.from_server(server) as client:
                 client.test_connection()
         except OpenNMSError as exc:
+            server.record_check_result(ok=False, message=str(exc))
             messages.error(
                 request, f"OpenNMS connection to {server.name!r} failed: {exc}"
             )
         else:
+            server.record_check_result(ok=True)
             messages.success(
                 request,
                 f"OpenNMS connection to {server.name!r} OK — reachable and "
                 "credentials accepted.",
             )
-        return redirect("plugins:netbox_opennms:connection_test")
+        return_url = request.META.get("HTTP_REFERER") or server.get_absolute_url()
+        return redirect(return_url)
+
+
+class OpenNMSServerTestAjaxView(PermissionRequiredMixin, View):
+    """JSON connection test for the add/edit Server form (server_test_connection.js).
+
+    Unlike ``OpenNMSServerTestView``, this tests the *posted* url/username/
+    password/headers — not a saved row — so it works before a new Server has
+    been saved. When ``server_id`` is present (editing an existing Server) the
+    outcome is also persisted via ``record_check_result``, same as the
+    synchronous test, so testing from the edit form keeps the badge current
+    too. On success, returns the live location list
+    (``OpenNMSClient.list_locations()``) for the ``default_location`` dropdown.
+    """
+
+    permission_required = "netbox_opennms.change_opennmsserver"
+
+    def post(self, request):
+        server_id = request.POST.get("server_id")
+        try:
+            headers = json.loads(request.POST.get("headers") or "{}")
+            if not isinstance(headers, dict):
+                raise ValueError("headers must be a JSON object")
+        except ValueError as exc:
+            return JsonResponse({"ok": False, "message": f"Invalid headers: {exc}"})
+
+        client = OpenNMSClient(
+            base_url=request.POST.get("url", ""),
+            username=request.POST.get("username", ""),
+            password=request.POST.get("password", ""),
+        )
+        if headers:
+            client._session.headers.update(headers)
+
+        try:
+            with client:
+                client.test_connection()
+                locations = sorted(client.list_locations())
+        except OpenNMSError as exc:
+            if server_id:
+                get_object_or_404(OpenNMSServer, pk=server_id).record_check_result(
+                    ok=False, message=str(exc)
+                )
+            return JsonResponse({"ok": False, "message": str(exc)})
+
+        if server_id:
+            get_object_or_404(OpenNMSServer, pk=server_id).record_check_result(ok=True)
+        return JsonResponse({"ok": True, "locations": locations})
