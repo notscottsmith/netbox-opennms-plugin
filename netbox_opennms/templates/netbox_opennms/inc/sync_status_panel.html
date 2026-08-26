@@ -1,9 +1,11 @@
 {# Copyright 2026 Ronny Trommer <ronny@no42.org> #}
 {# SPDX-License-Identifier: MIT #}
-{# Last-sync panel (Story 4.2). Expects `sync_status` in context: a dict
-   with `foreign_source`, `requisition`, `governed`, `excluded`, `conflicts`
-   (list of requisition names when the object is matched by ≥2 filters), `job`,
-   `outcome` (label, color) — or None. Shown on the Device/VM detail page. #}
+{% comment %}
+Last-sync panel (Story 4.2). Expects `sync_status` in context: a dict
+with `foreign_source`, `requisition`, `governed`, `excluded`, `conflicts`
+(list of requisition names when the object is matched by ≥2 filters), `job`,
+`outcome` (label, color) — or None. Shown on the Device/VM detail page.
+{% endcomment %}
 {% load helpers %}
 <div class="card">
   <h2 class="card-header">OpenNMS Sync Status</h2>
