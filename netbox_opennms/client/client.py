@@ -233,6 +233,19 @@ class OpenNMSClient:
         """
         return self._get_json_or_none(f"/api/v2/nodes/{node_id}")
 
+    def get_node_links(self, node_id):
+        """A node's discovered neighbor links (Node Links tab, issue #15).
+
+        ``GET /api/v2/enlinkd/{id}`` → an ``EnlinkdDTO`` combining every
+        discovery protocol (LLDP/CDP/bridge/OSPF/IS-IS) OpenNMS' ``enlinkd``
+        service holds for the node, or ``None`` if the node doesn't exist. This
+        endpoint isn't in the OpenNMS REST API docs; confirmed against
+        ``NodeLinkRestApi``/``NodeLinkRestService`` in the OpenNMS source (Horizon
+        36), same 404-on-missing-node contract as ``get_node``. Parsing the
+        payload into a flat link list is ``node_links.parse_node_links``.
+        """
+        return self._get_json_or_none(f"/api/v2/enlinkd/{node_id}")
+
     def list_ip_interfaces(self, node_id):
         """A node's IP interfaces (Discovery scan, issue #7).
 

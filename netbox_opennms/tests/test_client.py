@@ -428,6 +428,25 @@ class OpenNMSClientTest(SimpleTestCase):
         self.assertIsNone(_client().get_node(1))
 
     @mock.patch.object(requests.Session, "request")
+    def test_get_node_links_returns_json(self, mock_request):
+        mock_request.return_value = mock.Mock(
+            status_code=200,
+            ok=True,
+            json=mock.Mock(return_value={"lldpLinkNodes": [{"lldpLocalPort": "1"}]}),
+        )
+        self.assertEqual(
+            _client().get_node_links(1), {"lldpLinkNodes": [{"lldpLocalPort": "1"}]}
+        )
+        method, url = mock_request.call_args.args
+        self.assertEqual(method, "GET")
+        self.assertEqual(url, "https://onms.example/opennms/api/v2/enlinkd/1")
+
+    @mock.patch.object(requests.Session, "request")
+    def test_get_node_links_404_returns_none(self, mock_request):
+        mock_request.return_value = mock.Mock(status_code=404, ok=False)
+        self.assertIsNone(_client().get_node_links(1))
+
+    @mock.patch.object(requests.Session, "request")
     def test_list_ip_interfaces_parses_wrapped_form(self, mock_request):
         mock_request.return_value = mock.Mock(
             status_code=200,

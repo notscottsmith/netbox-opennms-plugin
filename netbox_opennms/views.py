@@ -5,7 +5,7 @@
 import json
 from copy import deepcopy
 
-from dcim.models import Site
+from dcim.models import Device, Site
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin, PermissionRequiredMixin
 from django.contrib.contenttypes.models import ContentType
@@ -15,10 +15,11 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.views.generic import View
 from netbox.views import generic
 from utilities.rqworker import any_workers_for_queue
-from utilities.views import GetReturnURLMixin
+from utilities.views import GetReturnURLMixin, ViewTab, register_model_view
+from virtualization.models import VirtualMachine
 
 from . import filtersets, forms, import_node, tables
-from .client import OpenNMSClient, OpenNMSError
+from .client import OpenNMSClient, OpenNMSError, parse_node_links
 from .dryrun import dry_run
 from .jobs import (
     SyncForeignSourceJob,
@@ -1042,3 +1043,67 @@ class OpenNMSServerTestAjaxView(PermissionRequiredMixin, View):
         if server_id:
             get_object_or_404(OpenNMSServer, pk=server_id).record_check_result(ok=True)
         return JsonResponse({"ok": True, "locations": locations})
+
+
+# --- Node Links tab (issue #15) ----------------------------------------------
+
+
+def _node_links_payload(instance):
+    """This Device/VM's discovered-links payload, cached on *instance*.
+
+    ``{% model_view_tabs object %}`` (``generic/object.html``) evaluates every
+    registered tab's ``badge`` callable on *every* page of the model, not just
+    this tab's own page — so without caching, opening this tab would fetch the
+    same OpenNMS data twice in one request (once for its own tab-bar badge,
+    once for ``get_extra_context``). Caching on ``instance`` works because
+    ``get_extra_context`` always runs, for the same instance, before the
+    template (and its tab bar) renders.
+    """
+    if hasattr(instance, "_opennms_node_links_payload"):
+        return instance._opennms_node_links_payload
+    payload = None
+    node = DiscoveredNode.for_object(instance)
+    if node is not None:
+        try:
+            with OpenNMSClient.from_server(node.server) as client:
+                payload = client.get_node_links(node.opennms_node_id)
+        except OpenNMSError:
+            payload = None
+    instance._opennms_node_links_payload = payload
+    return payload
+
+
+def _node_links_badge(instance):
+    return len(parse_node_links(_node_links_payload(instance))) or None
+
+
+class _NodeLinksView(generic.ObjectView):
+    """OpenNMS-discovered neighbor links for a Device/VirtualMachine (#15).
+
+    Reachable only via the provenance mapping a manual link (#8) or import (#9)
+    establishes (``DiscoveredNode.for_object``). The tab itself is hidden
+    unless that mapping exists *and* OpenNMS currently reports at least one
+    link for the node — a falsy badge plus ``hide_if_empty`` hides it, rather
+    than showing an empty page for every other Device/VM.
+    """
+
+    tab = ViewTab(label="Node Links", badge=_node_links_badge, hide_if_empty=True)
+    template_name = "netbox_opennms/node_links_tab.html"
+
+    def get_extra_context(self, request, instance):
+        return {
+            "discovered_node": DiscoveredNode.for_object(instance),
+            "links": parse_node_links(_node_links_payload(instance)),
+        }
+
+
+@register_model_view(Device, name="opennms_node_links", path="opennms-node-links")
+class DeviceNodeLinksView(_NodeLinksView):
+    queryset = Device.objects.all()
+
+
+@register_model_view(
+    VirtualMachine, name="opennms_node_links", path="opennms-node-links"
+)
+class VirtualMachineNodeLinksView(_NodeLinksView):
+    queryset = VirtualMachine.objects.all()

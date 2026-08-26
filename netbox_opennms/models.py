@@ -15,6 +15,7 @@ changes ``requisition-redesign`` (R1–R8) and ``replace-priority-with-conflicts
 """
 
 from django.contrib.contenttypes.fields import GenericForeignKey
+from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.urls import reverse
@@ -808,6 +809,19 @@ class DiscoveredNode(NetBoxModel):
 
     def get_absolute_url(self):
         return reverse("plugins:netbox_opennms:discoverednode", args=[self.pk])
+
+    @classmethod
+    def for_object(cls, target):
+        """The Discovery row (if any) matched to *target* (a Device/VM).
+
+        The reverse of ``matched_object`` — a ``GenericForeignKey`` can't be
+        queried backwards without going through its content type explicitly.
+        Used by the Node Links tab (#15) to find a Device's OpenNMS node.
+        """
+        content_type = ContentType.objects.get_for_model(type(target))
+        return cls.objects.filter(
+            matched_object_type=content_type, matched_object_id=target.pk
+        ).first()
 
     def link_to(self, target):
         """Manually resolve this row to *target* (a Device or VirtualMachine).

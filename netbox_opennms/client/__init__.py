@@ -10,6 +10,7 @@ from .errors import (
     OpenNMSHTTPError,
     OpenNMSTransportError,
 )
+from .node_links import DiscoveredLink, parse_node_links
 
 __all__ = [
     "OpenNMSClient",
@@ -20,4 +21,6 @@ __all__ = [
     "DiscoveredParam",
     "DiscoveredPlugin",
     "parse_plugins",
+    "DiscoveredLink",
+    "parse_node_links",
 ]

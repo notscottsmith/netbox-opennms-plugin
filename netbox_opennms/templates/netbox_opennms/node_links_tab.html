@@ -1,0 +1,51 @@
+{# Copyright 2026 Ronny Trommer <ronny@no42.org> #}
+{# SPDX-License-Identifier: MIT #}
+{% extends 'generic/object.html' %}
+{% load helpers %}
+
+{% block content %}
+  <div class="row">
+    <div class="col col-md-12">
+      <div class="card">
+        <h2 class="card-header">
+          OpenNMS Node Links
+          {% if discovered_node %}
+            <span class="float-end">
+              Discovered node: {{ discovered_node|linkify }}
+            </span>
+          {% endif %}
+        </h2>
+        {% if not discovered_node %}
+          <div class="card-body text-muted">
+            No OpenNMS Discovery match for this object.
+          </div>
+        {% elif not links %}
+          <div class="card-body text-muted">
+            OpenNMS reports no neighbor links for this node.
+          </div>
+        {% else %}
+          <table class="table table-hover">
+            <thead>
+              <tr>
+                <th>Protocol</th>
+                <th>Local port</th>
+                <th>Remote device</th>
+                <th>Remote port</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for link in links %}
+                <tr>
+                  <td>{{ link.protocol }}</td>
+                  <td>{{ link.local_port|placeholder }}</td>
+                  <td>{{ link.remote_device|placeholder }}</td>
+                  <td>{{ link.remote_port|placeholder }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+{% endblock %}
