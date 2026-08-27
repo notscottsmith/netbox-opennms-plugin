@@ -53,7 +53,12 @@ from .models import (
     MonitoringOverride,
     OpenNMSServer,
 )
-from .scan import scan_discovery, upsert_discovered_nodes, walk_node
+from .scan import (
+    scan_discovery,
+    scans_due_for_cleanup,
+    upsert_discovered_nodes,
+    walk_node,
+)
 from .translation import (
     RenderError,
     render_foreign_source_definition,
@@ -621,4 +626,49 @@ class PollDiscoveryScansJob(JobRunner):
         except OpenNMSError as exc:
             self.logger.warning(
                 f"walk skipped for Discovery Scan {scan} — OpenNMS error: {exc}"
+            )
+
+
+@system_job(interval=DISCOVERY_POLL_INTERVAL_MINUTES)
+class CleanupDiscoveryScansJob(JobRunner):
+    """Delete the OpenNMS-side data for Discovery Scans past their retention
+    window (issue #29, ADR 0006 — the retention half of the same lifecycle
+    ``PollDiscoveryScansJob`` polls and settles).
+
+    Once a scan has been settled for ``discovery_retention_minutes``, its
+    OpenNMS-side nodes (tied to the scan's throwaway Foreign Source) are
+    removed via the existing ``delete_requisition`` (deployed-then-pending
+    two-step delete) — the only way to clear nodes tied to a Foreign Source,
+    since v2's ``NodeRestService`` exposes no node-level ``DELETE``. The
+    NetBox-side ``DiscoveredNode`` rows the scan produced are left
+    untouched — only OpenNMS's own copy is cleaned up. ``cleaned_up_at``
+    marks a scan done so cleanup is never repeated for it.
+
+    Best-effort per scan, like ``PollDiscoveryScansJob``: an OpenNMS outage
+    on one scan's Server logs and continues to the next, so a transient
+    failure is retried next interval rather than blocking the others.
+    """
+
+    class Meta:
+        name = "OpenNMS discovery scan cleanup"
+
+    def run(self, *args, **kwargs):
+        retention_minutes = int(
+            get_plugin_config(PLUGIN_NAME, "discovery_retention_minutes")
+        )
+        due = scans_due_for_cleanup(timedelta(minutes=retention_minutes))
+        for scan in due:
+            try:
+                with OpenNMSClient.from_server(scan.server) as client:
+                    client.delete_requisition(scan.foreign_source)
+            except OpenNMSError as exc:
+                self.logger.warning(
+                    f"cleanup skipped for Discovery Scan {scan} — OpenNMS "
+                    f"error: {exc}"
+                )
+                continue
+            scan.cleaned_up_at = timezone.now()
+            scan.save(update_fields=["cleaned_up_at"])
+            self.logger.info(
+                f"Discovery Scan {scan} cleaned up (retention window elapsed)."
             )

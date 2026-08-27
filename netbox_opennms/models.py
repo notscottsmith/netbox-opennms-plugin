@@ -779,6 +779,13 @@ class DiscoveryScan(NetBoxModel):
     # discovery_settle_idle_minutes) — never cleared, so a settled scan stays
     # settled and the poll stops re-fetching it.
     settled_at = models.DateTimeField(null=True, blank=True, editable=False)
+    # Set once CleanupDiscoveryScansJob has deleted this scan's OpenNMS-side
+    # requisition past discovery_retention_minutes (issue #29, ADR 0006) —
+    # never cleared, so cleanup is never repeated for the same scan. The
+    # DiscoveredNode rows this scan produced are NOT affected by cleanup;
+    # only the OpenNMS-side data tied to the throwaway Foreign Source is
+    # removed.
+    cleaned_up_at = models.DateTimeField(null=True, blank=True, editable=False)
 
     class Meta:
         ordering = ("-created",)

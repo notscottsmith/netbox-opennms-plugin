@@ -227,6 +227,25 @@ def walk_node(client, node, overrides):
     )
 
 
+def scans_due_for_cleanup(retention_window, *, now=None):
+    """``DiscoveryScan`` rows past retention, not yet cleaned up (issue #29).
+
+    A scan qualifies once it is settled (``settled_at`` set — never before)
+    AND that settle time is at least *retention_window* in the past AND it
+    hasn't already been cleaned up (``cleaned_up_at`` still unset) — mirrors
+    the retention half of ADR 0006's Discovery Scan lifecycle. Defaults *now*
+    to ``timezone.now()``.
+    """
+    from .models import DiscoveryScan
+
+    now = now or timezone.now()
+    return DiscoveryScan.objects.filter(
+        settled_at__isnull=False,
+        settled_at__lte=now - retention_window,
+        cleaned_up_at__isnull=True,
+    )
+
+
 def upsert_discovered_nodes(server, matches, *, discovery_scan=None):
     """Upsert *matches* as ``DiscoveredNode`` rows for *server*, keyed on
     ``(server, opennms_node_id)`` (issue #7), and delete any row for a node no

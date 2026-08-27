@@ -59,6 +59,12 @@ class NetBoxOpenNMSConfig(PluginConfig):
         # before PollDiscoveryScansJob infers it has settled (issue #27,
         # ADR 0006 — OpenNMS gives no job-status endpoint to ask directly).
         "discovery_settle_idle_minutes": "5",
+        # How long (minutes) after a Discovery Scan settles before
+        # CleanupDiscoveryScansJob deletes its OpenNMS-side throwaway
+        # requisition (issue #29, ADR 0006). Default 1440 (24h) — long enough
+        # for an operator to review the scan's DiscoveredNode rows against
+        # OpenNMS's own data before it's removed there.
+        "discovery_retention_minutes": "1440",
     }
 
     def ready(self):

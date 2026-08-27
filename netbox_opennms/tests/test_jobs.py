@@ -22,6 +22,7 @@ from ipam.models import IPAddress
 from netbox_opennms.client import OpenNMSError, OpenNMSHTTPError
 from netbox_opennms.jobs import (
     CheckServerHealthJob,
+    CleanupDiscoveryScansJob,
     PollDiscoveryScansJob,
     ReconcileOrphansJob,
     SyncForeignSourceJob,
@@ -825,5 +826,124 @@ class PollDiscoveryScansJobTest(TestCase):
         self.assertIn(PollDiscoveryScansJob, registry["system_jobs"])
         self.assertEqual(
             registry["system_jobs"][PollDiscoveryScansJob]["interval"],
+            DISCOVERY_POLL_INTERVAL_MINUTES,
+        )
+
+
+class CleanupDiscoveryScansJobTest(TestCase):
+    """Tests for the retention-window cleanup half of ADR 0006 (issue #29)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.server = OpenNMSServer.objects.create(
+            name="Acme", url="https://onms.example", username="svc", password="x"
+        )
+        cls.requisition = Requisition.objects.create(name="perth-discovery")
+
+    def _scan(self, *, server=None, settled_minutes_ago=None, cleaned_up=False):
+        scan = DiscoveryScan.objects.create(
+            server=server or self.server,
+            requisition=self.requisition,
+            location="Perth",
+            ip_range_begin="10.0.0.1",
+            ip_range_end="10.0.0.10",
+        )
+        update = {}
+        if settled_minutes_ago is not None:
+            update["settled_at"] = timezone.now() - timedelta(
+                minutes=settled_minutes_ago
+            )
+        if cleaned_up:
+            update["cleaned_up_at"] = timezone.now()
+        if update:
+            DiscoveryScan.objects.filter(pk=scan.pk).update(**update)
+        scan.refresh_from_db()
+        return scan
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_deletes_requisition_for_scan_past_retention(self, mock_from_server):
+        # default discovery_retention_minutes is 1440 (24h)
+        scan = self._scan(settled_minutes_ago=1500)
+        client = mock_from_server.return_value.__enter__.return_value
+
+        CleanupDiscoveryScansJob(job=mock.Mock()).run()
+
+        client.delete_requisition.assert_called_once_with(scan.foreign_source)
+        scan.refresh_from_db()
+        self.assertIsNotNone(scan.cleaned_up_at)
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_skips_unsettled_scan(self, mock_from_server):
+        self._scan(settled_minutes_ago=None)
+        client = mock_from_server.return_value.__enter__.return_value
+
+        CleanupDiscoveryScansJob(job=mock.Mock()).run()
+
+        client.delete_requisition.assert_not_called()
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_skips_scan_within_retention_window(self, mock_from_server):
+        self._scan(settled_minutes_ago=10)
+        client = mock_from_server.return_value.__enter__.return_value
+
+        CleanupDiscoveryScansJob(job=mock.Mock()).run()
+
+        client.delete_requisition.assert_not_called()
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_skips_already_cleaned_up_scan(self, mock_from_server):
+        self._scan(settled_minutes_ago=1500, cleaned_up=True)
+        client = mock_from_server.return_value.__enter__.return_value
+
+        CleanupDiscoveryScansJob(job=mock.Mock()).run()
+
+        client.delete_requisition.assert_not_called()
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_discovered_nodes_untouched_by_cleanup(self, mock_from_server):
+        scan = self._scan(settled_minutes_ago=1500)
+        node = DiscoveredNode.objects.create(
+            server=self.server,
+            discovery_scan=scan,
+            opennms_node_id=1,
+            label="rtr-1",
+            verdict="red",
+        )
+
+        CleanupDiscoveryScansJob(job=mock.Mock()).run()
+
+        self.assertTrue(DiscoveredNode.objects.filter(pk=node.pk).exists())
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_opennms_error_on_one_scan_does_not_block_others(self, mock_from_server):
+        bad_server = OpenNMSServer.objects.create(
+            name="Broken", url="https://broken.example", username="svc", password="x"
+        )
+        bad_scan = self._scan(server=bad_server, settled_minutes_ago=1500)
+        good_scan = self._scan(settled_minutes_ago=1500)
+
+        def from_server(server):
+            if server.pk == bad_server.pk:
+                raise OpenNMSError("unreachable")
+            return mock.MagicMock()
+
+        mock_from_server.side_effect = from_server
+
+        with self.assertLogs("netbox.jobs.CleanupDiscoveryScansJob", level="WARNING"):
+            CleanupDiscoveryScansJob(job=mock.Mock()).run()
+
+        bad_scan.refresh_from_db()
+        good_scan.refresh_from_db()
+        self.assertIsNone(bad_scan.cleaned_up_at)
+        self.assertIsNotNone(good_scan.cleaned_up_at)
+
+    def test_registered_as_recurring_system_job(self):
+        from netbox.registry import registry
+
+        from netbox_opennms.jobs import DISCOVERY_POLL_INTERVAL_MINUTES
+
+        self.assertIn(CleanupDiscoveryScansJob, registry["system_jobs"])
+        self.assertEqual(
+            registry["system_jobs"][CleanupDiscoveryScansJob]["interval"],
             DISCOVERY_POLL_INTERVAL_MINUTES,
         )
