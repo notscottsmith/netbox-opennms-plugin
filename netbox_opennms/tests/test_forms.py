@@ -204,6 +204,64 @@ class RequisitionScopePickerTest(TestCase):
         self.assertFalse(form.is_valid())
         self.assertIn("filter_params", form.errors)
 
+    def test_location_choices_sourced_from_resolved_target_server(self):
+        # Issue: default_location's dropdown was already fixed to seed from
+        # available_locations — the Requisition's own `location` field needs
+        # the same treatment, sourced from whichever Server it resolves to.
+        self.server_a.available_locations = ["edge-1", "edge-2"]
+        self.server_a.save(update_fields=["available_locations"])
+        Device.objects.create(
+            name="rtr-a", device_type=self.device_type, role=self.role, site=self.site_a
+        )
+        requisition = Requisition.objects.create(
+            name="scoped-to-a",
+            object_types="device",
+            filter_params={"site": [self.site_a.slug]},
+        )
+        form = RequisitionForm(instance=requisition)
+        self.assertEqual(
+            list(form.fields["location"].widget.choices),
+            [("", "---------"), ("edge-1", "edge-1"), ("edge-2", "edge-2")],
+        )
+
+    def test_location_choices_empty_for_new_requisition(self):
+        # No target Server resolved yet (never scoped, never deployed) — only
+        # the blank option is offered.
+        form = RequisitionForm()
+        self.assertEqual(
+            list(form.fields["location"].widget.choices), [("", "---------")]
+        )
+
+    def test_location_current_value_added_to_cached_choices(self):
+        # A value outside the cache (e.g. set before the cache existed, or the
+        # cache changed since) must still appear so the edit form doesn't
+        # silently drop it.
+        self.server_a.available_locations = ["edge-1"]
+        self.server_a.save(update_fields=["available_locations"])
+        Device.objects.create(
+            name="rtr-a", device_type=self.device_type, role=self.role, site=self.site_a
+        )
+        requisition = Requisition.objects.create(
+            name="scoped-to-a",
+            object_types="device",
+            filter_params={"site": [self.site_a.slug]},
+            location="edge-9",
+        )
+        form = RequisitionForm(instance=requisition)
+        self.assertEqual(
+            list(form.fields["location"].widget.choices),
+            [("", "---------"), ("edge-9", "edge-9"), ("edge-1", "edge-1")],
+        )
+
+    def test_location_value_outside_choices_still_saves(self):
+        # CharField doesn't validate against the widget's choices — a value the
+        # cache doesn't (yet) know about must still validate and save.
+        form = RequisitionForm(data=self._data(location="edge-9-not-in-choices"))
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(
+            form.cleaned_data["location"], "edge-9-not-in-choices"
+        )
+
 
 class MonitoredInterfaceValidationTest(TestCase):
     @classmethod
@@ -325,6 +383,36 @@ class OpenNMSServerFormTest(TestCase):
         self.assertTrue(form.is_valid(), form.errors)
         self.assertEqual(
             form.cleaned_data["default_location"], "edge-9-not-in-choices"
+        )
+
+    def test_default_location_choices_seeded_from_available_locations(self):
+        # The persisted list_locations() cache (populated by "Test connection")
+        # must seed the dropdown even when no default_location is set yet.
+        server = OpenNMSServer.objects.create(
+            name="Existing",
+            url="https://existing.example",
+            available_locations=["edge-1", "edge-2"],
+        )
+        form = OpenNMSServerForm(instance=server)
+        self.assertEqual(
+            list(form.fields["default_location"].widget.choices),
+            [("edge-1", "edge-1"), ("edge-2", "edge-2")],
+        )
+
+    def test_default_location_current_value_added_to_cached_choices(self):
+        # A current value outside the cache (e.g. the cache changed since it was
+        # picked) must still appear as a choice, alongside the cached ones.
+        server = OpenNMSServer.objects.create(
+            name="Existing",
+            url="https://existing.example",
+            default_location="edge-9",
+            available_locations=["edge-1", "edge-2"],
+        )
+        form = OpenNMSServerForm(instance=server)
+        choices = list(form.fields["default_location"].widget.choices)
+        self.assertEqual(
+            choices,
+            [("edge-9", "edge-9"), ("edge-1", "edge-1"), ("edge-2", "edge-2")],
         )
 
 

@@ -313,6 +313,20 @@ class OpenNMSServerTest(TestCase):
         self.assertEqual(server.last_check_status, "failed")
         self.assertEqual(server.last_check_message, "boom")
 
+    def test_record_check_result_persists_locations(self):
+        server = OpenNMSServer.objects.create(name="Acme", url="https://onms.example")
+        server.record_check_result(True, locations={"edge-2", "edge-1"})
+        server.refresh_from_db()
+        self.assertEqual(server.available_locations, ["edge-1", "edge-2"])
+
+    def test_record_check_result_without_locations_leaves_cache_untouched(self):
+        server = OpenNMSServer.objects.create(
+            name="Acme", url="https://onms.example", available_locations=["edge-1"]
+        )
+        server.record_check_result(False, "boom")
+        server.refresh_from_db()
+        self.assertEqual(server.available_locations, ["edge-1"])
+
 
 class MonitoringExclusionTest(TestCase):
     def test_str_falls_back_to_a_placeholder(self):

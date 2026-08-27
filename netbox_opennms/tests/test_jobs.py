@@ -537,6 +537,8 @@ class CheckServerHealthJobTest(TestCase):
             client.__exit__ = mock.Mock(return_value=False)
             if server.pk == self.bad.pk:
                 client.test_connection.side_effect = OpenNMSError("unreachable")
+            else:
+                client.list_locations.return_value = {"edge-2", "edge-1"}
             return client
 
         mock_from_server.side_effect = from_server
@@ -545,8 +547,20 @@ class CheckServerHealthJobTest(TestCase):
         self.good.refresh_from_db()
         self.bad.refresh_from_db()
         self.assertEqual(self.good.last_check_status, "ok")
+        self.assertEqual(self.good.available_locations, ["edge-1", "edge-2"])
         self.assertEqual(self.bad.last_check_status, "failed")
         self.assertIn("unreachable", self.bad.last_check_message)
+
+    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
+    def test_location_fetch_failure_does_not_fail_the_check(self, mock_from_server):
+        client = mock_from_server.return_value.__enter__.return_value
+        client.list_locations.side_effect = OpenNMSError("boom")
+
+        CheckServerHealthJob(job=mock.Mock()).run()
+
+        self.good.refresh_from_db()
+        self.assertEqual(self.good.last_check_status, "ok")
+        self.assertEqual(self.good.available_locations, [])
 
     def test_registered_as_recurring_system_job(self):
         from netbox.registry import registry

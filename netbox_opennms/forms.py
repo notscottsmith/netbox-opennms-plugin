@@ -73,12 +73,32 @@ class RequisitionForm(NetBoxModelForm):
     )
     filter_params = JSONField(
         required=False,
-        label=_("Filter"),
+        label=_("Advanced filter"),
         help_text=_(
             "NetBox filter parameters, e.g. "
             '{"role": ["switch"], "tag": ["critical"]}. Applied to the selected '
-            "object types to compute members."
+            "object types to compute members. Not needed if the Scope picker "
+            "below (tenant/site/location/etc.) already covers this Requisition — "
+            "only required for finer-grained filtering (role, tag, ...)."
         ),
+    )
+    # A <select>, not a ChoiceField: the option list is populated server-side in
+    # __init__ from the resolved target Server's cached available_locations
+    # (OpenNMSServer.available_locations, itself populated by "Test connection")
+    # — the same non-live, __init__-time resolution the Scope picker below
+    # already uses (target_server_for), not a live AJAX flow. CharField doesn't
+    # validate against the widget's choices (see OpenNMSServerForm.default_location
+    # for the identical rationale) — the widget is UX only, so a stale/missing
+    # cache never blocks a save.
+    location = forms.CharField(
+        required=False,
+        label=_("Location"),
+        help_text=_(
+            "The OpenNMS Monitoring Location this Requisition's nodes report "
+            "to. Sourced from the resolved target Server's known locations — "
+            "test that Server's connection to (re)populate this list."
+        ),
+        widget=forms.Select(choices=()),
     )
     services = forms.MultipleChoiceField(
         choices=ServiceChoices,
@@ -159,7 +179,15 @@ class RequisitionForm(NetBoxModelForm):
         # Requisition has no target Server yet, so options is None and every field
         # keeps its full queryset (unconstrained) until the first level is picked
         # and saved.
-        options = scope_options(target_server_for(self.instance))
+        server = target_server_for(self.instance)
+        current_location = self.instance.location if self.instance.pk else ""
+        location_choices = list(server.available_locations) if server else []
+        if current_location and current_location not in location_choices:
+            location_choices = [current_location, *location_choices]
+        self.fields["location"].widget.choices = [("", "---------")] + [
+            (loc, loc) for loc in location_choices
+        ]
+        options = scope_options(server)
         if options is None:
             return
         for form_field, scope_field, _filter_key in self._SCOPE_PICKER_FIELDS:
@@ -516,12 +544,14 @@ class OpenNMSServerForm(_ScopeForm):
             '"...", "CF-Access-Client-Secret": "..."} for Cloudflare Access.'
         ),
     )
-    # A <select>, not a ChoiceField: the option list is populated client-side
-    # from OpenNMSClient.list_locations() after a successful "Test connection"
-    # (server_test_connection.js), so a submitted value legitimately won't be
-    # among the choices rendered server-side. CharField doesn't validate
-    # against the widget's choices, only OpenNMSServer.clean() does (via
-    # validate_location_name) — the widget is UX only.
+    # A <select>, not a ChoiceField: seeded server-side from the persisted
+    # available_locations cache (below), then further refreshed client-side
+    # from a fresh OpenNMSClient.list_locations() after a successful "Test
+    # connection" (server_test_connection.js) — so a submitted value
+    # legitimately won't always be among the choices rendered server-side.
+    # CharField doesn't validate against the widget's choices, only
+    # OpenNMSServer.clean() does (via validate_location_name) — the widget is
+    # UX only.
     #
     # NOT rendered as HTML `disabled`: a disabled <select> is excluded from
     # form submission entirely, which would silently blank out an existing
@@ -534,7 +564,8 @@ class OpenNMSServerForm(_ScopeForm):
         label=_("Default location"),
         help_text=_(
             "Which OpenNMS monitoring location a member falls back to. Test "
-            "the connection to populate this from the Server's known locations."
+            "the connection to (re)populate this from the Server's known "
+            "locations."
         ),
         widget=forms.Select(choices=(), attrs={"class": "onms-location-pending"}),
     )
@@ -542,9 +573,10 @@ class OpenNMSServerForm(_ScopeForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         current = self.instance.default_location if self.instance.pk else ""
-        self.fields["default_location"].widget.choices = (
-            [(current, current)] if current else []
-        )
+        choices = list(self.instance.available_locations) if self.instance.pk else []
+        if current and current not in choices:
+            choices = [current, *choices]
+        self.fields["default_location"].widget.choices = [(loc, loc) for loc in choices]
 
     class Meta:
         model = OpenNMSServer

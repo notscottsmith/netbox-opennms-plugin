@@ -1,0 +1,8 @@
+{# Copyright 2026 Ronny Trommer <ronny@no42.org> #}
+{# SPDX-License-Identifier: MIT #}
+{% extends 'generic/object_list.html' %}
+
+{% block content %}
+  {% include 'netbox_opennms/inc/discovery_tabs.html' with active='discoveryscan_list' %}
+  {{ block.super }}
+{% endblock %}

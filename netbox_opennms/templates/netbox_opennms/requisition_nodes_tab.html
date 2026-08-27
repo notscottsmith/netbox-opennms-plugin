@@ -1,0 +1,51 @@
+{# Copyright 2026 Ronny Trommer <ronny@no42.org> #}
+{# SPDX-License-Identifier: MIT #}
+{% extends 'generic/object.html' %}
+{% load helpers %}
+
+{% block content %}
+  <div class="row">
+    <div class="col col-md-12">
+      <div class="card">
+        <h2 class="card-header">OpenNMS Nodes</h2>
+        {% if not nodes %}
+          <div class="card-body text-muted">
+            No OpenNMS nodes are currently tagged with this Requisition's Foreign
+            Source. Nodes appear here once discovered, linked, or imported.
+          </div>
+        {% else %}
+          <table class="table table-hover">
+            <thead>
+              <tr>
+                <th>Node</th>
+                <th>Location</th>
+                <th>Verdict</th>
+                <th>Resolution</th>
+                <th>NetBox object</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for node in nodes %}
+                <tr>
+                  <td>{{ node|linkify }}</td>
+                  <td>{{ node.location|placeholder }}</td>
+                  <td>
+                    {% if node.verdict == "green" %}
+                      <span class="badge text-bg-green">Matches</span>
+                    {% elif node.verdict == "orange" %}
+                      <span class="badge text-bg-orange" title="{{ node.diff_detail|join:'; ' }}">Differs</span>
+                    {% else %}
+                      <span class="badge text-bg-red">Missing from NetBox</span>
+                    {% endif %}
+                  </td>
+                  <td>{{ node.get_resolution_display }}</td>
+                  <td>{{ node.matched_object|linkify|placeholder }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+{% endblock %}

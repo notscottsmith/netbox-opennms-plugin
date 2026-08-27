@@ -64,8 +64,4 @@ menu_items = (
         link="plugins:netbox_opennms:sync_preview",
         link_text="Sync Preview",
     ),
-    PluginMenuItem(
-        link="plugins:netbox_opennms:discoverednode_list",
-        link_text="Discovered Nodes",
-    ),
 )

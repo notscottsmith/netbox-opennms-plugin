@@ -1,0 +1,18 @@
+{# Copyright 2026 Ronny Trommer <ronny@no42.org> #}
+{# SPDX-License-Identifier: MIT #}
+{# Shared tab strip linking the two Discovery list pages (issue: Discovered Nodes
+   folded into a tab of Discovery, not a separate top-level menu item). #}
+<ul class="nav nav-tabs mb-3">
+  <li class="nav-item">
+    <a class="nav-link{% if active == 'discoveryscan_list' %} active{% endif %}"
+       href="{% url 'plugins:netbox_opennms:discoveryscan_list' %}">
+      Discovery Scans
+    </a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link{% if active == 'discoverednode_list' %} active{% endif %}"
+       href="{% url 'plugins:netbox_opennms:discoverednode_list' %}">
+      Discovered Nodes
+    </a>
+  </li>
+</ul>

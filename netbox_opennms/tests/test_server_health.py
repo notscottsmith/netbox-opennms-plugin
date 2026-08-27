@@ -45,12 +45,14 @@ class OpenNMSServerTestViewTest(TestCase):
     def test_success_persists_ok(self, mock_from_server):
         client = mock_from_server.return_value.__enter__.return_value
         client.test_connection.return_value = True
+        client.list_locations.return_value = {"edge-2", "edge-1"}
         response = self.client.post(self._url())
         self.assertEqual(response.status_code, 302)
         self.server.refresh_from_db()
         self.assertEqual(self.server.last_check_status, "ok")
         self.assertEqual(self.server.last_check_message, "")
         self.assertIsNotNone(self.server.last_check_time)
+        self.assertEqual(self.server.available_locations, ["edge-1", "edge-2"])
 
     @mock.patch("netbox_opennms.views.OpenNMSClient.from_server")
     def test_failure_persists_failed_with_message(self, mock_from_server):
@@ -110,6 +112,8 @@ class OpenNMSServerTestAjaxViewTest(TestCase):
         data = response.json()
         self.assertTrue(data["ok"])
         self.assertEqual(data["locations"], ["edge-1", "edge-2"])
+        self.server.refresh_from_db()
+        self.assertEqual(self.server.available_locations, [])  # no server_id posted
 
     @mock.patch("netbox_opennms.views.OpenNMSClient")
     def test_failure_returns_message(self, mock_client_cls):
@@ -167,7 +171,7 @@ class OpenNMSServerTestAjaxViewTest(TestCase):
         client.__enter__ = mock.Mock(return_value=client)
         client.__exit__ = mock.Mock(return_value=False)
         client.test_connection.return_value = True
-        client.list_locations.return_value = set()
+        client.list_locations.return_value = {"edge-1"}
 
         self.client.post(
             self._url(),
@@ -180,6 +184,7 @@ class OpenNMSServerTestAjaxViewTest(TestCase):
         )
         self.server.refresh_from_db()
         self.assertEqual(self.server.last_check_status, "ok")
+        self.assertEqual(self.server.available_locations, ["edge-1"])
 
     def test_requires_change_permission(self):
         self.user.user_permissions.clear()

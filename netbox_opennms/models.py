@@ -597,6 +597,11 @@ class OpenNMSServer(NetBoxModel):
     # Which OpenNMS Monitoring Location a member falls back to when it (and its
     # Requisition) set none — blank means the render leaves it unset.
     default_location = models.CharField(max_length=255, blank=True, default="")
+    # OpenNMS Monitoring Locations this Server reported on the last successful
+    # connection test (manual or hourly health check) — sourced from
+    # ``OpenNMSClient.list_locations()``, cached here so the Requisition/Server
+    # forms can offer a real dropdown instead of a free-text field.
+    available_locations = models.JSONField(default=list, blank=True)
     is_default = models.BooleanField(
         default=False,
         help_text="Fallback Server used when no Scope binding matches an object.",
@@ -636,15 +641,23 @@ class OpenNMSServer(NetBoxModel):
     def get_absolute_url(self):
         return reverse("plugins:netbox_opennms:opennmsserver", args=[self.pk])
 
-    def record_check_result(self, ok, message=""):
+    def record_check_result(self, ok, message="", locations=None):
         """Persist a connection-test outcome (manual test or the hourly health
-        check job) — the single write path so both stay consistent."""
+        check job) — the single write path so both stay consistent.
+
+        ``locations`` is the Server's freshly-fetched ``list_locations()``
+        result; pass it whenever a check successfully retrieved one so the
+        cache stays current, or leave it ``None`` to leave the cache as-is
+        (e.g. on failure, or when the caller skipped the location fetch).
+        """
         self.last_check_status = "ok" if ok else "failed"
         self.last_check_time = timezone.now()
         self.last_check_message = "" if ok else message
-        self.save(
-            update_fields=["last_check_status", "last_check_time", "last_check_message"]
-        )
+        update_fields = ["last_check_status", "last_check_time", "last_check_message"]
+        if locations is not None:
+            self.available_locations = sorted(locations)
+            update_fields.append("available_locations")
+        self.save(update_fields=update_fields)
 
     @property
     def is_healthy(self):

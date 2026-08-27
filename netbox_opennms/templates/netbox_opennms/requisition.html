@@ -67,8 +67,13 @@
           <tr><th scope="row">Default interfaces</th><td>{{ object.get_default_interfaces_display }}</td></tr>
           <tr><th scope="row">Declared services</th><td>{{ object.services|join:", "|placeholder }}</td></tr>
           <tr><th scope="row">Location</th><td>{{ object.location|placeholder }}</td></tr>
-          <tr><th scope="row">Filter</th><td><pre class="mb-0">{{ object.filter_params }}</pre></td></tr>
         </table>
+        <div class="card-body">
+          <details>
+            <summary class="text-muted">Advanced filter</summary>
+            <pre class="mb-0 mt-2">{{ object.filter_params }}</pre>
+          </details>
+        </div>
       </div>
     </div>
     <div class="col col-md-6">

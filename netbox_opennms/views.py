@@ -1110,13 +1110,17 @@ class OpenNMSServerTestView(PermissionRequiredMixin, View):
         try:
             with OpenNMSClient.from_server(server) as client:
                 client.test_connection()
+                try:
+                    locations = sorted(client.list_locations())
+                except OpenNMSError:
+                    locations = None
         except OpenNMSError as exc:
             server.record_check_result(ok=False, message=str(exc))
             messages.error(
                 request, f"OpenNMS connection to {server.name!r} failed: {exc}"
             )
         else:
-            server.record_check_result(ok=True)
+            server.record_check_result(ok=True, locations=locations)
             messages.success(
                 request,
                 f"OpenNMS connection to {server.name!r} OK — reachable and "
@@ -1169,8 +1173,39 @@ class OpenNMSServerTestAjaxView(PermissionRequiredMixin, View):
             return JsonResponse({"ok": False, "message": str(exc)})
 
         if server_id:
-            get_object_or_404(OpenNMSServer, pk=server_id).record_check_result(ok=True)
+            get_object_or_404(OpenNMSServer, pk=server_id).record_check_result(
+                ok=True, locations=locations
+            )
         return JsonResponse({"ok": True, "locations": locations})
+
+
+# --- Requisition Nodes tab (issue #21, narrow scope) --------------------------
+
+
+def _requisition_nodes_badge(instance):
+    return DiscoveredNode.objects.filter(foreign_source=instance.name).count() or None
+
+
+@register_model_view(Requisition, name="opennms_nodes", path="nodes")
+class RequisitionNodesView(generic.ObjectView):
+    """The OpenNMS nodes belonging to this Requisition's Foreign Source, and the
+    NetBox Device/VM (if any) each currently maps to.
+
+    ``foreign_source`` is the join key: it's set to the owning Requisition's
+    ``name`` (the Foreign Source name) whenever a node is upserted (manual link,
+    import, or a Discovery Scan's poll) — a Requisition's ``name`` is unique
+    (AD-1), so no further scoping by target Server is needed.
+    """
+
+    queryset = Requisition.objects.all()
+    tab = ViewTab(label="Nodes", badge=_requisition_nodes_badge)
+    template_name = "netbox_opennms/requisition_nodes_tab.html"
+
+    def get_extra_context(self, request, instance):
+        nodes = DiscoveredNode.objects.filter(
+            foreign_source=instance.name
+        ).order_by("label")
+        return {"nodes": nodes}
 
 
 # --- Node Links tab (issue #15) ----------------------------------------------

@@ -506,14 +506,25 @@ class CheckServerHealthJob(JobRunner):
             try:
                 with OpenNMSClient.from_server(server) as client:
                     client.test_connection()
+                    locations = self._fetch_locations(client, server)
             except OpenNMSError as exc:
                 server.record_check_result(False, str(exc))
                 self.logger.warning(
                     f"Server {server.name!r} health check failed: {exc}"
                 )
             else:
-                server.record_check_result(True)
+                server.record_check_result(True, locations=locations)
                 self.logger.info(f"Server {server.name!r} health check OK.")
+
+    def _fetch_locations(self, client, server):
+        """Best-effort: a broken location list must not fail a passing health check."""
+        try:
+            return client.list_locations()
+        except OpenNMSError as exc:
+            self.logger.warning(
+                f"Server {server.name!r} location list fetch failed: {exc}"
+            )
+            return None
 
 
 @system_job(interval=DISCOVERY_POLL_INTERVAL_MINUTES)
