@@ -250,6 +250,32 @@ def build_proposal(
     )
 
 
+# Fields whose absence from OpenNMS's data genuinely blocks a clean
+# Device/VM conversion (site/role are DB-required on Device; manufacturer
+# gates device_type selection; platform is the one the user's own report
+# named explicitly) — tenant is left out, since it's optional either way.
+COMPLETENESS_FIELDS = ("role", "site", "manufacturer", "platform")
+
+
+def compute_completeness_gaps(proposal, interfaces):
+    """Field names/signals a walked node's OpenNMS data didn't cover (issue #28).
+
+    A gap means "OpenNMS's data doesn't cover this at all"
+    (``FieldProposal.detected == ""``), not "the guess was low-confidence" —
+    those are already visibly distinct via ``FieldProposal.guessed``. No IP
+    interfaces at all is called out on its own, since it's the ADR-0007
+    example of a node OpenNMS could not fully walk (e.g. no SNMP
+    credentials configured).
+    """
+    gaps = []
+    if not interfaces:
+        gaps.append("no IP interfaces (SNMP data may be unavailable)")
+    for name in COMPLETENESS_FIELDS:
+        if not getattr(proposal, name).detected:
+            gaps.append(name)
+    return gaps
+
+
 def _create_target(kind, cleaned_data):
     common = {
         "name": cleaned_data["name"],

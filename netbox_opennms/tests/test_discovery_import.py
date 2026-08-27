@@ -16,6 +16,7 @@ from dcim.models import Device, DeviceRole, DeviceType, Manufacturer, Site
 from django.contrib.auth.models import Permission, User
 from django.test import TestCase
 from django.urls import reverse
+from django.utils import timezone
 
 from netbox_opennms.membership import Resolution, ServerConflict
 from netbox_opennms.models import (
@@ -224,6 +225,28 @@ class DiscoveredNodeImportViewTest(TestCase):
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "unreachable")
+
+    def test_walked_node_uses_persisted_data_without_client_call(self):
+        # issue #28/ADR 0007: a row PollDiscoveryScansJob already walked reads
+        # its own persisted snapshot — the client must not be touched at all,
+        # since the OpenNMS-side node may already be gone by review time.
+        self.node.walked_at = timezone.now()
+        self.node.node_detail = _node_detail()
+        self.node.ip_interfaces = _ip_interfaces()
+        self.node.services_by_ip = {
+            "10.0.0.5": [{"serviceType": {"name": "ICMP"}}],
+            "10.0.0.6": [{"serviceType": {"name": "SNMP"}}],
+        }
+        self.node.save()
+
+        response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        proposal = response.context["proposal"]
+        self.assertEqual(proposal.manufacturer.value, self.mfr)
+        self.assertEqual(len(proposal.interfaces), 2)
+        self.mock_client.get_node.assert_not_called()
+        self.mock_client.list_ip_interfaces.assert_not_called()
 
 
 class ImportedNodeRescanTest(TestCase):

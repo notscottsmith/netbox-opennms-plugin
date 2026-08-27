@@ -695,7 +695,23 @@ class DiscoveredNodeImportView(GetReturnURLMixin, PermissionRequiredMixin, View)
         )
 
     def _fetch(self, node):
-        """Live OpenNMS data for *node*, built into an import proposal."""
+        """OpenNMS data for *node*, built into an import proposal.
+
+        A walked Discovery Scan row (issue #28) reads its own persisted
+        snapshot — the OpenNMS-side node may already be gone (ADR 0007). Any
+        other row (never walked) falls back to a live fetch, as before.
+        """
+        overrides = import_node.asset_field_overrides()
+        if node.walked_at is not None:
+            proposal = import_node.build_proposal(
+                node,
+                node.node_detail,
+                node.ip_interfaces,
+                node.services_by_ip,
+                overrides,
+                Site,
+            )
+            return proposal, None
         try:
             with OpenNMSClient.from_server(node.server) as client:
                 detail = client.get_node(node.opennms_node_id) or {}
@@ -709,7 +725,6 @@ class DiscoveredNodeImportView(GetReturnURLMixin, PermissionRequiredMixin, View)
                         )
         except OpenNMSError as exc:
             return None, str(exc)
-        overrides = import_node.asset_field_overrides()
         proposal = import_node.build_proposal(
             node, detail, ip_interfaces, services_by_ip, overrides, Site
         )

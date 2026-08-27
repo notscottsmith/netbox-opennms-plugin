@@ -172,6 +172,22 @@ class DiscoveredNodeTable(NetBoxTable):
     )
     matched_object = tables.Column(linkify=True, verbose_name="Matched object")
     resolution = tables.Column(verbose_name="Resolution")
+    completeness_gaps = tables.TemplateColumn(
+        verbose_name="Completeness",
+        template_code="""
+            {% if not record.walked_at %}
+              <span class="text-muted">Not walked</span>
+            {% elif record.completeness_gaps %}
+              <span class="badge text-bg-orange"
+                    title="{{ record.completeness_gaps|join:'; ' }}">
+                {{ record.completeness_gaps|length }}
+                gap{{ record.completeness_gaps|length|pluralize }}
+              </span>
+            {% else %}
+              <span class="badge text-bg-green">Complete</span>
+            {% endif %}
+        """,
+    )
 
     class Meta(NetBoxTable.Meta):
         model = DiscoveredNode
@@ -186,6 +202,8 @@ class DiscoveredNodeTable(NetBoxTable):
             "foreign_id",
             "location",
             "matched_object",
+            "completeness_gaps",
+            "walked_at",
             "last_scanned",
             "created",
             "last_updated",
@@ -197,6 +215,7 @@ class DiscoveredNodeTable(NetBoxTable):
             "verdict",
             "foreign_id",
             "matched_object",
+            "completeness_gaps",
             "last_scanned",
         )
 

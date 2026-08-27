@@ -40,6 +40,7 @@ from virtualization.models import VirtualMachine
 from .adoption import adopt_foreign_ids, existing_foreign_ids_by_label
 from .client import OpenNMSClient, OpenNMSError
 from .derivation import validate_location_name
+from .import_node import asset_field_overrides
 from .membership import (
     matching_requisitions,
     monitored_foreign_sources,
@@ -52,7 +53,7 @@ from .models import (
     MonitoringOverride,
     OpenNMSServer,
 )
-from .scan import scan_discovery, upsert_discovered_nodes
+from .scan import scan_discovery, upsert_discovered_nodes, walk_node
 from .translation import (
     RenderError,
     render_foreign_source_definition,
@@ -570,7 +571,10 @@ class PollDiscoveryScansJob(JobRunner):
                     f"poll skipped for Discovery Scan {scan} — OpenNMS error: {exc}"
                 )
                 continue
-            upsert_discovered_nodes(scan.server, matches, discovery_scan=scan)
+            seen_ids = upsert_discovered_nodes(
+                scan.server, matches, discovery_scan=scan
+            )
+            self._walk_new_nodes(scan, seen_ids)
 
             latest = scan.latest_node_created
             for match in matches:
@@ -590,3 +594,31 @@ class PollDiscoveryScansJob(JobRunner):
 
             if update_fields:
                 scan.save(update_fields=update_fields)
+
+    def _walk_new_nodes(self, scan, seen_ids):
+        """Walk each of *seen_ids* not already walked (issue #28).
+
+        Best-effort at both levels: a Server-wide OpenNMS outage skips the
+        whole batch for this poll (retried next poll); a single node's own
+        walk failure (e.g. it vanished between upsert and walk) is logged
+        and skipped without abandoning the rest of the batch.
+        """
+        new_nodes = scan.discovered_nodes.filter(
+            opennms_node_id__in=seen_ids, walked_at__isnull=True
+        )
+        if not new_nodes:
+            return
+        overrides = asset_field_overrides()
+        try:
+            with OpenNMSClient.from_server(scan.server) as client:
+                for node in new_nodes:
+                    try:
+                        walk_node(client, node, overrides)
+                    except OpenNMSError as exc:
+                        self.logger.warning(
+                            f"walk skipped for node {node} — OpenNMS error: {exc}"
+                        )
+        except OpenNMSError as exc:
+            self.logger.warning(
+                f"walk skipped for Discovery Scan {scan} — OpenNMS error: {exc}"
+            )

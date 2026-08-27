@@ -937,6 +937,20 @@ class DiscoveredNode(NetBoxModel):
         ),
     )
     diff_detail = models.JSONField(blank=True, default=list)
+    # Walked once by PollDiscoveryScansJob for a Discovery Scan row (issue
+    # #28, ADR 0007) and persisted here so review/import reads NetBox's own
+    # stored copy rather than depending on the OpenNMS-side node still
+    # existing once auto-cleanup (issue #29) removes it. Left empty/unset for
+    # a general per-Server scan row (issue #7) — those are never walked; the
+    # review view falls back to a live fetch when walked_at is unset.
+    node_detail = models.JSONField(blank=True, default=dict)
+    ip_interfaces = models.JSONField(blank=True, default=list)
+    services_by_ip = models.JSONField(blank=True, default=dict)
+    # Field names the walked OpenNMS data didn't cover, computed at walk time
+    # via import_node.compute_completeness_gaps (issue #28) — surfaced so an
+    # operator can tell "needs manual input" apart from "not walked yet".
+    completeness_gaps = models.JSONField(blank=True, default=list)
+    walked_at = models.DateTimeField(null=True, blank=True, editable=False)
     matched_object_type = models.ForeignKey(
         to="contenttypes.ContentType",
         on_delete=models.PROTECT,

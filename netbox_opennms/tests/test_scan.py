@@ -1,11 +1,14 @@
 # Copyright 2026 Ronny Trommer <ronny@no42.org>
 # SPDX-License-Identifier: MIT
-"""Tests for the pure Discovery reconciler (issue #7)."""
+"""Tests for the pure Discovery reconciler (issue #7) and node walking (#28)."""
 
-from django.test import SimpleTestCase
+from unittest import mock
+
+from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 
-from netbox_opennms.scan import NodeMatch, _parse_node_created, reconcile
+from netbox_opennms.models import DiscoveredNode, OpenNMSServer
+from netbox_opennms.scan import NodeMatch, _parse_node_created, reconcile, walk_node
 
 
 def _opennms_node(
@@ -156,3 +159,79 @@ class ParseNodeCreatedTest(SimpleTestCase):
     def test_naive_create_time_is_made_aware_as_utc(self):
         parsed = _parse_node_created({"createTime": "2026-08-01T10:00:00"})
         self.assertFalse(timezone.is_naive(parsed))
+
+
+class WalkNodeTest(TestCase):
+    """Tests for ``walk_node`` (issue #28, ADR 0007)."""
+
+    def setUp(self):
+        self.server = OpenNMSServer.objects.create(
+            name="Acme", url="https://onms.example", username="svc", password="x"
+        )
+        self.node = DiscoveredNode.objects.create(
+            server=self.server,
+            opennms_node_id=1,
+            label="rtr-1",
+            foreign_id="device-1",
+            location="Perth",
+            verdict="red",
+        )
+
+    def test_persists_walked_payload_and_completeness_gaps(self):
+        client = mock.Mock()
+        client.get_node.return_value = {"assetRecord": {"manufacturer": "Acme"}}
+        client.list_ip_interfaces.return_value = [
+            {"ipAddress": "10.0.0.5", "snmpPrimary": "P"}
+        ]
+        client.list_services.return_value = [{"serviceType": {"name": "ICMP"}}]
+
+        walk_node(client, self.node, overrides={})
+
+        self.node.refresh_from_db()
+        self.assertIsNotNone(self.node.walked_at)
+        self.assertEqual(
+            self.node.node_detail, {"assetRecord": {"manufacturer": "Acme"}}
+        )
+        self.assertEqual(
+            self.node.ip_interfaces,
+            [{"ipAddress": "10.0.0.5", "snmpPrimary": "P"}],
+        )
+        self.assertEqual(
+            self.node.services_by_ip["10.0.0.5"],
+            [{"serviceType": {"name": "ICMP"}}],
+        )
+        client.list_services.assert_called_once_with(1, "10.0.0.5")
+        # manufacturer was detected and interfaces are present — neither is
+        # a gap; role/site/platform have no corresponding data at all.
+        self.assertNotIn("manufacturer", self.node.completeness_gaps)
+        self.assertNotIn(
+            "no IP interfaces (SNMP data may be unavailable)",
+            self.node.completeness_gaps,
+        )
+        self.assertIn("role", self.node.completeness_gaps)
+        self.assertIn("site", self.node.completeness_gaps)
+        self.assertIn("platform", self.node.completeness_gaps)
+
+    def test_no_interfaces_flagged_as_completeness_gap(self):
+        client = mock.Mock()
+        client.get_node.return_value = {}
+        client.list_ip_interfaces.return_value = []
+
+        walk_node(client, self.node, overrides={})
+
+        self.node.refresh_from_db()
+        self.assertIn(
+            "no IP interfaces (SNMP data may be unavailable)",
+            self.node.completeness_gaps,
+        )
+        client.list_services.assert_not_called()
+
+    def test_missing_node_detail_falls_back_to_empty_dict(self):
+        client = mock.Mock()
+        client.get_node.return_value = None
+        client.list_ip_interfaces.return_value = []
+
+        walk_node(client, self.node, overrides={})
+
+        self.node.refresh_from_db()
+        self.assertEqual(self.node.node_detail, {})

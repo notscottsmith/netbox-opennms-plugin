@@ -16,11 +16,12 @@ happens to be Scope-bound to, so ``netbox_index`` covers every Device/VM.
 import datetime
 from dataclasses import dataclass, field
 
-from dcim.models import Device
+from dcim.models import Device, Site
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from virtualization.models import VirtualMachine
 
+from . import import_node
 from .derivation import foreign_id_for
 from .membership import resolve_all
 
@@ -185,6 +186,45 @@ def scan_discovery(discovery_scan):
     with OpenNMSClient.from_server(discovery_scan.server) as client:
         nodes = client.list_nodes(foreign_source=discovery_scan.foreign_source)
     return reconcile(nodes, netbox_index())
+
+
+def walk_node(client, node, overrides):
+    """Fetch *node*'s live OpenNMS detail/interfaces/services and persist it
+    onto the ``DiscoveredNode`` row (issue #28, ADR 0007).
+
+    The I/O wrapper around ``import_node.build_proposal``/
+    ``compute_completeness_gaps`` — mirrors ``scan_server``'s split from
+    ``reconcile``. Called once per newly-upserted Discovery Scan node
+    (``PollDiscoveryScansJob``); a node already walked is never re-fetched by
+    the caller (gated on ``walked_at``), so this itself always (re)writes.
+    """
+    detail = client.get_node(node.opennms_node_id) or {}
+    ip_interfaces = client.list_ip_interfaces(node.opennms_node_id)
+    services_by_ip = {}
+    for iface in ip_interfaces:
+        ip = iface.get("ipAddress") if isinstance(iface, dict) else None
+        if ip:
+            services_by_ip[ip] = client.list_services(node.opennms_node_id, ip)
+
+    proposal = import_node.build_proposal(
+        node, detail, ip_interfaces, services_by_ip, overrides, Site
+    )
+    node.node_detail = detail
+    node.ip_interfaces = ip_interfaces
+    node.services_by_ip = services_by_ip
+    node.completeness_gaps = import_node.compute_completeness_gaps(
+        proposal, proposal.interfaces
+    )
+    node.walked_at = timezone.now()
+    node.save(
+        update_fields=[
+            "node_detail",
+            "ip_interfaces",
+            "services_by_ip",
+            "completeness_gaps",
+            "walked_at",
+        ]
+    )
 
 
 def upsert_discovered_nodes(server, matches, *, discovery_scan=None):

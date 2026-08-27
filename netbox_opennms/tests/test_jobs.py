@@ -593,12 +593,13 @@ class PollDiscoveryScansJobTest(TestCase):
         cls.server = OpenNMSServer.objects.create(
             name="Acme", url="https://onms.example", username="svc", password="x"
         )
-        cls.site = Site.objects.create(name="Perth", slug="perth")
+        cls.requisition = Requisition.objects.create(name="perth-discovery")
 
     def _scan(self, *, triggered=True, settled=False, idle_minutes_ago=0):
         scan = DiscoveryScan.objects.create(
             server=self.server,
-            site=self.site,
+            requisition=self.requisition,
+            location="Perth",
             ip_range_begin="10.0.0.1",
             ip_range_end="10.0.0.10",
         )
@@ -629,6 +630,8 @@ class PollDiscoveryScansJobTest(TestCase):
     def test_upserts_discovered_nodes_scoped_to_scan(self, mock_from_server):
         scan = self._scan()
         client = mock_from_server.return_value.__enter__.return_value
+        client.get_node.return_value = {}
+        client.list_ip_interfaces.return_value = []
         client.list_nodes.return_value = [_onms_node(1), _onms_node(2, foreign_id="b")]
 
         PollDiscoveryScansJob(job=mock.Mock()).run()
@@ -645,6 +648,8 @@ class PollDiscoveryScansJobTest(TestCase):
     ):
         scan = self._scan()
         client = mock_from_server.return_value.__enter__.return_value
+        client.get_node.return_value = {}
+        client.list_ip_interfaces.return_value = []
         client.list_nodes.return_value = [_onms_node(1), _onms_node(2, foreign_id="b")]
 
         PollDiscoveryScansJob(job=mock.Mock()).run()
@@ -660,6 +665,8 @@ class PollDiscoveryScansJobTest(TestCase):
         scan_a = self._scan()
         scan_b = self._scan()
         client = mock_from_server.return_value.__enter__.return_value
+        client.get_node.return_value = {}
+        client.list_ip_interfaces.return_value = []
 
         def list_nodes(foreign_source=None):
             if foreign_source == scan_a.foreign_source:
@@ -720,6 +727,8 @@ class PollDiscoveryScansJobTest(TestCase):
         # things — it must not settle yet.
         scan = self._scan(idle_minutes_ago=10)
         client = mock_from_server.return_value.__enter__.return_value
+        client.get_node.return_value = {}
+        client.list_ip_interfaces.return_value = []
         recent = (timezone.now() - timedelta(minutes=1)).isoformat()
         client.list_nodes.return_value = [_onms_node(1, create_time=recent)]
 
@@ -750,6 +759,63 @@ class PollDiscoveryScansJobTest(TestCase):
         # `first` errored so it never settles; `second` was unaffected.
         self.assertIsNone(first.settled_at)
         self.assertIsNotNone(second.settled_at)
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_walks_newly_upserted_nodes_once(self, mock_from_server):
+        scan = self._scan()
+        client = mock_from_server.return_value.__enter__.return_value
+        client.get_node.return_value = {}
+        client.list_ip_interfaces.return_value = []
+        client.list_nodes.return_value = [_onms_node(1)]
+
+        PollDiscoveryScansJob(job=mock.Mock()).run()
+
+        node = DiscoveredNode.objects.get(discovery_scan=scan, opennms_node_id=1)
+        self.assertIsNotNone(node.walked_at)
+        self.assertEqual(client.get_node.call_count, 1)
+
+        # A second poll sees the same node again — already walked, so it must
+        # not be walked a second time.
+        PollDiscoveryScansJob(job=mock.Mock()).run()
+
+        self.assertEqual(client.get_node.call_count, 1)
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_per_node_walk_error_does_not_block_other_nodes(self, mock_from_server):
+        scan = self._scan()
+        client = mock_from_server.return_value.__enter__.return_value
+        client.list_nodes.return_value = [_onms_node(1), _onms_node(2, foreign_id="b")]
+        client.list_ip_interfaces.return_value = []
+
+        def get_node(node_id):
+            if node_id == 1:
+                raise OpenNMSError("vanished")
+            return {}
+
+        client.get_node.side_effect = get_node
+
+        with self.assertLogs("netbox.jobs.PollDiscoveryScansJob", level="WARNING"):
+            PollDiscoveryScansJob(job=mock.Mock()).run()
+
+        node1 = DiscoveredNode.objects.get(discovery_scan=scan, opennms_node_id=1)
+        node2 = DiscoveredNode.objects.get(discovery_scan=scan, opennms_node_id=2)
+        self.assertIsNone(node1.walked_at)
+        self.assertIsNotNone(node2.walked_at)
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_server_wide_walk_error_skips_batch_without_raising(
+        self, mock_from_server
+    ):
+        scan = self._scan()
+        good_client = mock.MagicMock()
+        good_client.__enter__.return_value.list_nodes.return_value = [_onms_node(1)]
+        mock_from_server.side_effect = [good_client, OpenNMSError("unreachable")]
+
+        with self.assertLogs("netbox.jobs.PollDiscoveryScansJob", level="WARNING"):
+            PollDiscoveryScansJob(job=mock.Mock()).run()
+
+        node = DiscoveredNode.objects.get(discovery_scan=scan, opennms_node_id=1)
+        self.assertIsNone(node.walked_at)
 
     def test_registered_as_recurring_system_job(self):
         from netbox.registry import registry
