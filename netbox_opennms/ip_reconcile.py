@@ -16,9 +16,13 @@ DB-only wrapper a caller uses to get all three built for one
 import ipaddress
 from dataclasses import dataclass, field
 
-from ipam.models import IPAddress
+from dcim.choices import InterfaceTypeChoices
+from dcim.models import Device
+from django.contrib.contenttypes.models import ContentType
+from django.db import transaction
+from ipam.models import IPAddress, IPRange, Prefix
 
-from .import_node import parse_discovery_payload
+from .import_node import KIND_INTERFACE_MODELS, parse_discovery_payload
 from .scope import requisition_scope_site_and_location, resolve_vrf
 
 # RFC1918 classful sizing (ADR 0008): the private space an address falls in
@@ -141,19 +145,20 @@ def reconcile_interfaces(interfaces, matched_object, ip_index, *, vrf=None, scop
     (``netmask`` included, issue #30). *matched_object* is the
     ``DiscoveredNode``'s own matched Device/VM, or ``None`` -- with no
     matched object there's nothing to check "correctly assigned to" against,
-    so an existing address can only ever read orange (assigned elsewhere or
-    unassigned) or green never applies via assignment, only via a bare VRF
-    match. *ip_index* is ``netbox_ip_index()``'s result. *vrf*/*scope* are
-    already resolved (``scope.resolve_vrf``/
-    ``scope.requisition_scope_site_and_location``) -- this function does no
-    DB reads of its own, mirroring ``scan.reconcile``'s pure/IO split.
+    so assignment is never checked (issue #31: confirming an IP on an
+    unmatched node must still be able to read green). *ip_index* is
+    ``netbox_ip_index()``'s result. *vrf*/*scope* are already resolved
+    (``scope.resolve_vrf``/``scope.requisition_scope_site_and_location``) --
+    this function does no DB reads of its own, mirroring ``scan.reconcile``'s
+    pure/IO split.
 
     Green: a NetBox ``IPAddress`` exists at this address, assigned to one of
-    *matched_object*'s own interfaces (when *matched_object* is set), and its
-    ``vrf`` matches *vrf* (or *vrf* is ``None`` -- nothing to disagree with).
-    Orange: the address exists but something differs (wrong VRF, unassigned,
-    or assigned to a different object). Red: no NetBox ``IPAddress`` exists at
-    this address at all.
+    *matched_object*'s own interfaces (when *matched_object* is set -- not
+    checked at all when it isn't), and its ``vrf`` matches *vrf* (or *vrf* is
+    ``None`` -- nothing to disagree with). Orange: the address exists but
+    something differs (wrong VRF, or -- only when *matched_object* is set --
+    unassigned or assigned to a different object). Red: no NetBox
+    ``IPAddress`` exists at this address at all.
     """
     results = []
     for iface in interfaces:
@@ -169,11 +174,12 @@ def reconcile_interfaces(interfaces, matched_object, ip_index, *, vrf=None, scop
             )
             continue
         diffs = []
-        parent = _assigned_parent(row)
-        if parent is None:
-            diffs.append("unassigned")
-        elif matched_object is None or parent != matched_object:
-            diffs.append(f"assigned to {parent!r}, expected {matched_object!r}")
+        if matched_object is not None:
+            parent = _assigned_parent(row)
+            if parent is None:
+                diffs.append("unassigned")
+            elif parent != matched_object:
+                diffs.append(f"assigned to {parent!r}, expected {matched_object!r}")
         if vrf is not None and row.vrf_id != vrf.pk:
             diffs.append(f"VRF: NetBox={row.vrf!r} expected={vrf!r}")
         verdict = "orange" if diffs else "green"
@@ -212,3 +218,86 @@ def reconcile_node_interfaces(node):
     return reconcile_interfaces(
         interfaces, node.matched_object, ip_index, vrf=vrf, scope=scope
     )
+
+
+class ConfirmRejected(Exception):
+    """Raised when confirming an IP interface (issue #31) doesn't apply."""
+
+
+def confirm_ip_interface(node, ip_address):
+    """Create the reviewed Prefix/IPRange and IPAddress for one IP (issue #31).
+
+    Re-derives *node*'s current verdicts via ``reconcile_node_interfaces`` --
+    never trusts client-submitted proposal data -- and applies the matching
+    verdict's proposal exactly as last reviewed; nothing is applied silently.
+    Only a "red" verdict has anything to create (no NetBox ``IPAddress``
+    exists yet); raises ``ConfirmRejected`` for an unknown IP or a
+    green/orange one, since an *existing* address is a correction, not a
+    creation, and out of this issue's scope.
+
+    Available whether or not *node* has a Device/VM match: when it does, the
+    created ``IPAddress`` is assigned to a new interface on it, mirroring
+    ``import_node._create_interfaces_and_ips``; when it doesn't, there's
+    nothing to assign it to, so it's created unassigned -- either way the
+    next reconciliation reads this IP as green.
+    """
+    verdicts = {v.ip_address: v for v in reconcile_node_interfaces(node)}
+    verdict = verdicts.get(ip_address)
+    if verdict is None:
+        raise ConfirmRejected(
+            f"{ip_address!r} is not one of this node's IP interfaces."
+        )
+    if verdict.verdict != "red":
+        raise ConfirmRejected(f"{ip_address} already exists in NetBox.")
+
+    proposal = verdict.proposal
+    with transaction.atomic():
+        if isinstance(proposal, PrefixProposal):
+            network = ipaddress.ip_network(proposal.prefix)
+            defaults = {}
+            if proposal.scope is not None:
+                defaults["scope_type"] = ContentType.objects.get_for_model(
+                    proposal.scope
+                )
+                defaults["scope_id"] = proposal.scope.pk
+            Prefix.objects.get_or_create(
+                prefix=proposal.prefix, vrf=proposal.vrf, defaults=defaults
+            )
+            prefixlen = network.prefixlen
+        else:
+            # Recomputed from *ip_address* rather than trusting
+            # proposal.start_address/end_address's display-only string
+            # format (no CIDR suffix) -- this is exactly the network
+            # ``_propose`` sized the proposal from in the first place.
+            network = classful_network(ip_address)
+            IPRange.objects.get_or_create(
+                start_address=f"{network[0]}/{network.prefixlen}",
+                end_address=f"{network[-1]}/{network.prefixlen}",
+                vrf=proposal.vrf,
+            )
+            prefixlen = 128 if network.version == 6 else 32
+
+        matched = node.matched_object
+        nic = None
+        if matched is not None:
+            kind = "device" if isinstance(matched, Device) else "vm"
+            interface_model = KIND_INTERFACE_MODELS[kind]
+            if kind == "device":
+                nic = interface_model.objects.create(
+                    device=matched,
+                    name=f"opennms-{ip_address}",
+                    type=InterfaceTypeChoices.TYPE_OTHER,
+                )
+            else:
+                nic = interface_model.objects.create(
+                    virtual_machine=matched, name=f"opennms-{ip_address}"
+                )
+
+        address = IPAddress(
+            address=f"{ip_address}/{prefixlen}",
+            vrf=proposal.vrf,
+            assigned_object=nic,
+        )
+        address.full_clean()
+        address.save()
+    return address

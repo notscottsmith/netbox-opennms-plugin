@@ -21,7 +21,13 @@ from virtualization.models import VirtualMachine
 from . import filtersets, forms, import_node, tables
 from .client import OpenNMSClient, OpenNMSError, parse_node_links
 from .dryrun import dry_run
-from .ip_reconcile import reconcile_node_interfaces
+from .ip_reconcile import (
+    ConfirmRejected,
+    IPRangeProposal,
+    PrefixProposal,
+    confirm_ip_interface,
+    reconcile_node_interfaces,
+)
 from .jobs import (
     SyncForeignSourceJob,
     unknown_locations,
@@ -795,6 +801,50 @@ class DiscoveredNodeImportView(GetReturnURLMixin, PermissionRequiredMixin, View)
         messages.success(
             request, f"Imported {target} from OpenNMS node {node.label!r}."
         )
+        return redirect(self.get_return_url(request, node))
+
+
+class DiscoveredNodeConfirmIPView(GetReturnURLMixin, PermissionRequiredMixin, View):
+    """Confirm one red IP interface into NetBox (issue #31).
+
+    POST-only: the review already happened on the Discovered Node detail
+    page, where each row's proposed Prefix/IPRange is shown (issue #30) --
+    this re-derives the current verdict itself and applies exactly that
+    proposal, never anything from the request body beyond which IP was
+    picked. Independent of Device/VM conversion (#9): available whether or
+    not the node has a match, so IPAM gaps can be fixed even for nodes
+    nobody intends to onboard as a monitored Device.
+    """
+
+    default_return_url = "plugins:netbox_opennms:discoverednode_list"
+
+    def has_permission(self):
+        # ipam.add_ipaddress is always needed; the Prefix/IPRange-specific
+        # permission is checked in post() once this IP's proposal is known.
+        return self.request.user.has_perm("ipam.add_ipaddress")
+
+    def post(self, request, pk):
+        node = get_object_or_404(DiscoveredNode, pk=pk)
+        ip_address = request.POST.get("ip_address", "")
+        verdicts = {v.ip_address: v for v in reconcile_node_interfaces(node)}
+        verdict = verdicts.get(ip_address)
+        if verdict is not None and isinstance(verdict.proposal, PrefixProposal):
+            required_perm = "ipam.add_prefix"
+        elif verdict is not None and isinstance(verdict.proposal, IPRangeProposal):
+            required_perm = "ipam.add_iprange"
+        else:
+            required_perm = None
+        if required_perm and not request.user.has_perm(required_perm):
+            raise PermissionDenied(
+                f"You do not have permission to create a "
+                f"{required_perm.rsplit('.', maxsplit=1)[-1]}."
+            )
+        try:
+            confirm_ip_interface(node, ip_address)
+        except ConfirmRejected as exc:
+            messages.error(request, str(exc))
+            return redirect(self.get_return_url(request, node))
+        messages.success(request, f"Confirmed {ip_address} into NetBox.")
         return redirect(self.get_return_url(request, node))
 
 

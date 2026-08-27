@@ -8,13 +8,15 @@ from dcim.models import Device, DeviceRole, DeviceType, Interface, Manufacturer,
 from django.contrib.contenttypes.models import ContentType
 from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
-from ipam.models import VRF, IPAddress, Prefix
+from ipam.models import VRF, IPAddress, IPRange, Prefix
 
 from netbox_opennms.import_node import InterfaceProposal
 from netbox_opennms.ip_reconcile import (
+    ConfirmRejected,
     IPRangeProposal,
     PrefixProposal,
     classful_network,
+    confirm_ip_interface,
     netbox_ip_index,
     reconcile_interfaces,
     reconcile_node_interfaces,
@@ -150,14 +152,27 @@ class ReconcileInterfacesTest(SimpleTestCase):
         self.assertEqual(len(verdict.diff_detail), 1)
         self.assertIn("assigned to", verdict.diff_detail[0])
 
-    def test_orange_when_no_matched_object_but_address_is_assigned(self):
+    def test_green_when_no_matched_object_regardless_of_assignment(self):
+        # Issue #31: confirming an IP on an unmatched node must be able to
+        # read green -- there's no expected assignment to check against.
         row = _FakeIPRow(assigned_object=_FakeAssigned(device=object()))
         results = reconcile_interfaces(
             [InterfaceProposal(ip_address="10.0.0.1")],
             matched_object=None,
             ip_index={"10.0.0.1": row},
         )
-        self.assertEqual(results[0].verdict, "orange")
+        verdict = results[0]
+        self.assertEqual(verdict.verdict, "green")
+        self.assertEqual(verdict.diff_detail, [])
+
+    def test_green_when_no_matched_object_and_unassigned(self):
+        row = _FakeIPRow(assigned_object=None)
+        results = reconcile_interfaces(
+            [InterfaceProposal(ip_address="10.0.0.1")],
+            matched_object=None,
+            ip_index={"10.0.0.1": row},
+        )
+        self.assertEqual(results[0].verdict, "green")
 
     def test_orange_when_vrf_mismatches(self):
         device = object()
@@ -346,3 +361,112 @@ class ReconcileNodeInterfacesTest(TestCase):
         self.assertEqual(verdict.proposal.prefix, "10.0.0.0/24")
         self.assertEqual(verdict.proposal.vrf, self.vrf)
         self.assertEqual(verdict.proposal.scope, self.site)
+
+    def test_green_without_matched_object_when_address_and_vrf_match(self):
+        # Issue #31: an unmatched node's IP can still read green -- there's
+        # no Device/VM to check assignment against.
+        scan = self._scan()
+        node = self._walked_node(matched=None, scan=scan)
+
+        results = reconcile_node_interfaces(node)
+
+        self.assertEqual(len(results), 1)
+        verdict = results[0]
+        self.assertEqual(verdict.verdict, "green")
+        self.assertEqual(verdict.diff_detail, [])
+
+
+class ConfirmIPInterfaceTest(TestCase):
+    """Issue #31: confirming a red IP creates its proposed Prefix/IPRange +
+    IPAddress, exactly as last reviewed, whether or not the node has a
+    matched Device/VM."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.site = Site.objects.create(name="Raleigh", slug="raleigh")
+        role = DeviceRole.objects.create(name="Router", slug="router")
+        mfr = Manufacturer.objects.create(name="Acme", slug="acme")
+        dt = DeviceType.objects.create(manufacturer=mfr, model="M1", slug="m1")
+        cls.device = Device.objects.create(
+            name="rtr-1", device_type=dt, role=role, site=cls.site
+        )
+        cls.server = OpenNMSServer.objects.create(
+            name="Acme", url="https://onms.example", username="svc", password="x"
+        )
+
+    def _node(self, *, matched=None, ip="10.0.0.9", netmask="255.255.255.0"):
+        return DiscoveredNode.objects.create(
+            server=self.server,
+            opennms_node_id=1,
+            label="rtr-9",
+            foreign_id="device-9",
+            location="Raleigh",
+            verdict="red",
+            ip_interfaces=[{"ipAddress": ip, "snmpPrimary": "P", "netMask": netmask}],
+            walked_at=timezone.now(),
+            matched_object=matched,
+        )
+
+    def test_unknown_ip_is_rejected(self):
+        node = self._node()
+        with self.assertRaises(ConfirmRejected):
+            confirm_ip_interface(node, "10.0.0.99")
+
+    def test_already_green_is_rejected_and_leaves_netbox_untouched(self):
+        iface = Interface.objects.create(
+            device=self.device, name="eth0", type="virtual"
+        )
+        IPAddress.objects.create(address="10.0.0.9/24", assigned_object=iface)
+        node = self._node(matched=self.device)
+        before = IPAddress.objects.count()
+
+        with self.assertRaises(ConfirmRejected):
+            confirm_ip_interface(node, "10.0.0.9")
+
+        self.assertEqual(IPAddress.objects.count(), before)
+
+    def test_not_yet_confirmed_leaves_netbox_untouched(self):
+        self._node(matched=self.device)
+        self.assertFalse(Prefix.objects.filter(prefix="10.0.0.0/24").exists())
+        self.assertFalse(IPAddress.objects.filter(address="10.0.0.9/24").exists())
+
+    def test_confirm_creates_prefix_and_assigns_to_matched_device(self):
+        node = self._node(matched=self.device)
+
+        address = confirm_ip_interface(node, "10.0.0.9")
+
+        self.assertTrue(Prefix.objects.filter(prefix="10.0.0.0/24").exists())
+        self.assertEqual(str(address.address), "10.0.0.9/24")
+        self.assertEqual(address.assigned_object.device, self.device)
+
+        verdicts = {v.ip_address: v for v in reconcile_node_interfaces(node)}
+        self.assertEqual(verdicts["10.0.0.9"].verdict, "green")
+
+    def test_confirm_reuses_existing_prefix_instead_of_duplicating(self):
+        Prefix.objects.create(prefix="10.0.0.0/24")
+        node = self._node(matched=self.device)
+
+        confirm_ip_interface(node, "10.0.0.9")
+
+        self.assertEqual(Prefix.objects.filter(prefix="10.0.0.0/24").count(), 1)
+
+    def test_confirm_without_matched_object_creates_unassigned_address(self):
+        node = self._node(matched=None)
+
+        address = confirm_ip_interface(node, "10.0.0.9")
+
+        self.assertIsNone(address.assigned_object)
+        verdicts = {v.ip_address: v for v in reconcile_node_interfaces(node)}
+        self.assertEqual(verdicts["10.0.0.9"].verdict, "green")
+
+    def test_confirm_creates_ip_range_and_host_address_when_netmask_unknown(self):
+        node = self._node(matched=None, netmask="")
+
+        address = confirm_ip_interface(node, "10.0.0.9")
+
+        self.assertEqual(str(address.address), "10.0.0.9/32")
+        self.assertTrue(
+            IPRange.objects.filter(
+                start_address="10.0.0.0/24", end_address="10.0.0.255/24"
+            ).exists()
+        )

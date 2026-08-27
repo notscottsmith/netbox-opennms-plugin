@@ -55,6 +55,7 @@
                 <th>Netmask</th>
                 <th>Verdict</th>
                 <th>Proposal</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
@@ -80,6 +81,15 @@
                       IP Range {{ iv.proposal.start_address }}–{{ iv.proposal.end_address }}{% if iv.proposal.vrf %} (VRF {{ iv.proposal.vrf }}){% endif %}
                     {% else %}
                       —
+                    {% endif %}
+                  </td>
+                  <td>
+                    {% if iv.verdict == "red" %}
+                      <form method="post" action="{% url 'plugins:netbox_opennms:discoverednode_confirm_ip' object.pk %}">
+                        {% csrf_token %}
+                        <input type="hidden" name="ip_address" value="{{ iv.ip_address }}">
+                        <button type="submit" class="btn btn-sm btn-outline-primary">Confirm into NetBox</button>
+                      </form>
                     {% endif %}
                   </td>
                 </tr>

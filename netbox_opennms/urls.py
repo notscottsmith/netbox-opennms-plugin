@@ -154,6 +154,11 @@ urlpatterns = (
         name="discoverednode_import",
     ),
     path(
+        "discovered-nodes/<int:pk>/confirm-ip/",
+        views.DiscoveredNodeConfirmIPView.as_view(),
+        name="discoverednode_confirm_ip",
+    ),
+    path(
         "discovered-nodes/<int:pk>/changelog/",
         ObjectChangeLogView.as_view(),
         name="discoverednode_changelog",
