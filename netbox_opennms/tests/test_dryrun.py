@@ -15,7 +15,7 @@ from dcim.models import (
 from django.test import SimpleTestCase, TestCase
 from ipam.models import IPAddress
 
-from netbox_opennms.dryrun import diff, dry_run
+from netbox_opennms.dryrun import NodeDiff, diff, dry_run
 from netbox_opennms.membership import (
     Conflict,
     InterfaceSpec,
@@ -74,12 +74,21 @@ class DryRunDiffTest(SimpleTestCase):
     def test_empty_diff_on_identical(self):
         result = diff(_resolution([_node()]), _current(), {"scan-interval": "1d"})
         self.assertFalse(result.has_changes)
-        self.assertEqual(result.unchanged, 1)
+        self.assertEqual(len(result.unchanged), 1)
+
+    def test_unchanged_is_a_full_nodediff_not_a_bare_count(self):
+        # Issue #18: an in-sync member is listed like added/removed/changed,
+        # not folded into a count.
+        result = diff(_resolution([_node()]), _current(), {"scan-interval": "1d"})
+        self.assertEqual(
+            result.unchanged, [NodeDiff("device-1", "rtr-1", "unchanged")]
+        )
 
     def test_never_synced_is_all_added(self):
         result = diff(_resolution([_node()]), None, None)
         self.assertFalse(result.exists)
         self.assertEqual([n.foreign_id for n in result.added], ["device-1"])
+        self.assertEqual(result.unchanged, [])
 
     def test_management_ip_change(self):
         result = diff(
@@ -120,7 +129,7 @@ class DryRunDiffTest(SimpleTestCase):
         self.assertEqual(result.added, [])
         self.assertEqual(result.removed, [])
         self.assertEqual(result.changed, [])
-        self.assertEqual(result.unchanged, 0)
+        self.assertEqual(len(result.unchanged), 0)
 
     def test_server_conflict_reports_freeze_instead_of_diff(self):
         # ADR 0002: members disagreeing on (or none resolving to) an OpenNMS
@@ -134,7 +143,7 @@ class DryRunDiffTest(SimpleTestCase):
         self.assertEqual(result.added, [])
         self.assertEqual(result.removed, [])
         self.assertEqual(result.changed, [])
-        self.assertEqual(result.unchanged, 0)
+        self.assertEqual(len(result.unchanged), 0)
 
     def test_blank_location_matches_configured_default(self):
         # Node location blank + OpenNMS holds the configured default_location →
@@ -163,7 +172,7 @@ class DryRunDiffTest(SimpleTestCase):
         }
         result = diff(_resolution([_node()]), current, {"scan-interval": "1d"})
         self.assertEqual(result.added, [])
-        self.assertEqual(result.unchanged, 1)
+        self.assertEqual(len(result.unchanged), 1)
 
 
 FS = "netbox.raleigh.router"
@@ -285,7 +294,7 @@ class DryRunFetchTest(TestCase):
         result = dry_run(FS)
         self.assertEqual(result.added, [])
         self.assertEqual(result.removed, [])
-        self.assertEqual(result.unchanged, 1)
+        self.assertEqual(len(result.unchanged), 1)
 
     @mock.patch("netbox_opennms.dryrun.OpenNMSClient.from_server")
     def test_non_adopted_node_shows_freshly_derived_id(self, mock_from_server):
