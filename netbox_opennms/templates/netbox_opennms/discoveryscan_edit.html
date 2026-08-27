@@ -1,0 +1,12 @@
+{# Copyright 2026 Ronny Trommer <ronny@no42.org> #}
+{# SPDX-License-Identifier: MIT #}
+{% extends 'generic/object_edit.html' %}
+{% load static %}
+
+{% block javascript %}
+  {{ block.super }}
+  <script>
+    window.DISCOVERYSCAN_SERVER_LOCATIONS_AJAX_URL = "{% url 'plugins:netbox_opennms:discoveryscan_server_locations_ajax' %}";
+  </script>
+  <script src="{% static 'netbox_opennms/discoveryscan_server_locations.js' %}"></script>
+{% endblock %}

@@ -14,7 +14,7 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError, connection, transaction
 from django.test import TestCase
 from django.utils import timezone
-from ipam.models import VRF, IPAddress
+from ipam.models import IPAddress
 from tenancy.models import Tenant
 
 from netbox_opennms.models import (
@@ -26,7 +26,6 @@ from netbox_opennms.models import (
     MonitoringPolicy,
     OpenNMSServer,
     Requisition,
-    VRFAssignment,
     object_ip_pks,
     override_ip_pks,
 )
@@ -334,37 +333,28 @@ class MonitoringExclusionTest(TestCase):
         self.assertEqual(list(exclusion.tenants.all()), [tenant])
 
 
-class VRFAssignmentTest(TestCase):
-    def test_str_falls_back_to_the_vrf(self):
-        vrf = VRF.objects.create(name="Customer VRF")
-        assignment = VRFAssignment.objects.create(vrf=vrf)
-        self.assertEqual(str(assignment), f"VRF assignment: {vrf}")
-
-    def test_str_uses_description_when_set(self):
-        vrf = VRF.objects.create(name="Customer VRF")
-        assignment = VRFAssignment.objects.create(vrf=vrf, description="Acme VRF")
-        self.assertEqual(str(assignment), "Acme VRF")
-
-    def test_scope_bindings_are_optional(self):
-        vrf = VRF.objects.create(name="Customer VRF")
-        assignment = VRFAssignment.objects.create(vrf=vrf, description="unbound")
-        tenant = Tenant.objects.create(name="Acme Corp", slug="acme-corp")
-        self.assertEqual(list(assignment.tenants.all()), [])
-        assignment.tenants.add(tenant)
-        self.assertEqual(list(assignment.tenants.all()), [tenant])
-
-
 class DiscoveryScanTest(TestCase):
     @classmethod
     def setUpTestData(cls):
         cls.server = OpenNMSServer.objects.create(
             name="Acme", url="https://onms.example"
         )
-        cls.site = Site.objects.create(name="Raleigh", slug="raleigh")
+        cls.requisition = Requisition.objects.create(name="fs-1")
 
-    def test_requires_site_or_location(self):
+    def test_requires_requisition(self):
         scan = DiscoveryScan(
             server=self.server,
+            location="raleigh",
+            ip_range_begin="10.0.0.1",
+            ip_range_end="10.0.0.10",
+        )
+        with self.assertRaises(ValidationError):
+            scan.clean()
+
+    def test_requires_location(self):
+        scan = DiscoveryScan(
+            server=self.server,
+            requisition=self.requisition,
             ip_range_begin="10.0.0.1",
             ip_range_end="10.0.0.10",
         )
@@ -374,7 +364,8 @@ class DiscoveryScanTest(TestCase):
     def test_ip_range_end_before_begin_raises(self):
         scan = DiscoveryScan(
             server=self.server,
-            site=self.site,
+            requisition=self.requisition,
+            location="raleigh",
             ip_range_begin="10.0.0.10",
             ip_range_end="10.0.0.1",
         )
@@ -384,7 +375,8 @@ class DiscoveryScanTest(TestCase):
     def test_ip_range_version_mismatch_raises(self):
         scan = DiscoveryScan(
             server=self.server,
-            site=self.site,
+            requisition=self.requisition,
+            location="raleigh",
             ip_range_begin="10.0.0.1",
             ip_range_end="::1",
         )
@@ -394,17 +386,19 @@ class DiscoveryScanTest(TestCase):
     def test_foreign_source_derived_on_save(self):
         scan = DiscoveryScan.objects.create(
             server=self.server,
-            site=self.site,
+            requisition=self.requisition,
+            location="raleigh",
             ip_range_begin="10.0.0.1",
             ip_range_end="10.0.0.10",
         )
         self.assertTrue(scan.foreign_source)
         self.assertIn("discovery", scan.foreign_source)
 
-    def test_monitoring_location_uses_site_slug(self):
+    def test_monitoring_location_is_the_location_string(self):
         scan = DiscoveryScan.objects.create(
             server=self.server,
-            site=self.site,
+            requisition=self.requisition,
+            location="raleigh",
             ip_range_begin="10.0.0.1",
             ip_range_end="10.0.0.10",
         )
@@ -413,7 +407,8 @@ class DiscoveryScanTest(TestCase):
     def test_mark_triggered_sets_last_triggered(self):
         scan = DiscoveryScan.objects.create(
             server=self.server,
-            site=self.site,
+            requisition=self.requisition,
+            location="raleigh",
             ip_range_begin="10.0.0.1",
             ip_range_end="10.0.0.10",
         )
@@ -425,7 +420,8 @@ class DiscoveryScanTest(TestCase):
     def test_status_pending_before_trigger(self):
         scan = DiscoveryScan.objects.create(
             server=self.server,
-            site=self.site,
+            requisition=self.requisition,
+            location="raleigh",
             ip_range_begin="10.0.0.1",
             ip_range_end="10.0.0.10",
         )
@@ -434,7 +430,8 @@ class DiscoveryScanTest(TestCase):
     def test_status_running_after_trigger_before_settle(self):
         scan = DiscoveryScan.objects.create(
             server=self.server,
-            site=self.site,
+            requisition=self.requisition,
+            location="raleigh",
             ip_range_begin="10.0.0.1",
             ip_range_end="10.0.0.10",
         )
@@ -444,7 +441,8 @@ class DiscoveryScanTest(TestCase):
     def test_status_settled_once_settled_at_is_set(self):
         scan = DiscoveryScan.objects.create(
             server=self.server,
-            site=self.site,
+            requisition=self.requisition,
+            location="raleigh",
             ip_range_begin="10.0.0.1",
             ip_range_end="10.0.0.10",
         )

@@ -16,7 +16,7 @@ from django.contrib.auth.models import Permission, User
 from django.contrib.messages import get_messages
 from django.test import TestCase
 from django.urls import reverse
-from ipam.models import VRF, IPAddress
+from ipam.models import IPAddress
 from utilities.testing import ViewTestCases
 
 from netbox_opennms.client import OpenNMSError
@@ -33,7 +33,6 @@ from netbox_opennms.models import (
     MonitoringPolicy,
     OpenNMSServer,
     Requisition,
-    VRFAssignment,
 )
 
 DETECTOR_CLASS = "org.opennms.netmgt.provision.detector.icmp.IcmpDetector"
@@ -325,31 +324,6 @@ class MonitoringExclusionViewTest(
         }
 
 
-class VRFAssignmentViewTest(
-    ViewTestCases.GetObjectViewTestCase,
-    ViewTestCases.GetObjectChangelogViewTestCase,
-    ViewTestCases.CreateObjectViewTestCase,
-    ViewTestCases.EditObjectViewTestCase,
-    ViewTestCases.DeleteObjectViewTestCase,
-    ViewTestCases.ListObjectsViewTestCase,
-    ViewTestCases.BulkDeleteObjectsViewTestCase,
-):
-    model = VRFAssignment
-
-    def _get_base_url(self):
-        return "plugins:netbox_opennms:vrfassignment_{}"
-
-    @classmethod
-    def setUpTestData(cls):
-        vrf = VRF.objects.create(name="Customer VRF")
-        for description in ("va-1", "va-2", "va-3"):
-            VRFAssignment.objects.create(vrf=vrf, description=description)
-        cls.form_data = {
-            "vrf": vrf.pk,
-            "description": "va-4",
-        }
-
-
 class DiscoveryScanViewTest(
     ViewTestCases.GetObjectViewTestCase,
     ViewTestCases.GetObjectChangelogViewTestCase,
@@ -369,17 +343,19 @@ class DiscoveryScanViewTest(
         server = OpenNMSServer.objects.create(
             name="Acme", url="https://onms.example"
         )
-        site = Site.objects.create(name="Raleigh", slug="raleigh")
+        requisition = Requisition.objects.create(name="fs-1")
         for i in range(3):
             DiscoveryScan.objects.create(
                 server=server,
-                site=site,
+                requisition=requisition,
+                location="raleigh",
                 ip_range_begin=f"10.0.{i}.1",
                 ip_range_end=f"10.0.{i}.254",
             )
         cls.form_data = {
             "server": server.pk,
-            "site": site.pk,
+            "requisition": requisition.pk,
+            "location": "raleigh",
             "ip_range_begin": "10.0.9.1",
             "ip_range_end": "10.0.9.254",
             "retries": 1,
@@ -392,13 +368,14 @@ class DiscoveryScanTriggerViewTest(TestCase):
 
     @classmethod
     def setUpTestData(cls):
-        cls.site = Site.objects.create(name="Raleigh", slug="raleigh")
+        cls.requisition = Requisition.objects.create(name="fs-1")
         cls.server = OpenNMSServer.objects.create(
             name="Acme", url="https://onms.example", username="svc", password="x"
         )
         cls.scan = DiscoveryScan.objects.create(
             server=cls.server,
-            site=cls.site,
+            requisition=cls.requisition,
+            location="raleigh",
             ip_range_begin="10.0.0.1",
             ip_range_end="10.0.0.254",
         )

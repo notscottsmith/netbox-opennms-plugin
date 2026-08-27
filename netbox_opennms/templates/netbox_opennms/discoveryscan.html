@@ -10,10 +10,11 @@
         <h2 class="card-header">Discovery Scan</h2>
         <table class="table table-hover attr-table">
           <tr><th scope="row">Server</th><td>{{ object.server|linkify }}</td></tr>
-          <tr><th scope="row">Site</th><td>{{ object.site|linkify|placeholder }}</td></tr>
-          <tr><th scope="row">Location</th><td>{{ object.location|linkify|placeholder }}</td></tr>
+          <tr><th scope="row">Requisition</th><td>{{ object.requisition|linkify|placeholder }}</td></tr>
+          <tr><th scope="row">Location</th><td>{{ object.location|placeholder }}</td></tr>
           <tr><th scope="row">Foreign Source</th><td>{{ object.foreign_source|placeholder }}</td></tr>
-          <tr><th scope="row">IP range</th><td>{{ object.ip_range_begin }} &ndash; {{ object.ip_range_end }}</td></tr>
+          <tr><th scope="row">IP Range Begin</th><td>{{ object.ip_range_begin }}</td></tr>
+          <tr><th scope="row">IP Range End</th><td>{{ object.ip_range_end }}</td></tr>
           <tr><th scope="row">Retries</th><td>{{ object.retries }}</td></tr>
           <tr><th scope="row">Timeout (ms)</th><td>{{ object.timeout }}</td></tr>
           <tr><th scope="row">Last triggered</th><td>{{ object.last_triggered|placeholder }}</td></tr>

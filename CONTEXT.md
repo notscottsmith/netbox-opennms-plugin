@@ -52,11 +52,11 @@ One OpenNMS node found by scanning a Server's live node inventory — either a f
 _Avoid_: Discovery on its own — always say Discovered Node or Discovery Scan; this repo has two other unrelated senses of the bare word (the plugin's internal detector/policy catalog reader, and the general software-engineering sense).
 
 **Discovery Scan**:
-A NetBox record for one triggered OpenNMS network-scan (an ICMP/SNMP sweep over IP ranges via OpenNMS's own Discovery feature), bound to a single OpenNMS Server and a NetBox site/location, and identified by a throwaway Foreign Source. The site/location supplies OpenNMS's own required Monitoring Location field on the discovery request, and is what every Discovered Node it produces uses to resolve VRF Assignment for its IP interfaces. OpenNMS gives no synchronous completion signal, so a Discovery Scan is polled until no new nodes appear for a while (considered settled), then its OpenNMS-side data is cleaned up after a retention period — the Discovered Node rows it produced remain in NetBox regardless.
+A NetBox record for one triggered OpenNMS network-scan (an ICMP/SNMP sweep over IP ranges via OpenNMS's own Discovery feature), bound to a single OpenNMS Server and a Requisition, and identified by a throwaway Foreign Source. Its Monitoring Location is a plain string (a live value from the bound Server's own Monitoring Locations, not a NetBox object — there is no NetBox site on an OpenNMS discovery request at all). Its linked Requisition's own Scope (site/location/tenant/…, read from the Requisition's filter) is what every Discovered Node it produces uses to resolve a VRF for its IP interfaces (see VRF Resolution). OpenNMS gives no synchronous completion signal, so a Discovery Scan is polled until no new nodes appear for a while (considered settled), then its OpenNMS-side data is cleaned up after a retention period — the Discovered Node rows it produced remain in NetBox regardless.
 _Avoid_: Discovery on its own (see Discovered Node)
 
-**VRF Assignment**:
-A record binding a VRF to a Scope (tenant group/tenant/site group/site/location), resolved by the same most-specific-wins precedence engine as OpenNMS Server and Monitoring Exclusion. Used to determine which VRF a Discovered Node's proposed Prefix or IP Range belongs to, since NetBox's own IP Range has no site/location scope of its own to carry that.
+**VRF Resolution**:
+Resolving which VRF a Discovered Node's proposed Prefix or IP Range belongs to, by walking the same most-specific-wins Scope precedence as OpenNMS Server/Monitoring Exclusion — starting from a Discovery Scan's Requisition's own resolved site/location — and reading the `vrf` off whichever NetBox `Prefix` is natively scoped to the first matching level. No separate binding model: a VRF is already "assigned" to a site/location/tenant/… the moment an operator scopes a `Prefix` to it (ADR 0009, superseding the removed VRF Assignment model).
 
 ### Conflicts
 

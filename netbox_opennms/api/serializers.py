@@ -24,7 +24,6 @@ from ..models import (
     MonitoringPolicy,
     OpenNMSServer,
     Requisition,
-    VRFAssignment,
 )
 from ..scope import SCOPE_FIELDS, find_scope_collision
 
@@ -366,47 +365,6 @@ class MonitoringExclusionSerializer(NetBoxModelSerializer):
         brief_fields = ("id", "url", "display", "description")
 
 
-class VRFAssignmentSerializer(NetBoxModelSerializer):
-    url = serializers.HyperlinkedIdentityField(
-        view_name="plugins-api:netbox_opennms-api:vrfassignment-detail"
-    )
-
-    class Meta:
-        model = VRFAssignment
-        fields = (
-            "id",
-            "url",
-            "display",
-            "vrf",
-            "description",
-            "tenant_groups",
-            "tenants",
-            "site_groups",
-            "sites",
-            "locations",
-            "tags",
-            "custom_fields",
-            "created",
-            "last_updated",
-        )
-        brief_fields = ("id", "url", "display", "description")
-
-    def validate(self, data):
-        data = super().validate(data)
-        # A given object may be bound directly to only one VRF Assignment at
-        # a time (ADR 0008) — mirrors OpenNMSServerSerializer's identical check.
-        exclude_pk = self.instance.pk if self.instance is not None else None
-        for field in SCOPE_FIELDS:
-            other = find_scope_collision(
-                field, data.get(field), exclude_pk=exclude_pk, model=VRFAssignment
-            )
-            if other is not None:
-                raise serializers.ValidationError(
-                    {field: f'Already bound directly to VRF Assignment "{other}".'}
-                )
-        return data
-
-
 class DiscoveryScanSerializer(NetBoxModelSerializer):
     url = serializers.HyperlinkedIdentityField(
         view_name="plugins-api:netbox_opennms-api:discoveryscan-detail"
@@ -419,7 +377,7 @@ class DiscoveryScanSerializer(NetBoxModelSerializer):
             "url",
             "display",
             "server",
-            "site",
+            "requisition",
             "location",
             "foreign_source",
             "ip_range_begin",
@@ -434,13 +392,20 @@ class DiscoveryScanSerializer(NetBoxModelSerializer):
         )
         brief_fields = ("id", "url", "display", "foreign_source")
 
+    def validate_location(self, value):
+        return _validate_location(value)
+
     def validate(self, data):
         data = super().validate(data)
-        site = data.get("site", getattr(self.instance, "site", None))
-        location = data.get("location", getattr(self.instance, "location", None))
-        if not site and not location:
+        requisition = data.get("requisition", getattr(self.instance, "requisition", None))
+        if not requisition:
             raise serializers.ValidationError(
-                "A Discovery Scan requires a NetBox site or location."
+                {"requisition": "A Discovery Scan requires a Requisition."}
+            )
+        location = data.get("location", getattr(self.instance, "location", ""))
+        if not location:
+            raise serializers.ValidationError(
+                {"location": "A Discovery Scan requires an OpenNMS Monitoring Location."}
             )
         return data
 

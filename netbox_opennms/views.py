@@ -44,7 +44,6 @@ from .models import (
     MonitoringPolicy,
     OpenNMSServer,
     Requisition,
-    VRFAssignment,
 )
 from .requisition_discovery import build_foreign_source_import, list_unmirrored
 from .scan import KIND_MODELS, scan_server, upsert_discovered_nodes
@@ -499,30 +498,6 @@ class MonitoringExclusionBulkDeleteView(generic.BulkDeleteView):
     table = tables.MonitoringExclusionTable
 
 
-class VRFAssignmentView(generic.ObjectView):
-    queryset = VRFAssignment.objects.all()
-
-
-class VRFAssignmentListView(generic.ObjectListView):
-    queryset = VRFAssignment.objects.all()
-    table = tables.VRFAssignmentTable
-    filterset = filtersets.VRFAssignmentFilterSet
-
-
-class VRFAssignmentEditView(generic.ObjectEditView):
-    queryset = VRFAssignment.objects.all()
-    form = forms.VRFAssignmentForm
-
-
-class VRFAssignmentDeleteView(generic.ObjectDeleteView):
-    queryset = VRFAssignment.objects.all()
-
-
-class VRFAssignmentBulkDeleteView(generic.BulkDeleteView):
-    queryset = VRFAssignment.objects.all()
-    table = tables.VRFAssignmentTable
-
-
 # --- Discovery Scan (issue #25) -----------------------------------------------
 
 
@@ -581,6 +556,29 @@ class DiscoveryScanTriggerView(GetReturnURLMixin, PermissionRequiredMixin, View)
         scan.mark_triggered()
         messages.success(request, f"Triggered Discovery scan {scan}.")
         return redirect(return_url)
+
+
+class DiscoveryScanServerLocationsAjaxView(PermissionRequiredMixin, View):
+    """JSON location list for the add/edit Discovery Scan form
+    (``discoveryscan_server_locations.js``).
+
+    Unlike ``OpenNMSServerTestAjaxView``, this targets an already-saved
+    Server (picked from the Discovery Scan form's own Server field) rather
+    than posted, not-yet-saved credentials — so it's a plain GET keyed by
+    ``server_id``.
+    """
+
+    permission_required = "netbox_opennms.add_discoveryscan"
+
+    def get(self, request):
+        server_id = request.GET.get("server_id")
+        server = get_object_or_404(OpenNMSServer, pk=server_id)
+        try:
+            with OpenNMSClient.from_server(server) as client:
+                locations = sorted(client.list_locations())
+        except OpenNMSError as exc:
+            return JsonResponse({"ok": False, "message": str(exc)})
+        return JsonResponse({"ok": True, "locations": locations})
 
 
 # --- Discovery (issue #7) ----------------------------------------------------

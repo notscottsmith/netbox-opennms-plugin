@@ -16,8 +16,12 @@ testing seam for multi-server support.
 
 from dataclasses import dataclass
 
+from dcim.models import Location, Site
+from django.contrib.contenttypes.models import ContentType
+from ipam.models import Prefix
+
 from .derivation import site_for
-from .models import MonitoringExclusion, OpenNMSServer, VRFAssignment
+from .models import MonitoringExclusion, OpenNMSServer
 
 SCOPE_FIELDS = ("tenant_groups", "tenants", "site_groups", "sites", "locations")
 
@@ -105,10 +109,13 @@ def scope_options(server):
     bindings apply to them.
 
     Returns ``None`` (unconstrained — every object is a valid pick) when
-    *server* is ``None``; otherwise a dict of five querysets keyed by
-    ``SCOPE_FIELDS``.
+    *server* is ``None`` or is the Default Server: the Default Server carries
+    no Scope bindings by validation (it's what everything unscoped falls
+    through to), so constraining "its own bindings" would wrongly reject
+    every choice instead of leaving the picker open. Otherwise returns a
+    dict of five querysets keyed by ``SCOPE_FIELDS``.
     """
-    if server is None:
+    if server is None or server.is_default:
         return None
     options = {}
     for field_name in SCOPE_FIELDS:
@@ -131,8 +138,7 @@ def find_scope_collision(field, selected, exclude_pk=None, model=OpenNMSServer):
     time, so ``OpenNMSServerForm``/``OpenNMSServerSerializer`` both call this
     to reject it. Deliberately NOT enforced here at resolve time: by the time
     ``resolve_scope`` runs, a collision is an existing data-entry mistake, not
-    something to arbitrate. ADR 0008 reuses the same check for
-    ``VRFAssignment`` by passing ``model=VRFAssignment``.
+    something to arbitrate.
     """
     if not selected:
         return None
@@ -143,9 +149,9 @@ def find_scope_collision(field, selected, exclude_pk=None, model=OpenNMSServer):
 
 
 def _scope_levels_for_site_or_location(site=None, location=None):
-    """The five Scope levels starting from an explicit Site/Location (ADR 0008).
+    """The five Scope levels starting from an explicit Site/Location (ADR 0009).
 
-    Same shape as ``_scope_levels``, but for a Discovery Scan's bound
+    Same shape as ``_scope_levels``, but for a Requisition's resolved
     site/location rather than a Device/VM's own attributes: tenant is drawn
     from the Location's own ``tenant`` first (falling back to the Site's),
     mirroring how a Location may carry a more specific tenant than its Site.
@@ -166,21 +172,49 @@ def _scope_levels_for_site_or_location(site=None, location=None):
     ]
 
 
-def resolve_vrf(*, site=None, location=None):
-    """Resolve the VRF bound to *site*/*location* (ADR 0008), or ``None``.
+def _single_scope_object(model, slugs):
+    """The one object *slugs* (a filter_params value) unambiguously names."""
+    if not slugs or len(slugs) != 1:
+        return None
+    return model.objects.filter(slug=slugs[0]).first()
 
-    Same most-specific-wins precedence as ``resolve_scope``, but starting
-    from a Discovery Scan's explicit Site/Location rather than a Device/VM.
-    Unlike ``resolve_scope`` there is no Default VRF fallback — ``None``
-    means nothing is bound at any level.
+
+def requisition_scope_site_and_location(requisition):
+    """The Site/Location a Requisition's own ``filter_params`` resolves to.
+
+    Reads the same ``"site"``/``"location"`` filter keys the Requisition Scope
+    picker (issue #19) writes (a single slug per key) — this is how a
+    Requisition's own scope becomes readable without a separate structured
+    field. Returns ``(site, location)``; either is ``None`` when its key is
+    absent, empty, or names more than one object (no single scope to resolve
+    a VRF from, ADR 0009).
     """
-    for field_name, candidates in _scope_levels_for_site_or_location(
+    params = requisition.filter_params or {}
+    site = _single_scope_object(Site, params.get("site"))
+    location = _single_scope_object(Location, params.get("location"))
+    return site, location
+
+
+def resolve_vrf(*, site=None, location=None):
+    """Resolve the VRF scoped to *site*/*location* (ADR 0009), or ``None``.
+
+    Supersedes ADR 0008's bespoke ``VRFAssignment`` binding table: a VRF is
+    already "assigned" to a NetBox entity natively, via any ``ipam.Prefix``
+    scoped (``CachedScopeMixin``) to that entity and carrying a ``vrf`` — so
+    this reads that off directly instead of maintaining a parallel mechanism.
+    Same most-specific-wins precedence as ``resolve_scope``, starting from an
+    explicit Site/Location rather than a Device/VM. Unlike ``resolve_scope``
+    there is no Default VRF fallback — ``None`` means no scoped Prefix at any
+    level carries a VRF.
+    """
+    for _field_name, candidates in _scope_levels_for_site_or_location(
         site=site, location=location
     ):
         for candidate in candidates:
-            assignment = VRFAssignment.objects.filter(
-                **{field_name: candidate}
+            ct = ContentType.objects.get_for_model(candidate)
+            prefix = Prefix.objects.filter(
+                scope_type=ct, scope_id=candidate.pk, vrf__isnull=False
             ).first()
-            if assignment is not None:
-                return assignment.vrf
+            if prefix is not None:
+                return prefix.vrf
     return None

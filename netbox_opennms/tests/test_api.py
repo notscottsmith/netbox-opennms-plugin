@@ -13,7 +13,7 @@ from dcim.models import (
     Site,
 )
 from django.test import TestCase
-from ipam.models import VRF, IPAddress
+from ipam.models import IPAddress
 from utilities.testing import APIViewTestCases
 
 from netbox_opennms.api.serializers import (
@@ -33,7 +33,6 @@ from netbox_opennms.models import (
     MonitoringPolicy,
     OpenNMSServer,
     Requisition,
-    VRFAssignment,
 )
 
 DETECTOR_CLASS = "org.opennms.netmgt.provision.detector.icmp.IcmpDetector"
@@ -330,23 +329,6 @@ class MonitoringExclusionAPITest(_NoGraphQL, APIViewTestCases.APIViewTestCase):
         ]
 
 
-class VRFAssignmentAPITest(_NoGraphQL, APIViewTestCases.APIViewTestCase):
-    model = VRFAssignment
-    view_namespace = "plugins-api:netbox_opennms"
-    brief_fields = ["description", "display", "id", "url"]
-
-    @classmethod
-    def setUpTestData(cls):
-        vrf = VRF.objects.create(name="Customer VRF")
-        for description in ("va-1", "va-2", "va-3"):
-            VRFAssignment.objects.create(vrf=vrf, description=description)
-        cls.create_data = [
-            {"vrf": vrf.pk, "description": "va-4"},
-            {"vrf": vrf.pk, "description": "va-5"},
-            {"vrf": vrf.pk, "description": "va-6"},
-        ]
-
-
 class DiscoveryScanAPITest(_NoGraphQL, APIViewTestCases.APIViewTestCase):
     model = DiscoveryScan
     view_namespace = "plugins-api:netbox_opennms"
@@ -357,30 +339,34 @@ class DiscoveryScanAPITest(_NoGraphQL, APIViewTestCases.APIViewTestCase):
         server = OpenNMSServer.objects.create(
             name="ds-api", url="https://ds-api.example"
         )
-        site = Site.objects.create(name="Raleigh", slug="raleigh")
+        requisition = Requisition.objects.create(name="fs-api")
         for i in range(3):
             DiscoveryScan.objects.create(
                 server=server,
-                site=site,
+                requisition=requisition,
+                location="raleigh",
                 ip_range_begin=f"10.1.{i}.1",
                 ip_range_end=f"10.1.{i}.254",
             )
         cls.create_data = [
             {
                 "server": server.pk,
-                "site": site.pk,
+                "requisition": requisition.pk,
+                "location": "raleigh",
                 "ip_range_begin": "10.1.10.1",
                 "ip_range_end": "10.1.10.254",
             },
             {
                 "server": server.pk,
-                "site": site.pk,
+                "requisition": requisition.pk,
+                "location": "raleigh",
                 "ip_range_begin": "10.1.11.1",
                 "ip_range_end": "10.1.11.254",
             },
             {
                 "server": server.pk,
-                "site": site.pk,
+                "requisition": requisition.pk,
+                "location": "raleigh",
                 "ip_range_begin": "10.1.12.1",
                 "ip_range_end": "10.1.12.254",
             },
@@ -388,14 +374,14 @@ class DiscoveryScanAPITest(_NoGraphQL, APIViewTestCases.APIViewTestCase):
 
 
 class DiscoveryScanSerializerValidationTest(TestCase):
-    """ADR 0006/0008: mirrors DiscoveryScanForm's identical check (test_forms.py)."""
+    """ADR 0009: mirrors DiscoveryScanForm's identical check (test_forms.py)."""
 
     @classmethod
     def setUpTestData(cls):
         cls.server = OpenNMSServer.objects.create(
             name="Acme", url="https://onms.example"
         )
-        cls.site = Site.objects.create(name="Raleigh", slug="raleigh")
+        cls.requisition = Requisition.objects.create(name="fs-1")
 
     def _data(self, **overrides):
         data = {
@@ -406,12 +392,20 @@ class DiscoveryScanSerializerValidationTest(TestCase):
         data.update(overrides)
         return data
 
-    def test_site_or_location_required(self):
-        serializer = DiscoveryScanSerializer(data=self._data())
+    def test_requisition_required(self):
+        serializer = DiscoveryScanSerializer(data=self._data(location="raleigh"))
         self.assertFalse(serializer.is_valid())
 
-    def test_with_site_is_accepted(self):
-        serializer = DiscoveryScanSerializer(data=self._data(site=self.site.pk))
+    def test_location_required(self):
+        serializer = DiscoveryScanSerializer(
+            data=self._data(requisition=self.requisition.pk)
+        )
+        self.assertFalse(serializer.is_valid())
+
+    def test_with_requisition_and_location_is_accepted(self):
+        serializer = DiscoveryScanSerializer(
+            data=self._data(requisition=self.requisition.pk, location="raleigh")
+        )
         self.assertTrue(serializer.is_valid(), serializer.errors)
 
 

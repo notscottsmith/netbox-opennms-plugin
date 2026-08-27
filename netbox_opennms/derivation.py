@@ -164,24 +164,6 @@ def discovery_foreign_source_for(timestamp):
     return validate_foreign_source_name(name)
 
 
-def monitoring_location_for(*, site=None, location=None):
-    """Return the OpenNMS Monitoring Location a Discovery Scan's NetBox
-    site/location supplies on the scan request (ADR 0006/0008).
-
-    NetBox Location and OpenNMS Monitoring Location are unrelated concepts
-    that happen to share a name (CONTEXT.md) — this is the single point that
-    bridges them (AD-14), mirroring ``foreign_source_for``'s slug-based
-    naming. The most specific NetBox object supplies the name: ``location``
-    wins over ``site`` when both are given. Raises ``ValueError`` (via
-    ``validate_location_name``) if the slug isn't also a legal OpenNMS
-    location name (AD-9) — NetBox slugs permit ``_``, which OpenNMS doesn't.
-    """
-    obj = location or site
-    if obj is None:
-        raise ValueError("monitoring_location_for() requires a site or location.")
-    return validate_location_name(obj.slug)
-
-
 def foreign_source_for(target):
     """Return the Foreign Source name for a monitored Device or VirtualMachine.
 

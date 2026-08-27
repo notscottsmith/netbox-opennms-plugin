@@ -16,7 +16,7 @@ from dcim.models import (
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 from extras.models import SavedFilter
-from ipam.models import VRF, IPAddress
+from ipam.models import IPAddress
 from tenancy.models import Tenant, TenantGroup
 
 from netbox_opennms.forms import (
@@ -24,7 +24,6 @@ from netbox_opennms.forms import (
     MonitoringOverrideForm,
     OpenNMSServerForm,
     RequisitionForm,
-    VRFAssignmentForm,
 )
 from netbox_opennms.models import (
     MonitoredInterface,
@@ -32,7 +31,6 @@ from netbox_opennms.models import (
     MonitoringOverride,
     OpenNMSServer,
     Requisition,
-    VRFAssignment,
 )
 
 
@@ -330,51 +328,21 @@ class OpenNMSServerFormTest(TestCase):
         )
 
 
-class VRFAssignmentFormTest(TestCase):
-    """ADR 0008: a Scope object may be bound directly to only one VRF Assignment."""
-
-    @classmethod
-    def setUpTestData(cls):
-        cls.site = Site.objects.create(name="Raleigh", slug="raleigh")
-        cls.vrf = VRF.objects.create(name="Customer VRF")
-
-    def _data(self, **overrides):
-        data = {"vrf": self.vrf.pk}
-        data.update(overrides)
-        return data
-
-    def test_site_already_bound_to_another_assignment_is_rejected(self):
-        VRFAssignment.objects.create(vrf=self.vrf).sites.add(self.site)
-        form = VRFAssignmentForm(data=self._data(sites=[self.site.pk]))
-        self.assertFalse(form.is_valid())
-        self.assertIn("sites", form.errors)
-
-    def test_unbound_site_is_accepted(self):
-        form = VRFAssignmentForm(data=self._data(sites=[self.site.pk]))
-        self.assertTrue(form.is_valid(), form.errors)
-
-    def test_editing_the_assignment_that_already_owns_the_binding_is_allowed(self):
-        assignment = VRFAssignment.objects.create(vrf=self.vrf)
-        assignment.sites.add(self.site)
-        form = VRFAssignmentForm(
-            data=self._data(sites=[self.site.pk]), instance=assignment
-        )
-        self.assertTrue(form.is_valid(), form.errors)
-
-
 class DiscoveryScanFormTest(TestCase):
-    """ADR 0006/0008: at least one of site/location is required."""
+    """ADR 0009: a Requisition and an OpenNMS Monitoring Location are required."""
 
     @classmethod
     def setUpTestData(cls):
         cls.server = OpenNMSServer.objects.create(
             name="Acme", url="https://onms.example"
         )
-        cls.site = Site.objects.create(name="Raleigh", slug="raleigh")
+        cls.requisition = Requisition.objects.create(name="fs-1")
 
     def _data(self, **overrides):
         data = {
             "server": self.server.pk,
+            "requisition": self.requisition.pk,
+            "location": "raleigh",
             "ip_range_begin": "10.0.0.1",
             "ip_range_end": "10.0.0.254",
             "retries": 1,
@@ -383,18 +351,21 @@ class DiscoveryScanFormTest(TestCase):
         data.update(overrides)
         return data
 
-    def test_site_or_location_required(self):
-        form = DiscoveryScanForm(data=self._data())
+    def test_requisition_required(self):
+        form = DiscoveryScanForm(data=self._data(requisition=""))
         self.assertFalse(form.is_valid())
 
-    def test_with_site_is_accepted(self):
-        form = DiscoveryScanForm(data=self._data(site=self.site.pk))
+    def test_location_required(self):
+        form = DiscoveryScanForm(data=self._data(location=""))
+        self.assertFalse(form.is_valid())
+
+    def test_with_requisition_and_location_is_accepted(self):
+        form = DiscoveryScanForm(data=self._data())
         self.assertTrue(form.is_valid(), form.errors)
 
     def test_end_before_begin_is_rejected(self):
         form = DiscoveryScanForm(
             data=self._data(
-                site=self.site.pk,
                 ip_range_begin="10.0.0.254",
                 ip_range_end="10.0.0.1",
             )

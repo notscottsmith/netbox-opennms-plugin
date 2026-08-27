@@ -20,7 +20,7 @@ from django.core.exceptions import ValidationError
 from django.db.models import Q
 from django.utils.translation import gettext_lazy as _
 from extras.models import SavedFilter
-from ipam.models import VRF, IPAddress
+from ipam.models import IPAddress
 from netbox.forms import NetBoxModelFilterSetForm, NetBoxModelForm
 from tenancy.models import Tenant, TenantGroup
 from utilities.forms.fields import (
@@ -47,7 +47,6 @@ from .models import (
     MonitoringPolicy,
     OpenNMSServer,
     Requisition,
-    VRFAssignment,
 )
 from .scope import SCOPE_FIELDS, find_scope_collision, scope_options
 
@@ -612,76 +611,56 @@ class MonitoringExclusionForm(_ScopeForm):
         )
 
 
-class VRFAssignmentForm(_ScopeForm):
-    """Bind a VRF to a Scope, for resolving Discovered Node IPs (ADR 0008)."""
-
-    vrf = DynamicModelChoiceField(queryset=VRF.objects.all(), label=_("VRF"))
-
-    class Meta:
-        model = VRFAssignment
-        fields = (
-            "vrf",
-            "description",
-            "tenant_groups",
-            "tenants",
-            "site_groups",
-            "sites",
-            "locations",
-            "tags",
-        )
-
-    def clean(self):
-        super().clean()
-        # A given object may be bound directly to only one VRF Assignment at a
-        # time (ADR 0008), the identical same-level-collision guard as
-        # OpenNMSServerForm.
-        for field in SCOPE_FIELDS:
-            other = find_scope_collision(
-                field,
-                self.cleaned_data.get(field),
-                exclude_pk=self.instance.pk or None,
-                model=VRFAssignment,
-            )
-            if other is not None:
-                self.add_error(
-                    field,
-                    _('Already bound directly to VRF Assignment "%(assignment)s".')
-                    % {"assignment": other},
-                )
-        return self.cleaned_data
-
-
 class DiscoveryScanForm(NetBoxModelForm):
     """Trigger an OpenNMS Discovery scan over an IP range (ADR 0006).
 
-    Plain FK fields, not ``_ScopeForm``: a Discovery Scan targets one NetBox
-    site/location directly (for the Monitoring Location and VRF resolution it
-    supplies, ADR 0006/0008) rather than binding across the five-level Scope
-    hierarchy the way ``OpenNMSServer``/``MonitoringExclusion``/
-    ``VRFAssignment`` do.
+    Not ``_ScopeForm``: a Discovery Scan targets one Requisition directly
+    (for the VRF resolution it supplies via that Requisition's own scope, ADR
+    0009) rather than binding across the five-level Scope hierarchy the way
+    ``OpenNMSServer``/``MonitoringExclusion`` do. ``location`` is a plain
+    ``<select>``, populated client-side from the chosen Server's own
+    ``OpenNMSClient.list_locations()`` (``discoveryscan_server_locations.js``)
+    the same way ``OpenNMSServerForm.default_location`` is — there is no
+    NetBox "site" on an OpenNMS discovery request at all.
     """
 
     server = DynamicModelChoiceField(
         queryset=OpenNMSServer.objects.all(), label=_("OpenNMS Server")
     )
-    site = DynamicModelChoiceField(
-        queryset=Site.objects.all(), required=False, label=_("Site")
+    requisition = DynamicModelChoiceField(
+        queryset=Requisition.objects.all(),
+        label=_("Requisition"),
+        help_text=_(
+            "Discovered nodes are imported against this Requisition's scope, "
+            "which is also how their VRF is resolved."
+        ),
     )
-    location = DynamicModelChoiceField(
-        queryset=Location.objects.all(), required=False, label=_("Location")
+    location = forms.CharField(
+        label=_("Location"),
+        help_text=_(
+            "The OpenNMS Monitoring Location. Pick the Server first to "
+            "populate this from its known locations."
+        ),
+        widget=forms.Select(choices=(), attrs={"class": "onms-location-pending"}),
     )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        current = self.instance.location if self.instance.pk else ""
+        self.fields["location"].widget.choices = (
+            [(current, current)] if current else []
+        )
 
     class Meta:
         model = DiscoveryScan
         fields = (
             "server",
-            "site",
+            "requisition",
             "location",
             "ip_range_begin",
             "ip_range_end",
             "retries",
             "timeout",
-            "tags",
         )
 
 

@@ -17,7 +17,6 @@ from ..filtersets import (
     MonitoringPolicyFilterSet,
     OpenNMSServerFilterSet,
     RequisitionFilterSet,
-    VRFAssignmentFilterSet,
 )
 from ..models import (
     AssetMapping,
@@ -32,7 +31,6 @@ from ..models import (
     MonitoringPolicy,
     OpenNMSServer,
     Requisition,
-    VRFAssignment,
 )
 from .serializers import (
     AssetMappingSerializer,
@@ -47,7 +45,6 @@ from .serializers import (
     MonitoringPolicySerializer,
     OpenNMSServerSerializer,
     RequisitionSerializer,
-    VRFAssignmentSerializer,
 )
 
 
@@ -117,14 +114,6 @@ class MonitoringExclusionViewSet(NetBoxModelViewSet):
     filterset_class = MonitoringExclusionFilterSet
 
 
-class VRFAssignmentViewSet(NetBoxModelViewSet):
-    queryset = VRFAssignment.objects.prefetch_related(
-        "tenant_groups", "tenants", "site_groups", "sites", "locations"
-    ).select_related("vrf")
-    serializer_class = VRFAssignmentSerializer
-    filterset_class = VRFAssignmentFilterSet
-
-
 class DiscoveredNodeViewSet(NetBoxModelViewSet):
     queryset = DiscoveredNode.objects.select_related("server", "matched_object_type")
     serializer_class = DiscoveredNodeSerializer
@@ -132,6 +121,6 @@ class DiscoveredNodeViewSet(NetBoxModelViewSet):
 
 
 class DiscoveryScanViewSet(NetBoxModelViewSet):
-    queryset = DiscoveryScan.objects.select_related("server", "site", "location")
+    queryset = DiscoveryScan.objects.select_related("server", "requisition")
     serializer_class = DiscoveryScanSerializer
     filterset_class = DiscoveryScanFilterSet

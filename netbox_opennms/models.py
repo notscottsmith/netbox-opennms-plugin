@@ -36,7 +36,6 @@ from .choices import (
 )
 from .derivation import (
     discovery_foreign_source_for,
-    monitoring_location_for,
     validate_location_name,
     validate_requisition_name,
 )
@@ -706,40 +705,6 @@ class MonitoringExclusion(NetBoxModel):
         return reverse("plugins:netbox_opennms:monitoringexclusion", args=[self.pk])
 
 
-class VRFAssignment(NetBoxModel):
-    """Binds a VRF to a Scope, for resolving a Discovered Node's IP VRF (ADR 0008).
-
-    Reuses the identical five-level Scope/precedence engine as
-    ``OpenNMSServer``/``MonitoringExclusion`` (``scope.resolve_vrf``), but
-    resolved from a Discovery Scan's explicit NetBox site/location rather
-    than a Device/VM's own attributes — that site/location is what every
-    Discovered Node it produces uses to resolve VRF for its IP interfaces.
-    """
-
-    vrf = models.ForeignKey(to="ipam.VRF", on_delete=models.CASCADE, related_name="+")
-    description = models.CharField(max_length=200, blank=True)
-    tenant_groups = models.ManyToManyField(
-        to="tenancy.TenantGroup", blank=True, related_name="+"
-    )
-    tenants = models.ManyToManyField(to="tenancy.Tenant", blank=True, related_name="+")
-    site_groups = models.ManyToManyField(
-        to="dcim.SiteGroup", blank=True, related_name="+"
-    )
-    sites = models.ManyToManyField(to="dcim.Site", blank=True, related_name="+")
-    locations = models.ManyToManyField(to="dcim.Location", blank=True, related_name="+")
-
-    class Meta:
-        ordering = ("pk",)
-        verbose_name = "VRF assignment"
-        verbose_name_plural = "VRF assignments"
-
-    def __str__(self):
-        return self.description or f"VRF assignment: {self.vrf}"
-
-    def get_absolute_url(self):
-        return reverse("plugins:netbox_opennms:vrfassignment", args=[self.pk])
-
-
 class DiscoveryScan(NetBoxModel):
     """One triggered OpenNMS Discovery scan over an IP range (ADR 0006).
 
@@ -752,38 +717,40 @@ class DiscoveryScan(NetBoxModel):
     polls for those nodes to infer completion; this model only covers the
     trigger itself.
 
-    ``site``/``location`` is the NetBox site/location this scan is *for* — it
-    supplies OpenNMS's own required Monitoring Location on the request
-    (``monitoring_location``, ADR 0006) and is what every Discovered Node the
-    scan produces uses to resolve VRF Assignment for its IP interfaces (ADR
-    0008). At least one of the two is required; ``location`` wins when both
-    are set.
+    ``location`` is OpenNMS's own Monitoring Location (AD-9) — a live value
+    from the bound Server's ``monitoringLocations`` endpoint, not a NetBox
+    object; there is no NetBox "site" on an OpenNMS discovery request at all.
+    ``requisition`` is the Requisition this scan's discovered nodes are
+    imported against — its scope (site/location/tenant/…) is what
+    ``scope.resolve_vrf`` uses to resolve a VRF for the addresses this scan
+    finds (ADR 0009), via NetBox's own ``ipam.Prefix`` scope+vrf rather than a
+    bespoke binding table.
     """
 
     server = models.ForeignKey(
         to=OpenNMSServer, on_delete=models.CASCADE, related_name="discovery_scans"
     )
-    site = models.ForeignKey(
-        to="dcim.Site",
+    requisition = models.ForeignKey(
+        to="Requisition",
         on_delete=models.PROTECT,
         null=True,
         blank=True,
-        related_name="+",
+        related_name="discovery_scans",
+        help_text="Discovered nodes are imported against this Requisition's "
+        "scope, which is also how their VRF is resolved.",
     )
-    location = models.ForeignKey(
-        to="dcim.Location",
-        on_delete=models.PROTECT,
-        null=True,
+    location = models.CharField(
+        max_length=100,
         blank=True,
-        related_name="+",
+        help_text="The OpenNMS Monitoring Location (not a NetBox Location).",
     )
     # Derived once in save() — never user-editable (excluded from forms via
     # editable=False, mirroring DeployedForeignSource's ownership model).
     foreign_source = models.CharField(
         max_length=100, unique=True, editable=False, blank=True
     )
-    ip_range_begin = models.GenericIPAddressField()
-    ip_range_end = models.GenericIPAddressField()
+    ip_range_begin = models.GenericIPAddressField(verbose_name="IP Range Begin")
+    ip_range_end = models.GenericIPAddressField(verbose_name="IP Range End")
     retries = models.PositiveSmallIntegerField(default=1)
     timeout = models.PositiveIntegerField(
         default=2000, help_text="Per-address timeout, in milliseconds."
@@ -814,7 +781,7 @@ class DiscoveryScan(NetBoxModel):
     @property
     def monitoring_location(self):
         """The OpenNMS Monitoring Location this scan supplies (ADR 0006)."""
-        return monitoring_location_for(site=self.site, location=self.location)
+        return self.location
 
     @property
     def status(self):
@@ -833,16 +800,19 @@ class DiscoveryScan(NetBoxModel):
 
     def clean(self):
         super().clean()
-        if not self.site_id and not self.location_id:
+        if not self.requisition_id:
             raise ValidationError(
-                "A Discovery Scan requires a NetBox site or location."
+                {"requisition": "A Discovery Scan requires a Requisition."}
             )
-        else:
-            field = "location" if self.location_id else "site"
-            try:
-                monitoring_location_for(site=self.site, location=self.location)
-            except ValueError as exc:
-                raise ValidationError({field: str(exc)}) from exc
+        if not self.location:
+            raise ValidationError(
+                {"location": "A Discovery Scan requires an OpenNMS Monitoring "
+                "Location."}
+            )
+        try:
+            validate_location_name(self.location)
+        except ValueError as exc:
+            raise ValidationError({"location": str(exc)}) from exc
         if self.ip_range_begin and self.ip_range_end:
             try:
                 begin = ipaddress.ip_address(self.ip_range_begin)
