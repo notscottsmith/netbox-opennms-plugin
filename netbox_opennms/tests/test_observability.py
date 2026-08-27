@@ -21,7 +21,12 @@ from netbox_opennms.jobs import (
     sync_outcome,
     sync_status_for,
 )
-from netbox_opennms.models import MonitoringOverride, Requisition
+from netbox_opennms.models import (
+    DiscoveredNode,
+    MonitoringOverride,
+    OpenNMSServer,
+    Requisition,
+)
 from netbox_opennms.template_content import (
     DeviceSyncStatusPanel,
     VirtualMachineSyncStatusPanel,
@@ -163,3 +168,54 @@ class ObservabilityTest(TestCase):
         self.assertEqual(
             VirtualMachineSyncStatusPanel.models, ["virtualization.virtualmachine"]
         )
+
+    # --- Pull OpenNMS data button (issue #23) -------------------------------
+
+    def _discovered_node(self, target, node_id=1, server=None):
+        node = DiscoveredNode.objects.create(
+            server=server or self._server(),
+            opennms_node_id=node_id,
+            label=target.name,
+            verdict="red",
+        )
+        node.link_to(target)
+        return node
+
+    def _server(self):
+        return OpenNMSServer.objects.create(
+            name="Acme", url="https://onms.example", username="svc", password="x"
+        )
+
+    def test_panel_renders_pull_button_when_discovered_and_healthy(self):
+        other = self._device(
+            "srv-3",
+            "10.0.0.4/24",
+            role=DeviceRole.objects.create(name="Unmonitored", slug="unmonitored"),
+        )
+        self._discovered_node(other)
+        html = self._panel_html(DeviceSyncStatusPanel, other)
+        self.assertIn("Pull OpenNMS data", html)
+        self.assertNotIn("disabled", html)
+
+    def test_panel_hides_pull_button_when_server_unhealthy(self):
+        other = self._device(
+            "srv-4",
+            "10.0.0.5/24",
+            role=DeviceRole.objects.create(name="Unmonitored2", slug="unmonitored2"),
+        )
+        server = self._server()
+        server.last_check_status = "failed"
+        server.save()
+        self._discovered_node(other, server=server)
+        html = self._panel_html(DeviceSyncStatusPanel, other)
+        self.assertIn("Pull OpenNMS data", html)
+        self.assertIn("disabled", html)
+
+    def test_panel_shown_for_discovered_but_otherwise_ungoverned_object(self):
+        other = self._device(
+            "srv-5",
+            "10.0.0.6/24",
+            role=DeviceRole.objects.create(name="Unmonitored3", slug="unmonitored3"),
+        )
+        self._discovered_node(other)
+        self.assertNotEqual(self._panel_html(DeviceSyncStatusPanel, other), "")

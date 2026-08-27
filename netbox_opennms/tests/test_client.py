@@ -505,6 +505,30 @@ class OpenNMSClientTest(SimpleTestCase):
             _client().list_ip_interfaces(1)
 
     @mock.patch.object(requests.Session, "request")
+    def test_list_snmp_interfaces_parses_wrapped_form(self, mock_request):
+        mock_request.return_value = mock.Mock(
+            status_code=200,
+            ok=True,
+            json=mock.Mock(
+                return_value={"snmpInterface": [{"ifName": "eth0", "ifIndex": 1}]}
+            ),
+        )
+        ifaces = _client().list_snmp_interfaces(1)
+        self.assertEqual(ifaces, [{"ifName": "eth0", "ifIndex": 1}])
+        _, url = mock_request.call_args.args
+        self.assertEqual(
+            url, "https://onms.example/opennms/api/v2/nodes/1/snmpinterfaces"
+        )
+
+    @mock.patch.object(requests.Session, "request")
+    def test_list_snmp_interfaces_unparseable_raises(self, mock_request):
+        mock_request.return_value = mock.Mock(
+            status_code=200, ok=True, json=mock.Mock(side_effect=ValueError("x"))
+        )
+        with self.assertRaises(OpenNMSError):
+            _client().list_snmp_interfaces(1)
+
+    @mock.patch.object(requests.Session, "request")
     def test_list_services_parses_wrapped_form_and_quotes_ip(self, mock_request):
         mock_request.return_value = mock.Mock(
             status_code=200,

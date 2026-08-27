@@ -1,0 +1,107 @@
+{# Copyright 2026 Ronny Trommer <ronny@no42.org> #}
+{# SPDX-License-Identifier: MIT #}
+{% extends 'base/layout.html' %}
+{% load helpers %}
+
+{% block title %}Pull OpenNMS data for {{ object }}{% endblock %}
+
+{% block content %}
+  {% if error %}
+    <div class="alert alert-danger" role="alert">
+      <i class="mdi mdi-alert"></i> Could not pull OpenNMS data: {{ error }}
+    </div>
+    <a href="{{ object.get_absolute_url }}" class="btn btn-outline-secondary">Back</a>
+  {% else %}
+    <div class="row">
+      <div class="col col-md-12">
+        <div class="card">
+          <h2 class="card-header">SNMP interfaces</h2>
+          <div class="card-body">
+            <p class="text-muted mb-0">
+              Nothing below is applied until you commit. "Unchanged" rows won't
+              be touched.
+            </p>
+          </div>
+          <table class="table table-hover mb-0">
+            <thead>
+              <tr>
+                <th>Interface</th>
+                <th>Description</th>
+                <th>Enabled</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for change in plan.interfaces %}
+                <tr>
+                  <td>{{ change.name }}</td>
+                  <td>{{ change.description|default:"—" }}</td>
+                  <td>{{ change.enabled }}</td>
+                  <td>
+                    {% if change.action == "create" %}
+                      <span class="badge text-bg-green">Create</span>
+                    {% elif change.action == "update" %}
+                      <span class="badge text-bg-orange" title="{{ change.changes|join:'; ' }}">Update</span>
+                    {% else %}
+                      <span class="badge text-bg-secondary">Unchanged</span>
+                    {% endif %}
+                  </td>
+                </tr>
+              {% empty %}
+                <tr><td colspan="4" class="text-muted">No SNMP interfaces reported.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <div class="row">
+      <div class="col col-md-12">
+        <div class="card">
+          <h2 class="card-header">Discovered neighbor links</h2>
+          <table class="table table-hover mb-0">
+            <thead>
+              <tr>
+                <th>Local port</th>
+                <th>Remote node</th>
+                <th>Remote port</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in plan.links %}
+                <tr>
+                  <td>{{ row.link.local_port|default:"—" }}</td>
+                  <td>{{ row.link.remote_device|default:"—" }}</td>
+                  <td>{{ row.link.remote_port|default:"—" }}</td>
+                  <td>
+                    {% if row.actionable %}
+                      <span class="badge text-bg-green">Create cable</span>
+                    {% else %}
+                      <span class="badge text-bg-secondary" title="{{ row.blocked_reason }}">Skipped</span>
+                    {% endif %}
+                  </td>
+                </tr>
+              {% empty %}
+                <tr><td colspan="4" class="text-muted">No neighbor links reported.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    <div class="row">
+      <div class="col col-md-12">
+        <form method="post">
+          {% csrf_token %}
+          <div class="float-end">
+            <a href="{{ object.get_absolute_url }}" class="btn btn-outline-secondary">Cancel</a>
+            <button type="submit" class="btn btn-primary" {% if not plan.has_changes %}disabled{% endif %}>
+              Commit
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  {% endif %}
+{% endblock %}

@@ -279,6 +279,37 @@ class OpenNMSClient:
                 f"node {node_id}."
             ) from exc
 
+    def list_snmp_interfaces(self, node_id):
+        """A node's SNMP interfaces — the raw ifTable (One-Time Sync, issue #23).
+
+        ``GET /api/v2/nodes/{id}/snmpinterfaces`` (JSON), mirroring
+        ``list_ip_interfaces``'s unwrap convention. Field names
+        (``ifIndex``/``ifName``/``ifDescr``/``ifAlias``/``ifAdminStatus``) are
+        OpenNMS's ``OnmsSnmpInterface`` REST v2 DTO — like ``get_node_links``,
+        NOT confirmed against a live Horizon 36 instance in this change; parsed
+        leniently in ``reverse_sync.py`` and to be verified via
+        ``make integration`` before merge.
+        """
+        response = self._request(
+            "GET",
+            f"/api/v2/nodes/{node_id}/snmpinterfaces",
+            headers={"Accept": "application/json"},
+            params={"limit": 0},
+        )
+        try:
+            payload = response.json()
+            entries = (
+                payload
+                if isinstance(payload, list)
+                else payload.get("snmpInterface", [])
+            )
+            return [i for i in entries if isinstance(i, dict)]
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise OpenNMSError(
+                f"OpenNMS returned an unparseable snmpinterfaces response for "
+                f"node {node_id}."
+            ) from exc
+
     def list_services(self, node_id, ip_address):
         """A node's monitored services on one IP interface (Discovery, issue #7).
 

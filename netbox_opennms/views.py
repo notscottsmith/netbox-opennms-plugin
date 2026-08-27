@@ -53,6 +53,12 @@ from .models import (
     Requisition,
 )
 from .requisition_discovery import build_foreign_source_import, list_unmirrored
+from .reverse_sync import (
+    _cable_endpoints,
+    fetch_node_data,
+    plan_reverse_sync,
+    run_reverse_sync,
+)
 from .scan import KIND_MODELS, scan_server, upsert_discovered_nodes
 from .validation import validate_resolution
 
@@ -1352,60 +1358,9 @@ def _node_links_badge(instance):
 
 
 # --- Discovered link → NetBox cable resolution (issue #16) -------------------
-
-
-def _remote_discovered_node(local_node, link):
-    """The ``DiscoveredNode`` for *link*'s remote endpoint, if any.
-
-    ``link.remote_node_id`` is the OpenNMS node id parsed out of the payload's
-    ``*Url`` field (see ``node_links._remote_node_id``) — every remote endpoint
-    OpenNMS reports lives on the *same* server as the local node, so matching
-    is scoped to ``local_node.server``.
-    """
-    if link.remote_node_id is None:
-        return None
-    return DiscoveredNode.objects.filter(
-        server=local_node.server, opennms_node_id=link.remote_node_id
-    ).first()
-
-
-def _cable_endpoints(local_object, local_node, link):
-    """Resolve *link* to ``(local_interface, remote_interface)``, or ``(None, reason)``.
-
-    Both endpoints must already be matched/imported NetBox Devices (#8/#9) with
-    an Interface named for the port OpenNMS reported, and neither interface may
-    already be cabled — anything else is "not-yet-actionable", per #16's
-    review-don't-guess principle, not an error.
-    """
-    if not isinstance(local_object, Device):
-        return None, "This object isn't a Device, and can't be cabled."
-    remote_node = _remote_discovered_node(local_node, link)
-    remote_object = remote_node.matched_object if remote_node else None
-    if remote_object is None:
-        return (
-            None,
-            "The remote node for this link hasn't been matched or imported "
-            "into NetBox yet.",
-        )
-    if not isinstance(remote_object, Device):
-        return (
-            None,
-            f"Remote object is a {remote_object._meta.verbose_name}, "
-            "which can't be cabled.",
-        )
-    local_interface = Interface.objects.filter(
-        device=local_object, name=link.local_port
-    ).first()
-    if local_interface is None:
-        return None, f"No interface named '{link.local_port}' on {local_object}."
-    remote_interface = Interface.objects.filter(
-        device=remote_object, name=link.remote_port
-    ).first()
-    if remote_interface is None:
-        return None, f"No interface named '{link.remote_port}' on {remote_object}."
-    if local_interface.cable_id or remote_interface.cable_id:
-        return None, "One of these interfaces is already connected to a cable."
-    return (local_interface, remote_interface), None
+# _remote_discovered_node / _cable_endpoints moved to reverse_sync.py (issue
+# #23), which needs the same join for its bulk engine — imported below so
+# this tab and that engine share exactly one resolution, not two.
 
 
 class _NodeLinksView(generic.ObjectView):
@@ -1499,4 +1454,100 @@ class DeviceNodeLinksView(_NodeLinksView):
     VirtualMachine, name="opennms_node_links", path="opennms-node-links"
 )
 class VirtualMachineNodeLinksView(_NodeLinksView):
+    queryset = VirtualMachine.objects.all()
+
+
+# --- One-Time Sync: pull OpenNMS data into a single Device/VM (issue #23) ----
+
+
+class _OpenNMSPullView(GetReturnURLMixin, PermissionRequiredMixin, View):
+    """Preview (GET) + commit (POST) "Pull OpenNMS data" for a Device/VM.
+
+    Mirrors ``DiscoveredNodeImportView``'s review-then-commit shape: nothing
+    is written until the operator has seen the plan. Both steps share
+    ``_context``, which also gates on ``OpenNMSServer.is_healthy`` so a
+    server currently flagged unhealthy can't be pulled from.
+    """
+
+    queryset = None
+    template_name = "netbox_opennms/opennms_pull.html"
+
+    def has_permission(self):
+        # The commit path can both create and update Interfaces, and (for a
+        # Device) create Cables — gate entry on the full set up front so the
+        # preview never shows an action (e.g. "Create cable") the requesting
+        # user isn't actually allowed to commit.
+        if self.queryset.model is Device:
+            perms = ["dcim.add_interface", "dcim.change_interface", "dcim.add_cable"]
+        else:
+            perms = [
+                "virtualization.add_vminterface",
+                "virtualization.change_vminterface",
+            ]
+        return self.request.user.has_perms(perms)
+
+    def _context(self, pk):
+        obj = get_object_or_404(self.queryset, pk=pk)
+        discovered_node = DiscoveredNode.for_object(obj)
+        if discovered_node is None:
+            return obj, None, None, "No OpenNMS Discovery match for this object."
+        server = discovered_node.server
+        if not server.is_healthy:
+            return (
+                obj,
+                discovered_node,
+                None,
+                f"Server {server.name!r} is marked unhealthy — refusing to pull "
+                "until the connection is restored.",
+            )
+        try:
+            with OpenNMSClient.from_server(server) as client:
+                node_data = fetch_node_data(client, discovered_node)
+        except OpenNMSError as exc:
+            return obj, discovered_node, None, str(exc)
+        plan = plan_reverse_sync(node_data, obj)
+        return obj, discovered_node, plan, None
+
+    def get(self, request, pk):
+        obj, discovered_node, plan, error = self._context(pk)
+        return render(
+            request,
+            self.template_name,
+            {
+                "object": obj,
+                "discovered_node": discovered_node,
+                "plan": plan,
+                "error": error,
+            },
+        )
+
+    def post(self, request, pk):
+        obj, discovered_node, plan, error = self._context(pk)
+        if error:
+            messages.error(request, f"Could not pull OpenNMS data: {error}")
+            return redirect(self.get_return_url(request, obj))
+        if not plan.has_changes:
+            messages.info(request, "Nothing to sync — already up to date.")
+            return redirect(self.get_return_url(request, obj))
+        result = run_reverse_sync(discovered_node.server, [discovered_node])[0]
+        if result.success:
+            messages.success(
+                request,
+                f"Pulled OpenNMS data for {obj}: "
+                f"{result.interfaces_created} interface(s) created, "
+                f"{result.interfaces_updated} updated, "
+                f"{result.cables_created} cable(s) created.",
+            )
+        else:
+            messages.error(request, f"Could not pull OpenNMS data: {result.error}")
+        return redirect(self.get_return_url(request, obj))
+
+
+@register_model_view(Device, name="opennms_pull", path="opennms-pull")
+class DeviceOpenNMSPullView(_OpenNMSPullView):
+    queryset = Device.objects.all()
+
+
+@register_model_view(VirtualMachine, name="opennms_pull", path="opennms-pull")
+class VirtualMachineOpenNMSPullView(_OpenNMSPullView):
     queryset = VirtualMachine.objects.all()
