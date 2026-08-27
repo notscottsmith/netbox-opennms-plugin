@@ -7,7 +7,21 @@
   <div class="row">
     <div class="col col-md-12">
       <div class="card">
-        <h2 class="card-header">OpenNMS Nodes</h2>
+        <h2 class="card-header">
+          OpenNMS Nodes
+          {% if target_server %}
+            <form method="post" action="{% url 'plugins:netbox_opennms:opennmsserver_scan' target_server.pk %}" class="d-inline float-end">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-sm btn-outline-secondary">Scan now</button>
+            </form>
+          {% endif %}
+        </h2>
+        {% if not target_server %}
+          <div class="card-body text-muted">
+            This Requisition's target OpenNMS Server could not be resolved, so a scan
+            cannot be triggered here.
+          </div>
+        {% endif %}
         {% if not nodes %}
           <div class="card-body text-muted">
             No OpenNMS nodes are currently tagged with this Requisition's Foreign
@@ -39,7 +53,13 @@
                     {% endif %}
                   </td>
                   <td>{{ node.get_resolution_display }}</td>
-                  <td>{{ node.matched_object|linkify|placeholder }}</td>
+                  <td>
+                    {% if node.matched_object %}
+                      {{ node.matched_object|linkify }}
+                    {% else %}
+                      <span class="text-muted">No NetBox match</span>
+                    {% endif %}
+                  </td>
                 </tr>
               {% endfor %}
             </tbody>

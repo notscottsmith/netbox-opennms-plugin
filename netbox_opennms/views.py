@@ -36,6 +36,7 @@ from .membership import (
     requisition_conflicts,
     resolve,
     resolve_all,
+    target_server_for,
 )
 from .models import (
     AssetMapping,
@@ -590,11 +591,60 @@ class DiscoveryScanServerLocationsAjaxView(PermissionRequiredMixin, View):
 # --- Discovery (issue #7) ----------------------------------------------------
 
 
+def _fetch_ip_interfaces_and_services(client, opennms_node_id):
+    """IP interfaces plus per-interface services for one OpenNMS node.
+
+    Shared by the live-fetch paths in ``DiscoveredNodeView``,
+    ``DiscoveredNodeImportView``, and ``DiscoveredNodeBulkImportView`` — all
+    three walk the same ``list_ip_interfaces`` -> per-IP ``list_services``
+    shape.
+    """
+    ip_interfaces = client.list_ip_interfaces(opennms_node_id)
+    services_by_ip = {}
+    for iface in ip_interfaces:
+        ip = iface.get("ipAddress") if isinstance(iface, dict) else None
+        if ip:
+            services_by_ip[ip] = client.list_services(opennms_node_id, ip)
+    return ip_interfaces, services_by_ip
+
+
 class DiscoveredNodeView(generic.ObjectView):
     queryset = DiscoveredNode.objects.all()
 
     def get_extra_context(self, request, instance):
-        return {"interface_verdicts": reconcile_node_interfaces(instance)}
+        live_fetch_error = None
+        try:
+            with OpenNMSClient.from_server(instance.server) as client:
+                node_detail = client.get_node(instance.opennms_node_id) or {}
+                ip_interfaces, services_by_ip = _fetch_ip_interfaces_and_services(
+                    client, instance.opennms_node_id
+                )
+        except OpenNMSError as exc:
+            live_fetch_error = str(exc)
+            node_detail = instance.node_detail
+            ip_interfaces = instance.ip_interfaces
+            services_by_ip = instance.services_by_ip
+        parsed_interfaces, parsed_services = import_node.parse_discovery_payload(
+            ip_interfaces, services_by_ip
+        )
+        service_names_by_ip = {}
+        for service in parsed_services:
+            service_names_by_ip.setdefault(service.ip_address, []).append(
+                service.name
+            )
+        live_interface_rows = [
+            {
+                "interface": iface,
+                "services": service_names_by_ip.get(iface.ip_address, []),
+            }
+            for iface in parsed_interfaces
+        ]
+        return {
+            "interface_verdicts": reconcile_node_interfaces(instance),
+            "live_node_detail": node_detail,
+            "live_interface_rows": live_interface_rows,
+            "live_fetch_error": live_fetch_error,
+        }
 
 
 class DiscoveredNodeListView(generic.ObjectListView):
@@ -724,14 +774,9 @@ class DiscoveredNodeImportView(GetReturnURLMixin, PermissionRequiredMixin, View)
         try:
             with OpenNMSClient.from_server(node.server) as client:
                 detail = client.get_node(node.opennms_node_id) or {}
-                ip_interfaces = client.list_ip_interfaces(node.opennms_node_id)
-                services_by_ip = {}
-                for iface in ip_interfaces:
-                    ip = iface.get("ipAddress") if isinstance(iface, dict) else None
-                    if ip:
-                        services_by_ip[ip] = client.list_services(
-                            node.opennms_node_id, ip
-                        )
+                ip_interfaces, services_by_ip = _fetch_ip_interfaces_and_services(
+                    client, node.opennms_node_id
+                )
         except OpenNMSError as exc:
             return None, str(exc)
         proposal = import_node.build_proposal(
@@ -915,18 +960,11 @@ class DiscoveredNodeBulkImportView(GetReturnURLMixin, PermissionRequiredMixin, V
             row_data["name"] = node.label
             try:
                 with OpenNMSClient.from_server(node.server) as client:
-                    ip_interfaces = client.list_ip_interfaces(node.opennms_node_id)
-                    services_by_ip = {}
-                    for iface in ip_interfaces:
-                        ip = (
-                            iface.get("ipAddress")
-                            if isinstance(iface, dict)
-                            else None
+                    ip_interfaces, services_by_ip = (
+                        _fetch_ip_interfaces_and_services(
+                            client, node.opennms_node_id
                         )
-                        if ip:
-                            services_by_ip[ip] = client.list_services(
-                                node.opennms_node_id, ip
-                            )
+                    )
             except OpenNMSError as exc:
                 errors.append(f"{node.label}: could not reach OpenNMS ({exc}).")
                 continue
@@ -1261,8 +1299,11 @@ class RequisitionNodesView(generic.ObjectView):
 
     ``foreign_source`` is the join key: it's set to the owning Requisition's
     ``name`` (the Foreign Source name) whenever a node is upserted (manual link,
-    import, or a Discovery Scan's poll) — a Requisition's ``name`` is unique
-    (AD-1), so no further scoping by target Server is needed.
+    import, or a Discovery Scan's poll). A Requisition's ``name`` is unique
+    (AD-1), but the same Foreign Source name could in principle exist as stale
+    ``DiscoveredNode`` rows from a different Server (e.g. after a Requisition
+    is re-pointed at a new target Server) — so rows are additionally scoped to
+    ``target_server_for(instance)`` (issue #21) whenever that resolves.
     """
 
     queryset = Requisition.objects.all()
@@ -1270,10 +1311,12 @@ class RequisitionNodesView(generic.ObjectView):
     template_name = "netbox_opennms/requisition_nodes_tab.html"
 
     def get_extra_context(self, request, instance):
-        nodes = DiscoveredNode.objects.filter(
-            foreign_source=instance.name
-        ).order_by("label")
-        return {"nodes": nodes}
+        target_server = target_server_for(instance)
+        nodes = DiscoveredNode.objects.filter(foreign_source=instance.name)
+        if target_server is not None:
+            nodes = nodes.filter(server=target_server)
+        nodes = nodes.order_by("label")
+        return {"nodes": nodes, "target_server": target_server}
 
 
 # --- Node Links tab (issue #15) ----------------------------------------------

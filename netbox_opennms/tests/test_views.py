@@ -16,6 +16,7 @@ from django.contrib.auth.models import Permission, User
 from django.contrib.messages import get_messages
 from django.test import TestCase
 from django.urls import reverse
+from django.utils import timezone
 from ipam.models import IPAddress
 from utilities.testing import ViewTestCases
 
@@ -455,6 +456,155 @@ class DiscoveredNodeViewTest(
             DiscoveredNode.objects.create(
                 server=server, opennms_node_id=i, label=f"node-{i}", verdict=verdict
             )
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_get_object(self, mock_from_server):
+        # DiscoveredNodeView live-fetches OpenNMS data (issue #21) -- stub it
+        # out so this inherited test doesn't reach the network.
+        client = mock_from_server.return_value.__enter__.return_value
+        client.get_node.return_value = {"label": "node-0"}
+        client.list_ip_interfaces.return_value = []
+        super().test_get_object()
+
+
+class DiscoveredNodeLiveFetchViewTest(TestCase):
+    """DiscoveredNodeView's live OpenNMS data panel (issue #21)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.server = OpenNMSServer.objects.create(
+            name="Acme", url="https://onms.example"
+        )
+        cls.node = DiscoveredNode.objects.create(
+            server=cls.server,
+            opennms_node_id=1,
+            label="node-1",
+            verdict="green",
+            node_detail={"label": "cached-node-1"},
+            ip_interfaces=[{"ipAddress": "10.0.0.1", "snmpPrimary": "P"}],
+            services_by_ip={"10.0.0.1": [{"serviceType": {"name": "ICMP"}}]},
+            walked_at=timezone.now(),
+        )
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="tester")
+        self.user.user_permissions.add(
+            Permission.objects.get(
+                codename="view_discoverednode",
+                content_type__app_label="netbox_opennms",
+            )
+        )
+        self.client.force_login(self.user)
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_live_fetch_success_is_shown(self, mock_from_server):
+        client = mock_from_server.return_value.__enter__.return_value
+        client.get_node.return_value = {
+            "label": "live-node-1",
+            "sysObjectId": "1.2.3",
+        }
+        client.list_ip_interfaces.return_value = [
+            {"ipAddress": "10.0.0.2", "snmpPrimary": "P"}
+        ]
+        client.list_services.return_value = [{"serviceType": {"name": "SNMP"}}]
+        response = self.client.get(self.node.get_absolute_url())
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        self.assertIn("live-node-1", content)
+        self.assertIn("10.0.0.2", content)
+        self.assertIn("SNMP", content)
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_live_fetch_failure_degrades_to_cache(self, mock_from_server):
+        client = mock_from_server.return_value.__enter__.return_value
+        client.get_node.side_effect = OpenNMSError("unreachable")
+        response = self.client.get(self.node.get_absolute_url())
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        self.assertIn("Could not reach OpenNMS", content)
+        self.assertIn("cached-node-1", content)
+        self.assertIn("10.0.0.1", content)
+
+
+class RequisitionNodesViewTest(TestCase):
+    """RequisitionNodesView's Server scoping and match rendering (issue #21)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.server = OpenNMSServer.objects.create(
+            name="Acme", url="https://onms.example"
+        )
+        cls.other_server = OpenNMSServer.objects.create(
+            name="Other", url="https://other.example"
+        )
+        cls.requisition = Requisition.objects.create(name="fs-1", filter_params=FILTER)
+        cls.matched_node = DiscoveredNode.objects.create(
+            server=cls.server,
+            opennms_node_id=1,
+            label="node-1",
+            foreign_source="fs-1",
+            verdict="red",
+        )
+        cls.stale_node = DiscoveredNode.objects.create(
+            server=cls.other_server,
+            opennms_node_id=2,
+            label="node-2",
+            foreign_source="fs-1",
+            verdict="red",
+        )
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="tester")
+        self.user.user_permissions.add(
+            Permission.objects.get(
+                codename="view_requisition",
+                content_type__app_label="netbox_opennms",
+            )
+        )
+        self.client.force_login(self.user)
+
+    def _url(self):
+        return reverse(
+            "plugins:netbox_opennms:requisition_opennms_nodes",
+            args=[self.requisition.pk],
+        )
+
+    @mock.patch("netbox_opennms.views.target_server_for")
+    def test_nodes_scoped_to_target_server(self, mock_target_server_for):
+        mock_target_server_for.return_value = self.server
+        response = self.client.get(self._url())
+        content = response.content.decode()
+        self.assertIn("node-1", content)
+        self.assertNotIn("node-2", content)
+
+    @mock.patch("netbox_opennms.views.target_server_for")
+    def test_no_netbox_match_rendered_explicitly(self, mock_target_server_for):
+        mock_target_server_for.return_value = self.server
+        response = self.client.get(self._url())
+        self.assertContains(response, "No NetBox match")
+
+    @mock.patch("netbox_opennms.views.target_server_for")
+    def test_scan_now_shown_when_target_server_resolves(
+        self, mock_target_server_for
+    ):
+        mock_target_server_for.return_value = self.server
+        response = self.client.get(self._url())
+        self.assertContains(
+            response,
+            reverse(
+                "plugins:netbox_opennms:opennmsserver_scan", args=[self.server.pk]
+            ),
+        )
+
+    @mock.patch("netbox_opennms.views.target_server_for")
+    def test_scan_now_hidden_when_target_server_unresolved(
+        self, mock_target_server_for
+    ):
+        mock_target_server_for.return_value = None
+        response = self.client.get(self._url())
+        content = response.content.decode()
+        self.assertNotIn("Scan now", content)
+        self.assertContains(response, "could not be resolved")
 
 
 class MetadataEntryViewTest(
