@@ -101,6 +101,11 @@ urlpatterns = (
         views.UnmirroredRequisitionsView.as_view(),
         name="opennmsserver_unmirrored_requisitions",
     ),
+    path(
+        "opennms-servers/<int:pk>/import-requisition/",
+        views.RequisitionImportView.as_view(),
+        name="opennmsserver_import_requisition",
+    ),
     *_crud("monitoring-exclusions", "monitoringexclusion", "MonitoringExclusion",
            MonitoringExclusion),
     *_crud("vrf-assignments", "vrfassignment", "VRFAssignment", VRFAssignment),

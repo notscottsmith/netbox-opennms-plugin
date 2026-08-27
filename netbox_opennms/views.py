@@ -46,7 +46,7 @@ from .models import (
     Requisition,
     VRFAssignment,
 )
-from .requisition_discovery import list_unmirrored
+from .requisition_discovery import build_foreign_source_import, list_unmirrored
 from .scan import KIND_MODELS, scan_server, upsert_discovered_nodes
 from .validation import validate_resolution
 
@@ -891,7 +891,9 @@ class UnmirroredRequisitionsView(PermissionRequiredMixin, View):
     Read-only — computed live on each request (mirrors ``RequisitionDryRunView``)
     rather than persisted like ``DiscoveredNode`` (#7), since there's no
     per-row state (verdict, resolution) to track: a name is either mirrored
-    or it isn't, and no import action exists for Requisitions themselves.
+    or it isn't. Each unmirrored row's Import action is ``RequisitionImportView``
+    (issue #22); once imported, the name gains a matching Requisition and drops
+    out of this list on the next load.
     """
 
     permission_required = "netbox_opennms.view_opennmsserver"
@@ -910,6 +912,83 @@ class UnmirroredRequisitionsView(PermissionRequiredMixin, View):
             self.template_name,
             {"object": server, "names": names, "error": error},
         )
+
+
+class RequisitionImportView(PermissionRequiredMixin, View):
+    """Create a Requisition shell from an unmirrored Foreign Source (issue #22).
+
+    Copies name/scan-interval/detectors/policies straight off OpenNMS's own
+    Foreign Source definition, mirroring ``RequisitionDuplicateView``'s
+    create-then-loop-create-rows pattern — but ``filter_params`` is left empty
+    (a live filter must be an explicit admin decision, not guessed from
+    OpenNMS), so the new Requisition has zero members until one is defined.
+    """
+
+    permission_required = "netbox_opennms.add_requisition"
+
+    def post(self, request, pk):
+        server = get_object_or_404(OpenNMSServer, pk=pk)
+        return_url = request.META.get("HTTP_REFERER") or reverse(
+            "plugins:netbox_opennms:opennmsserver_unmirrored_requisitions",
+            args=[server.pk],
+        )
+        foreign_source = request.POST.get("foreign_source", "").strip()
+        if not foreign_source:
+            messages.error(request, "No Foreign Source given.")
+            return redirect(return_url)
+        # Re-checked here (not just trusted from the list view that only shows
+        # unmirrored names) — the POST body is user-controlled and a name may
+        # have been imported by someone else between page load and this POST.
+        if Requisition.objects.filter(name=foreign_source).exists():
+            messages.error(
+                request,
+                f"A Requisition named {foreign_source!r} already exists — "
+                "import skipped.",
+            )
+            return redirect(return_url)
+
+        try:
+            with OpenNMSClient.from_server(server) as client:
+                definition = client.get_foreign_source(foreign_source)
+        except OpenNMSError as exc:
+            messages.error(request, f"Could not reach OpenNMS: {exc}")
+            return redirect(return_url)
+        if definition is None:
+            messages.error(
+                request,
+                f"Foreign Source {foreign_source!r} no longer exists on "
+                f"{server.name!r}.",
+            )
+            return redirect(return_url)
+
+        imported = build_foreign_source_import(definition)
+        requisition = Requisition(
+            name=foreign_source, scan_interval=imported.scan_interval
+        )
+        requisition.save()
+        for rule in imported.detectors:
+            MonitoringDetector.objects.create(
+                requisition=requisition,
+                name=rule.name,
+                rule_class=rule.rule_class,
+                parameters=rule.parameters,
+            )
+        for rule in imported.policies:
+            MonitoringPolicy.objects.create(
+                requisition=requisition,
+                name=rule.name,
+                rule_class=rule.rule_class,
+                parameters=rule.parameters,
+            )
+        messages.success(
+            request, f"Imported {foreign_source!r} as Requisition {requisition.name}."
+        )
+        messages.warning(
+            request,
+            f"{requisition.name} has no filter or Scope yet — it has zero "
+            "members and will sync nothing until you define one.",
+        )
+        return redirect(requisition.get_absolute_url())
 
 
 # --- Sync actions -----------------------------------------------------------
