@@ -1,0 +1,114 @@
+{# Copyright 2026 Ronny Trommer <ronny@no42.org> #}
+{# SPDX-License-Identifier: MIT #}
+{% extends 'base/layout.html' %}
+{% load helpers %}
+
+{% block title %}One-Time Sync for {{ object }}{% endblock %}
+
+{% block content %}
+  {% if error %}
+    <div class="alert alert-danger" role="alert">
+      <i class="mdi mdi-alert"></i> Could not pull OpenNMS data: {{ error }}
+    </div>
+    <a href="{{ object.get_absolute_url }}" class="btn btn-outline-secondary">Back</a>
+  {% elif not rows %}
+    <div class="alert alert-info" role="alert">
+      No matched nodes to pull for this Requisition.
+    </div>
+    <a href="{{ object.get_absolute_url }}" class="btn btn-outline-secondary">Back</a>
+  {% else %}
+    <p class="text-muted">
+      Nothing below is applied until you commit. Each node is fetched, planned,
+      and (on commit) applied independently — one node's failure won't block
+      the rest.
+    </p>
+    {% for row in rows %}
+      <div class="row">
+        <div class="col col-md-12">
+          <div class="card">
+            <h2 class="card-header">{{ row.discovered_node|linkify }}</h2>
+            {% if row.error %}
+              <div class="card-body">
+                <div class="alert alert-warning mb-0" role="alert">
+                  Could not fetch OpenNMS data for this node: {{ row.error }}
+                </div>
+              </div>
+            {% else %}
+              <table class="table table-hover mb-0">
+                <thead>
+                  <tr>
+                    <th>Interface</th>
+                    <th>Description</th>
+                    <th>Enabled</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for change in row.plan.interfaces %}
+                    <tr>
+                      <td>{{ change.name }}</td>
+                      <td>{{ change.description|default:"—" }}</td>
+                      <td>{{ change.enabled }}</td>
+                      <td>
+                        {% if change.action == "create" %}
+                          <span class="badge text-bg-green">Create</span>
+                        {% elif change.action == "update" %}
+                          <span class="badge text-bg-orange" title="{{ change.changes|join:'; ' }}">Update</span>
+                        {% else %}
+                          <span class="badge text-bg-secondary">Unchanged</span>
+                        {% endif %}
+                      </td>
+                    </tr>
+                  {% empty %}
+                    <tr><td colspan="4" class="text-muted">No SNMP interfaces reported.</td></tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+              <table class="table table-hover mb-0">
+                <thead>
+                  <tr>
+                    <th>Local port</th>
+                    <th>Remote node</th>
+                    <th>Remote port</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for link_row in row.plan.links %}
+                    <tr>
+                      <td>{{ link_row.link.local_port|default:"—" }}</td>
+                      <td>{{ link_row.link.remote_device|default:"—" }}</td>
+                      <td>{{ link_row.link.remote_port|default:"—" }}</td>
+                      <td>
+                        {% if link_row.actionable %}
+                          <span class="badge text-bg-green">Create cable</span>
+                        {% else %}
+                          <span class="badge text-bg-secondary" title="{{ link_row.blocked_reason }}">Skipped</span>
+                        {% endif %}
+                      </td>
+                    </tr>
+                  {% empty %}
+                    <tr><td colspan="4" class="text-muted">No neighbor links reported.</td></tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    {% endfor %}
+    <div class="row">
+      <div class="col col-md-12">
+        <form method="post">
+          {% csrf_token %}
+          <div class="float-end">
+            <a href="{{ object.get_absolute_url }}" class="btn btn-outline-secondary">Cancel</a>
+            <button type="submit" class="btn btn-primary" {% if not has_changes %}disabled{% endif %}>
+              Commit
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  {% endif %}
+{% endblock %}

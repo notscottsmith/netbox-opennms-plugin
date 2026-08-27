@@ -335,3 +335,39 @@ def run_reverse_sync(server, nodes):
                 )
             )
     return results
+
+
+@dataclass
+class ReverseSyncPreviewRow:
+    """One node's preview row for the bulk (Requisition-level) action, #24."""
+
+    discovered_node: object
+    plan: object = None  # ReverseSyncPlan | None
+    error: str = ""
+
+
+def preview_reverse_sync(server, nodes):
+    """I/O: fetch + plan (no apply) for every matched node in *nodes* — the
+    Requisition-level bulk preview (issue #24 AC #2).
+
+    Mirrors ``run_reverse_sync``'s per-node try/except, but stops short of
+    ``apply_reverse_sync_plan`` so nothing commits until the operator reviews
+    the aggregate plan. Nodes with no ``matched_object`` are skipped outright
+    (there's nothing to plan against) rather than reported as an error row —
+    unmatched nodes simply aren't part of what a "Pull" over this Requisition
+    can act on.
+    """
+    rows = []
+    with OpenNMSClient.from_server(server) as client:
+        for node in nodes:
+            netbox_object = node.matched_object
+            if netbox_object is None:
+                continue
+            try:
+                node_data = fetch_node_data(client, node)
+            except OpenNMSError as exc:
+                rows.append(ReverseSyncPreviewRow(node, error=str(exc)))
+                continue
+            plan = plan_reverse_sync(node_data, netbox_object)
+            rows.append(ReverseSyncPreviewRow(node, plan=plan))
+    return rows

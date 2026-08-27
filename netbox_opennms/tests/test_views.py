@@ -606,6 +606,29 @@ class RequisitionNodesViewTest(TestCase):
         self.assertNotIn("Scan now", content)
         self.assertContains(response, "could not be resolved")
 
+    @mock.patch("netbox_opennms.views.target_server_for")
+    def test_one_time_sync_shown_when_target_server_resolves(
+        self, mock_target_server_for
+    ):
+        mock_target_server_for.return_value = self.server
+        response = self.client.get(self._url())
+        self.assertContains(
+            response,
+            reverse(
+                "plugins:netbox_opennms:requisition_opennms_pull",
+                args=[self.requisition.pk],
+            ),
+        )
+
+    @mock.patch("netbox_opennms.views.target_server_for")
+    def test_one_time_sync_hidden_when_target_server_unresolved(
+        self, mock_target_server_for
+    ):
+        mock_target_server_for.return_value = None
+        response = self.client.get(self._url())
+        content = response.content.decode()
+        self.assertNotIn("One-Time Sync", content)
+
 
 class MetadataEntryViewTest(
     ViewTestCases.GetObjectViewTestCase,

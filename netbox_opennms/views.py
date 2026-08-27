@@ -57,6 +57,7 @@ from .reverse_sync import (
     _cable_endpoints,
     fetch_node_data,
     plan_reverse_sync,
+    preview_reverse_sync,
     run_reverse_sync,
 )
 from .scan import KIND_MODELS, scan_server, upsert_discovered_nodes
@@ -1551,3 +1552,112 @@ class DeviceOpenNMSPullView(_OpenNMSPullView):
 @register_model_view(VirtualMachine, name="opennms_pull", path="opennms-pull")
 class VirtualMachineOpenNMSPullView(_OpenNMSPullView):
     queryset = VirtualMachine.objects.all()
+
+
+# --- One-Time Sync: bulk pull for a Requisition's matched nodes (issue #24) ---
+
+
+@register_model_view(Requisition, name="opennms_pull", path="opennms-pull")
+class RequisitionOpenNMSPullView(GetReturnURLMixin, PermissionRequiredMixin, View):
+    """Preview (GET) + commit (POST) a bulk "One-Time Sync" over every matched
+    node on a Requisition's Nodes tab (#21).
+
+    Reuses #23's engine as-is: ``preview_reverse_sync``/``run_reverse_sync``
+    already operate over an arbitrary list of ``DiscoveredNode`` objects, one
+    client for the whole batch, per-node try/except so one node's failure
+    never hides the rest (AC #3). Unmatched nodes aren't part of what a bulk
+    pull can act on, so they're excluded up front rather than reported as
+    errors; neighbour links with an unmatched remote endpoint remain
+    per-node "Skipped" rows in the plan, same as the single-object view
+    (AC #4).
+    """
+
+    queryset = Requisition.objects.all()
+    template_name = "netbox_opennms/requisition_opennms_pull.html"
+
+    def has_permission(self):
+        # A Requisition's matched nodes may be a mix of Devices and VMs —
+        # gate on the full superset up front, same reasoning as
+        # _OpenNMSPullView.has_permission.
+        perms = [
+            "dcim.add_interface",
+            "dcim.change_interface",
+            "dcim.add_cable",
+            "virtualization.add_vminterface",
+            "virtualization.change_vminterface",
+        ]
+        return self.request.user.has_perms(perms)
+
+    def _context(self, pk):
+        instance = get_object_or_404(self.queryset, pk=pk)
+        target_server = target_server_for(instance)
+        if target_server is None:
+            return (
+                instance,
+                None,
+                None,
+                "This Requisition's target OpenNMS Server could not be resolved.",
+            )
+        if not target_server.is_healthy:
+            return (
+                instance,
+                target_server,
+                None,
+                f"Server {target_server.name!r} is marked unhealthy — refusing to "
+                "pull until the connection is restored.",
+            )
+        nodes = DiscoveredNode.objects.filter(
+            foreign_source=instance.name,
+            server=target_server,
+            matched_object_id__isnull=False,
+        ).order_by("label")
+        rows = preview_reverse_sync(target_server, nodes)
+        return instance, target_server, rows, None
+
+    def get(self, request, pk):
+        instance, target_server, rows, error = self._context(pk)
+        has_changes = bool(rows) and any(
+            row.plan and row.plan.has_changes for row in rows
+        )
+        return render(
+            request,
+            self.template_name,
+            {
+                "object": instance,
+                "target_server": target_server,
+                "rows": rows,
+                "error": error,
+                "has_changes": has_changes,
+            },
+        )
+
+    def post(self, request, pk):
+        instance, target_server, rows, error = self._context(pk)
+        if error:
+            messages.error(request, f"Could not pull OpenNMS data: {error}")
+            return redirect(self.get_return_url(request, instance))
+        if not rows:
+            messages.info(
+                request, "Nothing to sync — no matched nodes for this Requisition."
+            )
+            return redirect(self.get_return_url(request, instance))
+        nodes = [row.discovered_node for row in rows]
+        results = run_reverse_sync(target_server, nodes)
+        succeeded = [r for r in results if r.success]
+        failed = [r for r in results if not r.success]
+        if succeeded:
+            messages.success(
+                request,
+                f"Pulled OpenNMS data for {len(succeeded)} node(s): "
+                f"{sum(r.interfaces_created for r in succeeded)} interface(s) "
+                f"created, {sum(r.interfaces_updated for r in succeeded)} "
+                f"updated, {sum(r.cables_created for r in succeeded)} cable(s) "
+                "created.",
+            )
+        for result in failed:
+            messages.error(
+                request,
+                f"Could not pull OpenNMS data for {result.discovered_node}: "
+                f"{result.error}",
+            )
+        return redirect(self.get_return_url(request, instance))

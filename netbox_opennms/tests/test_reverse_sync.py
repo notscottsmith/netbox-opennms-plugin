@@ -31,6 +31,7 @@ from netbox_opennms.reverse_sync import (
     apply_reverse_sync_plan,
     fetch_node_data,
     plan_reverse_sync,
+    preview_reverse_sync,
     run_reverse_sync,
 )
 
@@ -321,6 +322,60 @@ class RunReverseSyncTest(ReverseSyncTestBase):
         self.assertFalse(results[0].success)
         self.assertEqual(results[0].error, "unreachable")
         self.assertTrue(results[1].success)
+
+
+class PreviewReverseSyncTest(ReverseSyncTestBase):
+    """The Requisition-level bulk preview (issue #24 AC #2)."""
+
+    @mock.patch("netbox_opennms.reverse_sync.OpenNMSClient.from_server")
+    def test_matched_nodes_get_a_plan_row(self, mock_from_server):
+        device = _device("rtr-20")
+        node = self._node_for(device, node_id=20)
+        client = mock_from_server.return_value.__enter__.return_value
+        client.list_snmp_interfaces.return_value = [{"ifName": "eth0"}]
+        client.get_node_links.return_value = {}
+
+        rows = preview_reverse_sync(self.server, [node])
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].discovered_node, node)
+        self.assertEqual(rows[0].error, "")
+        self.assertEqual(rows[0].plan.interfaces[0].action, "create")
+
+    @mock.patch("netbox_opennms.reverse_sync.OpenNMSClient.from_server")
+    def test_unmatched_nodes_are_skipped_not_reported(self, mock_from_server):
+        unmatched = DiscoveredNode.objects.create(
+            server=self.server, opennms_node_id=21, label="rtr-21", verdict="red"
+        )
+        client = mock_from_server.return_value.__enter__.return_value
+        client.list_snmp_interfaces.return_value = []
+        client.get_node_links.return_value = {}
+
+        rows = preview_reverse_sync(self.server, [unmatched])
+
+        self.assertEqual(rows, [])
+
+    @mock.patch("netbox_opennms.reverse_sync.OpenNMSClient.from_server")
+    def test_fetch_failure_on_one_node_does_not_abort_the_batch(
+        self, mock_from_server
+    ):
+        device_a = _device("rtr-22")
+        device_b = _device("rtr-23")
+        node_a = self._node_for(device_a, node_id=22)
+        node_b = self._node_for(device_b, node_id=23)
+        client = mock_from_server.return_value.__enter__.return_value
+        client.list_snmp_interfaces.side_effect = [
+            OpenNMSError("unreachable"),
+            [],
+        ]
+        client.get_node_links.return_value = {}
+
+        rows = preview_reverse_sync(self.server, [node_a, node_b])
+
+        self.assertEqual(rows[0].error, "unreachable")
+        self.assertIsNone(rows[0].plan)
+        self.assertEqual(rows[1].error, "")
+        self.assertIsNotNone(rows[1].plan)
 
 
 class FetchNodeDataTest(ReverseSyncTestBase):

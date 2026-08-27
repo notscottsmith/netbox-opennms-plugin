@@ -14,6 +14,9 @@
               {% csrf_token %}
               <button type="submit" class="btn btn-sm btn-outline-secondary">Scan now</button>
             </form>
+            <a href="{% url 'plugins:netbox_opennms:requisition_opennms_pull' object.pk %}" class="btn btn-sm btn-outline-primary d-inline float-end me-2">
+              One-Time Sync
+            </a>
           {% endif %}
         </h2>
         {% if not target_server %}
