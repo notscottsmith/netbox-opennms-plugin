@@ -224,6 +224,38 @@ class ConfirmRejected(Exception):
     """Raised when confirming an IP interface (issue #31) doesn't apply."""
 
 
+def required_confirm_permissions(node, ip_address):
+    """Permissions needed to confirm *ip_address* on *node* (issue #31).
+
+    Computed from the same current verdict ``confirm_ip_interface`` itself
+    re-derives, so a caller's permission check and the actual write can
+    never drift apart into checking for one thing and creating another.
+    Always includes ``ipam.add_ipaddress``; adds ``ipam.add_prefix`` or
+    ``ipam.add_iprange`` depending on the proposal type, and --
+    when *node* has a matched Device/VM -- ``dcim.add_interface`` or
+    ``virtualization.add_vminterface``, since confirming also creates an
+    interface on it in that case. Returns ``()`` for an unknown IP or one
+    that isn't "red" -- nothing would be created, so nothing to permission-gate.
+    """
+    verdicts = {v.ip_address: v for v in reconcile_node_interfaces(node)}
+    verdict = verdicts.get(ip_address)
+    if verdict is None or verdict.verdict != "red":
+        return ()
+    perms = ["ipam.add_ipaddress"]
+    if isinstance(verdict.proposal, PrefixProposal):
+        perms.append("ipam.add_prefix")
+    elif isinstance(verdict.proposal, IPRangeProposal):
+        perms.append("ipam.add_iprange")
+    if node.matched_object is not None:
+        kind = "device" if isinstance(node.matched_object, Device) else "vm"
+        perms.append(
+            "dcim.add_interface"
+            if kind == "device"
+            else "virtualization.add_vminterface"
+        )
+    return tuple(perms)
+
+
 def confirm_ip_interface(node, ip_address):
     """Create the reviewed Prefix/IPRange and IPAddress for one IP (issue #31).
 

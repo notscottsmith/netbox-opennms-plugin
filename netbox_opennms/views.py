@@ -23,10 +23,9 @@ from .client import OpenNMSClient, OpenNMSError, parse_node_links
 from .dryrun import dry_run
 from .ip_reconcile import (
     ConfirmRejected,
-    IPRangeProposal,
-    PrefixProposal,
     confirm_ip_interface,
     reconcile_node_interfaces,
+    required_confirm_permissions,
 )
 from .jobs import (
     SyncForeignSourceJob,
@@ -819,25 +818,25 @@ class DiscoveredNodeConfirmIPView(GetReturnURLMixin, PermissionRequiredMixin, Vi
     default_return_url = "plugins:netbox_opennms:discoverednode_list"
 
     def has_permission(self):
-        # ipam.add_ipaddress is always needed; the Prefix/IPRange-specific
-        # permission is checked in post() once this IP's proposal is known.
+        # ipam.add_ipaddress is always needed; the rest (Prefix vs IPRange,
+        # plus an Interface/VMInterface permission when the node has a
+        # matched Device/VM) is checked in post() via the same
+        # required_confirm_permissions() confirm_ip_interface itself derives
+        # from, once this IP's current verdict is known.
         return self.request.user.has_perm("ipam.add_ipaddress")
 
     def post(self, request, pk):
         node = get_object_or_404(DiscoveredNode, pk=pk)
         ip_address = request.POST.get("ip_address", "")
-        verdicts = {v.ip_address: v for v in reconcile_node_interfaces(node)}
-        verdict = verdicts.get(ip_address)
-        if verdict is not None and isinstance(verdict.proposal, PrefixProposal):
-            required_perm = "ipam.add_prefix"
-        elif verdict is not None and isinstance(verdict.proposal, IPRangeProposal):
-            required_perm = "ipam.add_iprange"
-        else:
-            required_perm = None
-        if required_perm and not request.user.has_perm(required_perm):
+        missing = [
+            perm
+            for perm in required_confirm_permissions(node, ip_address)
+            if not request.user.has_perm(perm)
+        ]
+        if missing:
             raise PermissionDenied(
-                f"You do not have permission to create a "
-                f"{required_perm.rsplit('.', maxsplit=1)[-1]}."
+                "You do not have permission to confirm this IP: missing "
+                + ", ".join(missing)
             )
         try:
             confirm_ip_interface(node, ip_address)

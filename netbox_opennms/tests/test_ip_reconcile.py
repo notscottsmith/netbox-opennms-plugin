@@ -20,6 +20,7 @@ from netbox_opennms.ip_reconcile import (
     netbox_ip_index,
     reconcile_interfaces,
     reconcile_node_interfaces,
+    required_confirm_permissions,
 )
 from netbox_opennms.models import (
     DiscoveredNode,
@@ -470,3 +471,41 @@ class ConfirmIPInterfaceTest(TestCase):
                 start_address="10.0.0.0/24", end_address="10.0.0.255/24"
             ).exists()
         )
+
+    def test_required_permissions_for_unknown_ip_is_empty(self):
+        node = self._node()
+        self.assertEqual(required_confirm_permissions(node, "10.0.0.99"), ())
+
+    def test_required_permissions_for_non_red_verdict_is_empty(self):
+        iface = Interface.objects.create(
+            device=self.device, name="eth0", type="virtual"
+        )
+        IPAddress.objects.create(address="10.0.0.9/24", assigned_object=iface)
+        node = self._node(matched=self.device)
+
+        self.assertEqual(required_confirm_permissions(node, "10.0.0.9"), ())
+
+    def test_required_permissions_include_prefix_and_interface_when_matched(self):
+        node = self._node(matched=self.device)
+
+        perms = required_confirm_permissions(node, "10.0.0.9")
+
+        self.assertEqual(
+            set(perms),
+            {"ipam.add_ipaddress", "ipam.add_prefix", "dcim.add_interface"},
+        )
+
+    def test_required_permissions_omit_interface_perm_when_unmatched(self):
+        node = self._node(matched=None)
+
+        perms = required_confirm_permissions(node, "10.0.0.9")
+
+        self.assertEqual(set(perms), {"ipam.add_ipaddress", "ipam.add_prefix"})
+        self.assertNotIn("dcim.add_interface", perms)
+
+    def test_required_permissions_include_iprange_when_netmask_unknown(self):
+        node = self._node(matched=None, netmask="")
+
+        perms = required_confirm_permissions(node, "10.0.0.9")
+
+        self.assertEqual(set(perms), {"ipam.add_ipaddress", "ipam.add_iprange"})
