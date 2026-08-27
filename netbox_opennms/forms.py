@@ -20,7 +20,7 @@ from django.core.exceptions import ValidationError
 from django.db.models import Q
 from django.utils.translation import gettext_lazy as _
 from extras.models import SavedFilter
-from ipam.models import IPAddress
+from ipam.models import VRF, IPAddress
 from netbox.forms import NetBoxModelFilterSetForm, NetBoxModelForm
 from tenancy.models import Tenant, TenantGroup
 from utilities.forms.fields import (
@@ -37,6 +37,7 @@ from .membership import filter_errors
 from .models import (
     AssetMapping,
     DiscoveredNode,
+    DiscoveryScan,
     MetadataEntry,
     MonitoredInterface,
     MonitoredService,
@@ -46,6 +47,7 @@ from .models import (
     MonitoringPolicy,
     OpenNMSServer,
     Requisition,
+    VRFAssignment,
 )
 from .scope import SCOPE_FIELDS, find_scope_collision
 
@@ -524,6 +526,79 @@ class MonitoringExclusionForm(_ScopeForm):
             "site_groups",
             "sites",
             "locations",
+            "tags",
+        )
+
+
+class VRFAssignmentForm(_ScopeForm):
+    """Bind a VRF to a Scope, for resolving Discovered Node IPs (ADR 0008)."""
+
+    vrf = DynamicModelChoiceField(queryset=VRF.objects.all(), label=_("VRF"))
+
+    class Meta:
+        model = VRFAssignment
+        fields = (
+            "vrf",
+            "description",
+            "tenant_groups",
+            "tenants",
+            "site_groups",
+            "sites",
+            "locations",
+            "tags",
+        )
+
+    def clean(self):
+        super().clean()
+        # A given object may be bound directly to only one VRF Assignment at a
+        # time (ADR 0008), the identical same-level-collision guard as
+        # OpenNMSServerForm.
+        for field in SCOPE_FIELDS:
+            other = find_scope_collision(
+                field,
+                self.cleaned_data.get(field),
+                exclude_pk=self.instance.pk or None,
+                model=VRFAssignment,
+            )
+            if other is not None:
+                self.add_error(
+                    field,
+                    _('Already bound directly to VRF Assignment "%(assignment)s".')
+                    % {"assignment": other},
+                )
+        return self.cleaned_data
+
+
+class DiscoveryScanForm(NetBoxModelForm):
+    """Trigger an OpenNMS Discovery scan over an IP range (ADR 0006).
+
+    Plain FK fields, not ``_ScopeForm``: a Discovery Scan targets one NetBox
+    site/location directly (for the Monitoring Location and VRF resolution it
+    supplies, ADR 0006/0008) rather than binding across the five-level Scope
+    hierarchy the way ``OpenNMSServer``/``MonitoringExclusion``/
+    ``VRFAssignment`` do.
+    """
+
+    server = DynamicModelChoiceField(
+        queryset=OpenNMSServer.objects.all(), label=_("OpenNMS Server")
+    )
+    site = DynamicModelChoiceField(
+        queryset=Site.objects.all(), required=False, label=_("Site")
+    )
+    location = DynamicModelChoiceField(
+        queryset=Location.objects.all(), required=False, label=_("Location")
+    )
+
+    class Meta:
+        model = DiscoveryScan
+        fields = (
+            "server",
+            "site",
+            "location",
+            "ip_range_begin",
+            "ip_range_end",
+            "retries",
+            "timeout",
             "tags",
         )
 

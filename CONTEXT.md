@@ -45,6 +45,19 @@ The `foreign_id_prefix` plugin setting (default `netbox`) prepended to every For
 **Adoption**:
 Before a Sync renders and pushes a Requisition, matching a desired node's label against OpenNMS's current live state by Foreign Source and reusing the existing node's Foreign ID verbatim, instead of assigning a freshly-derived one — so a pre-existing OpenNMS node (created by hand, by a prior scheme, or by another tool) is kept in place rather than duplicated. Unambiguous by construction: a label matching more than one node on either side is skipped (keeps the freshly-derived id) and raises a non-blocking warning. Applied identically before a real Sync and before a dry-run diff, so the preview always matches what a Sync would actually push.
 
+### Discovery
+
+**Discovered Node**:
+One OpenNMS node found by scanning a Server's live node inventory — either a full inventory scan or a Discovery Scan — holding its NetBox match verdict (matches, differs, or missing). Once its OpenNMS detail has been walked, that snapshot is persisted on the row itself, so review and conversion into a Device/VM don't depend on the OpenNMS-side node still existing. Its walked IP interfaces carry their own per-address verdict alongside the node-level one, reconciled against NetBox independently of whether the node itself has been converted to a Device/VM.
+_Avoid_: Discovery on its own — always say Discovered Node or Discovery Scan; this repo has two other unrelated senses of the bare word (the plugin's internal detector/policy catalog reader, and the general software-engineering sense).
+
+**Discovery Scan**:
+A NetBox record for one triggered OpenNMS network-scan (an ICMP/SNMP sweep over IP ranges via OpenNMS's own Discovery feature), bound to a single OpenNMS Server and a NetBox site/location, and identified by a throwaway Foreign Source. The site/location supplies OpenNMS's own required Monitoring Location field on the discovery request, and is what every Discovered Node it produces uses to resolve VRF Assignment for its IP interfaces. OpenNMS gives no synchronous completion signal, so a Discovery Scan is polled until no new nodes appear for a while (considered settled), then its OpenNMS-side data is cleaned up after a retention period — the Discovered Node rows it produced remain in NetBox regardless.
+_Avoid_: Discovery on its own (see Discovered Node)
+
+**VRF Assignment**:
+A record binding a VRF to a Scope (tenant group/tenant/site group/site/location), resolved by the same most-specific-wins precedence engine as OpenNMS Server and Monitoring Exclusion. Used to determine which VRF a Discovered Node's proposed Prefix or IP Range belongs to, since NetBox's own IP Range has no site/location scope of its own to carry that.
+
 ### Conflicts
 
 **Conflict**:

@@ -13,10 +13,11 @@ from dcim.models import (
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, connection, transaction
 from django.test import TestCase
-from ipam.models import IPAddress
+from ipam.models import VRF, IPAddress
 from tenancy.models import Tenant
 
 from netbox_opennms.models import (
+    DiscoveryScan,
     MonitoredService,
     MonitoringDetector,
     MonitoringExclusion,
@@ -24,6 +25,7 @@ from netbox_opennms.models import (
     MonitoringPolicy,
     OpenNMSServer,
     Requisition,
+    VRFAssignment,
     object_ip_pks,
     override_ip_pks,
 )
@@ -329,3 +331,92 @@ class MonitoringExclusionTest(TestCase):
         self.assertEqual(list(exclusion.tenants.all()), [])
         exclusion.tenants.add(tenant)
         self.assertEqual(list(exclusion.tenants.all()), [tenant])
+
+
+class VRFAssignmentTest(TestCase):
+    def test_str_falls_back_to_the_vrf(self):
+        vrf = VRF.objects.create(name="Customer VRF")
+        assignment = VRFAssignment.objects.create(vrf=vrf)
+        self.assertEqual(str(assignment), f"VRF assignment: {vrf}")
+
+    def test_str_uses_description_when_set(self):
+        vrf = VRF.objects.create(name="Customer VRF")
+        assignment = VRFAssignment.objects.create(vrf=vrf, description="Acme VRF")
+        self.assertEqual(str(assignment), "Acme VRF")
+
+    def test_scope_bindings_are_optional(self):
+        vrf = VRF.objects.create(name="Customer VRF")
+        assignment = VRFAssignment.objects.create(vrf=vrf, description="unbound")
+        tenant = Tenant.objects.create(name="Acme Corp", slug="acme-corp")
+        self.assertEqual(list(assignment.tenants.all()), [])
+        assignment.tenants.add(tenant)
+        self.assertEqual(list(assignment.tenants.all()), [tenant])
+
+
+class DiscoveryScanTest(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.server = OpenNMSServer.objects.create(
+            name="Acme", url="https://onms.example"
+        )
+        cls.site = Site.objects.create(name="Raleigh", slug="raleigh")
+
+    def test_requires_site_or_location(self):
+        scan = DiscoveryScan(
+            server=self.server,
+            ip_range_begin="10.0.0.1",
+            ip_range_end="10.0.0.10",
+        )
+        with self.assertRaises(ValidationError):
+            scan.clean()
+
+    def test_ip_range_end_before_begin_raises(self):
+        scan = DiscoveryScan(
+            server=self.server,
+            site=self.site,
+            ip_range_begin="10.0.0.10",
+            ip_range_end="10.0.0.1",
+        )
+        with self.assertRaises(ValidationError):
+            scan.clean()
+
+    def test_ip_range_version_mismatch_raises(self):
+        scan = DiscoveryScan(
+            server=self.server,
+            site=self.site,
+            ip_range_begin="10.0.0.1",
+            ip_range_end="::1",
+        )
+        with self.assertRaises(ValidationError):
+            scan.clean()
+
+    def test_foreign_source_derived_on_save(self):
+        scan = DiscoveryScan.objects.create(
+            server=self.server,
+            site=self.site,
+            ip_range_begin="10.0.0.1",
+            ip_range_end="10.0.0.10",
+        )
+        self.assertTrue(scan.foreign_source)
+        self.assertIn("discovery", scan.foreign_source)
+
+    def test_monitoring_location_uses_site_slug(self):
+        scan = DiscoveryScan.objects.create(
+            server=self.server,
+            site=self.site,
+            ip_range_begin="10.0.0.1",
+            ip_range_end="10.0.0.10",
+        )
+        self.assertEqual(scan.monitoring_location, "raleigh")
+
+    def test_mark_triggered_sets_last_triggered(self):
+        scan = DiscoveryScan.objects.create(
+            server=self.server,
+            site=self.site,
+            ip_range_begin="10.0.0.1",
+            ip_range_end="10.0.0.10",
+        )
+        self.assertIsNone(scan.last_triggered)
+        scan.mark_triggered()
+        scan.refresh_from_db()
+        self.assertIsNotNone(scan.last_triggered)

@@ -17,7 +17,7 @@ testing seam for multi-server support.
 from dataclasses import dataclass
 
 from .derivation import site_for
-from .models import MonitoringExclusion, OpenNMSServer
+from .models import MonitoringExclusion, OpenNMSServer, VRFAssignment
 
 SCOPE_FIELDS = ("tenant_groups", "tenants", "site_groups", "sites", "locations")
 
@@ -88,19 +88,64 @@ def resolve_scope(obj):
     return ScopeResolution(server=OpenNMSServer.objects.filter(is_default=True).first())
 
 
-def find_scope_collision(field, selected, exclude_pk=None):
-    """The Server already bound directly to any of *selected* on *field*, if any.
+def find_scope_collision(field, selected, exclude_pk=None, model=OpenNMSServer):
+    """The *model* row already bound directly to any of *selected* on *field*.
 
     ADR 0002: a given object may be bound directly to only one Server at a
     time — a same-level collision is a hard validation error at assignment
     time, so ``OpenNMSServerForm``/``OpenNMSServerSerializer`` both call this
     to reject it. Deliberately NOT enforced here at resolve time: by the time
     ``resolve_scope`` runs, a collision is an existing data-entry mistake, not
-    something to arbitrate.
+    something to arbitrate. ADR 0008 reuses the same check for
+    ``VRFAssignment`` by passing ``model=VRFAssignment``.
     """
     if not selected:
         return None
-    others = OpenNMSServer.objects.filter(**{f"{field}__in": selected})
+    others = model.objects.filter(**{f"{field}__in": selected})
     if exclude_pk is not None:
         others = others.exclude(pk=exclude_pk)
     return others.first()
+
+
+def _scope_levels_for_site_or_location(site=None, location=None):
+    """The five Scope levels starting from an explicit Site/Location (ADR 0008).
+
+    Same shape as ``_scope_levels``, but for a Discovery Scan's bound
+    site/location rather than a Device/VM's own attributes: tenant is drawn
+    from the Location's own ``tenant`` first (falling back to the Site's),
+    mirroring how a Location may carry a more specific tenant than its Site.
+    """
+    if location is not None and site is None:
+        site = location.site
+    site_group = getattr(site, "group", None) if site else None
+    tenant = getattr(location, "tenant", None) if location else None
+    if tenant is None and site is not None:
+        tenant = site.tenant
+    tenant_group = getattr(tenant, "group", None) if tenant else None
+    return [
+        ("locations", _ancestor_chain(location)),
+        ("sites", [site] if site else []),
+        ("site_groups", _ancestor_chain(site_group)),
+        ("tenants", [tenant] if tenant else []),
+        ("tenant_groups", _ancestor_chain(tenant_group)),
+    ]
+
+
+def resolve_vrf(*, site=None, location=None):
+    """Resolve the VRF bound to *site*/*location* (ADR 0008), or ``None``.
+
+    Same most-specific-wins precedence as ``resolve_scope``, but starting
+    from a Discovery Scan's explicit Site/Location rather than a Device/VM.
+    Unlike ``resolve_scope`` there is no Default VRF fallback — ``None``
+    means nothing is bound at any level.
+    """
+    for field_name, candidates in _scope_levels_for_site_or_location(
+        site=site, location=location
+    ):
+        for candidate in candidates:
+            assignment = VRFAssignment.objects.filter(
+                **{field_name: candidate}
+            ).first()
+            if assignment is not None:
+                return assignment.vrf
+    return None

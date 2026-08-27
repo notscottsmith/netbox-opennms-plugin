@@ -35,6 +35,7 @@ from .membership import (
 from .models import (
     AssetMapping,
     DiscoveredNode,
+    DiscoveryScan,
     MetadataEntry,
     MonitoredInterface,
     MonitoredService,
@@ -44,6 +45,7 @@ from .models import (
     MonitoringPolicy,
     OpenNMSServer,
     Requisition,
+    VRFAssignment,
 )
 from .requisition_discovery import list_unmirrored
 from .scan import KIND_MODELS, scan_server
@@ -496,6 +498,90 @@ class MonitoringExclusionDeleteView(generic.ObjectDeleteView):
 class MonitoringExclusionBulkDeleteView(generic.BulkDeleteView):
     queryset = MonitoringExclusion.objects.all()
     table = tables.MonitoringExclusionTable
+
+
+class VRFAssignmentView(generic.ObjectView):
+    queryset = VRFAssignment.objects.all()
+
+
+class VRFAssignmentListView(generic.ObjectListView):
+    queryset = VRFAssignment.objects.all()
+    table = tables.VRFAssignmentTable
+    filterset = filtersets.VRFAssignmentFilterSet
+
+
+class VRFAssignmentEditView(generic.ObjectEditView):
+    queryset = VRFAssignment.objects.all()
+    form = forms.VRFAssignmentForm
+
+
+class VRFAssignmentDeleteView(generic.ObjectDeleteView):
+    queryset = VRFAssignment.objects.all()
+
+
+class VRFAssignmentBulkDeleteView(generic.BulkDeleteView):
+    queryset = VRFAssignment.objects.all()
+    table = tables.VRFAssignmentTable
+
+
+# --- Discovery Scan (issue #25) -----------------------------------------------
+
+
+class DiscoveryScanView(generic.ObjectView):
+    queryset = DiscoveryScan.objects.all()
+
+
+class DiscoveryScanListView(generic.ObjectListView):
+    queryset = DiscoveryScan.objects.all()
+    table = tables.DiscoveryScanTable
+    filterset = filtersets.DiscoveryScanFilterSet
+
+
+class DiscoveryScanEditView(generic.ObjectEditView):
+    queryset = DiscoveryScan.objects.all()
+    form = forms.DiscoveryScanForm
+
+
+class DiscoveryScanDeleteView(generic.ObjectDeleteView):
+    queryset = DiscoveryScan.objects.all()
+
+
+class DiscoveryScanBulkDeleteView(generic.BulkDeleteView):
+    queryset = DiscoveryScan.objects.all()
+    table = tables.DiscoveryScanTable
+
+
+class DiscoveryScanTriggerView(GetReturnURLMixin, PermissionRequiredMixin, View):
+    """Fire one Discovery Scan's ``POST /api/v2/discovery`` request (ADR 0006).
+
+    Fire-and-forget: OpenNMS accepting the request is the full extent of what
+    this view can confirm (``OpenNMSClient.run_discovery``'s docstring) —
+    inferring completion from the resulting Discovered Nodes is a later Job
+    (issue #27), out of scope here.
+    """
+
+    permission_required = "netbox_opennms.change_discoveryscan"
+    default_return_url = "plugins:netbox_opennms:discoveryscan_list"
+
+    def post(self, request, pk):
+        scan = get_object_or_404(DiscoveryScan, pk=pk)
+        return_url = request.META.get("HTTP_REFERER") or scan.get_absolute_url()
+        try:
+            with OpenNMSClient.from_server(scan.server) as client:
+                client.run_discovery(
+                    foreign_source=scan.foreign_source,
+                    location=scan.monitoring_location,
+                    ip_range_begin=scan.ip_range_begin,
+                    ip_range_end=scan.ip_range_end,
+                    retries=scan.retries,
+                    timeout=scan.timeout,
+                )
+        except OpenNMSError as exc:
+            messages.error(request, f"Discovery scan {scan} failed: {exc}")
+            return redirect(return_url)
+        scan.mark_triggered()
+        messages.success(request, f"Triggered Discovery scan {scan}.")
+        return redirect(return_url)
 
 
 # --- Discovery (issue #7) ----------------------------------------------------

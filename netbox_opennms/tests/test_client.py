@@ -94,6 +94,31 @@ class OpenNMSClientTest(SimpleTestCase):
         self.assertEqual(mock_request.call_args.kwargs["data"], b"<model-import/>")
 
     @mock.patch.object(requests.Session, "request")
+    def test_run_discovery(self, mock_request):
+        mock_request.return_value = mock.Mock(status_code=202, ok=True)
+        _client().run_discovery(
+            foreign_source="netbox-discovery-20260101000000",
+            location="raleigh",
+            ip_range_begin="10.0.0.1",
+            ip_range_end="10.0.0.254",
+            retries=1,
+            timeout=2000,
+        )
+        method, url = mock_request.call_args.args
+        self.assertEqual(method, "POST")
+        self.assertEqual(url, "https://onms.example/opennms/api/v2/discovery")
+        self.assertEqual(
+            mock_request.call_args.kwargs["json"],
+            {
+                "foreignSource": "netbox-discovery-20260101000000",
+                "location": "raleigh",
+                "retries": 1,
+                "timeout": 2000,
+                "includeRanges": [{"begin": "10.0.0.1", "end": "10.0.0.254"}],
+            },
+        )
+
+    @mock.patch.object(requests.Session, "request")
     def test_import_requisition_builds_path_and_passes_rescan(self, mock_request):
         # 202 ACCEPTED is the real OpenNMS import response — it must be success.
         mock_request.return_value = mock.Mock(status_code=202, ok=True)

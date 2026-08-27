@@ -8,6 +8,7 @@ from netbox.filtersets import NetBoxModelFilterSet
 from .models import (
     AssetMapping,
     DiscoveredNode,
+    DiscoveryScan,
     MetadataEntry,
     MonitoredInterface,
     MonitoredService,
@@ -17,6 +18,7 @@ from .models import (
     MonitoringPolicy,
     OpenNMSServer,
     Requisition,
+    VRFAssignment,
 )
 
 
@@ -35,6 +37,17 @@ class MonitoringExclusionFilterSet(NetBoxModelFilterSet):
     class Meta:
         model = MonitoringExclusion
         fields = ("id", "description")
+
+    def search(self, queryset, name, value):
+        if value:
+            return queryset.filter(description__icontains=value)
+        return queryset
+
+
+class VRFAssignmentFilterSet(NetBoxModelFilterSet):
+    class Meta:
+        model = VRFAssignment
+        fields = ("id", "vrf", "description")
 
     def search(self, queryset, name, value):
         if value:
@@ -140,6 +153,17 @@ class DiscoveredNodeFilterSet(NetBoxModelFilterSet):
     def search(self, queryset, name, value):
         if value:
             return queryset.filter(label__icontains=value)
+        return queryset
+
+
+class DiscoveryScanFilterSet(NetBoxModelFilterSet):
+    class Meta:
+        model = DiscoveryScan
+        fields = ("id", "server", "site", "location", "foreign_source")
+
+    def search(self, queryset, name, value):
+        if value:
+            return queryset.filter(foreign_source__icontains=value)
         return queryset
 
 

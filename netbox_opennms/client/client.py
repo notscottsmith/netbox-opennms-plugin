@@ -330,6 +330,36 @@ class OpenNMSClient:
             params={"rescanExisting": rescan_existing},
         )
 
+    def run_discovery(
+        self, foreign_source, location, ip_range_begin, ip_range_end, retries, timeout
+    ):
+        """Trigger a Discovery scan over one IP range (ADR 0006).
+
+        ``POST /api/v2/discovery`` is fire-and-forget — OpenNMS gives no
+        job-status endpoint (``DiscoveryRestService``/``DiscoveryTaskExecutorImpl``,
+        Horizon 36 source inspection), so this call only confirms OpenNMS
+        *accepted* the request; a caller must not treat the response as scan
+        completion. Tagging the request with ``foreignSource`` routes every
+        resulting ``newSuspect`` event into a live ``OnmsNode`` under that
+        throwaway name.
+
+        The request-body field names below (``foreignSource``/``location``/
+        ``retries``/``timeout``/``includeRanges``) reflect Horizon 36 source
+        inspection, not a live-server capture — confirm against a real server
+        via ``make integration`` before relying on this in production.
+        """
+        return self._request(
+            "POST",
+            "/api/v2/discovery",
+            json={
+                "foreignSource": foreign_source,
+                "location": location,
+                "retries": retries,
+                "timeout": timeout,
+                "includeRanges": [{"begin": ip_range_begin, "end": ip_range_end}],
+            },
+        )
+
     def list_requisition_names(self):
         """Foreign Source names of every requisition OpenNMS holds (drift recon).
 

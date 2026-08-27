@@ -144,6 +144,44 @@ def foreign_id_for(target):
     return f"{prefix}-{kind}-{target.pk}" if prefix else f"{kind}-{target.pk}"
 
 
+def discovery_foreign_source_for(timestamp):
+    """Return a throwaway Foreign Source name for one Discovery Scan (ADR 0006).
+
+    Format: ``{foreign_id_prefix}-discovery-{timestamp:%Y%m%d%H%M%S%f}`` —
+    unique per scan (OpenNMS routes each run's ``newSuspect`` events into their
+    own node set via this name) and visually distinct from a Requisition's
+    ``netbox.{site}.{role}`` Foreign Source. Microsecond resolution avoids
+    colliding with the field's unique constraint when two scans are created
+    within the same second. Takes the timestamp as a param rather than reading
+    the clock itself, so this stays pure/deterministic like
+    ``foreign_source_for`` — the caller (``DiscoveryScan.save``) owns "now".
+    """
+    prefix = get_plugin_config(PLUGIN_NAME, "foreign_id_prefix")
+    # Microsecond resolution (not just seconds): two scans created within the
+    # same second would otherwise collide on the field's unique constraint.
+    stamp = timestamp.strftime("%Y%m%d%H%M%S%f")
+    name = f"{prefix}-discovery-{stamp}" if prefix else f"discovery-{stamp}"
+    return validate_foreign_source_name(name)
+
+
+def monitoring_location_for(*, site=None, location=None):
+    """Return the OpenNMS Monitoring Location a Discovery Scan's NetBox
+    site/location supplies on the scan request (ADR 0006/0008).
+
+    NetBox Location and OpenNMS Monitoring Location are unrelated concepts
+    that happen to share a name (CONTEXT.md) — this is the single point that
+    bridges them (AD-14), mirroring ``foreign_source_for``'s slug-based
+    naming. The most specific NetBox object supplies the name: ``location``
+    wins over ``site`` when both are given. Raises ``ValueError`` (via
+    ``validate_location_name``) if the slug isn't also a legal OpenNMS
+    location name (AD-9) — NetBox slugs permit ``_``, which OpenNMS doesn't.
+    """
+    obj = location or site
+    if obj is None:
+        raise ValueError("monitoring_location_for() requires a site or location.")
+    return validate_location_name(obj.slug)
+
+
 def foreign_source_for(target):
     """Return the Foreign Source name for a monitored Device or VirtualMachine.
 

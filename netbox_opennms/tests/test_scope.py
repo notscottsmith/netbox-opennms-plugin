@@ -12,10 +12,11 @@ from dcim.models import (
     SiteGroup,
 )
 from django.test import TestCase
+from ipam.models import VRF
 from tenancy.models import Tenant, TenantGroup
 
-from netbox_opennms.models import MonitoringExclusion, OpenNMSServer
-from netbox_opennms.scope import resolve_scope
+from netbox_opennms.models import MonitoringExclusion, OpenNMSServer, VRFAssignment
+from netbox_opennms.scope import resolve_scope, resolve_vrf
 
 
 class ScopeResolutionTest(TestCase):
@@ -179,3 +180,93 @@ class ScopeResolutionTest(TestCase):
         device = self._device(site=self.site)
         result = resolve_scope(device)
         self.assertEqual(result.server, server)
+
+
+class VRFResolutionTest(TestCase):
+    """Tests for ``resolve_vrf`` (ADR 0008) — same precedence engine as
+    ``resolve_scope``, but starting from an explicit Site/Location rather
+    than a Device/VM, and with no Default VRF fallback."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.tenant_group = TenantGroup.objects.create(
+            name="MSP Customers", slug="msp-customers"
+        )
+        cls.tenant = Tenant.objects.create(
+            name="Acme Corp", slug="acme-corp", group=cls.tenant_group
+        )
+        cls.site_group = SiteGroup.objects.create(name="East Coast", slug="east-coast")
+        cls.site = Site.objects.create(
+            name="Raleigh", slug="raleigh", group=cls.site_group, tenant=cls.tenant
+        )
+        cls.location = Location.objects.create(
+            name="Rack 1", slug="rack-1", site=cls.site
+        )
+        cls.nested_location = Location.objects.create(
+            name="Shelf A", slug="shelf-a", site=cls.site, parent=cls.location
+        )
+
+    def test_no_bindings_resolves_to_none(self):
+        self.assertIsNone(resolve_vrf(site=self.site))
+
+    def test_site_binding_matches(self):
+        vrf = VRF.objects.create(name="Site VRF")
+        assignment = VRFAssignment.objects.create(vrf=vrf)
+        assignment.sites.add(self.site)
+        self.assertEqual(resolve_vrf(site=self.site), vrf)
+
+    def test_location_binding_beats_site(self):
+        site_vrf = VRF.objects.create(name="Site VRF")
+        site_assignment = VRFAssignment.objects.create(vrf=site_vrf)
+        site_assignment.sites.add(self.site)
+        location_vrf = VRF.objects.create(name="Location VRF")
+        location_assignment = VRFAssignment.objects.create(vrf=location_vrf)
+        location_assignment.locations.add(self.location)
+        self.assertEqual(
+            resolve_vrf(site=self.site, location=self.location), location_vrf
+        )
+
+    def test_location_binding_cascades_to_nested_location(self):
+        vrf = VRF.objects.create(name="Rack VRF")
+        assignment = VRFAssignment.objects.create(vrf=vrf)
+        assignment.locations.add(self.location)
+        self.assertEqual(
+            resolve_vrf(site=self.site, location=self.nested_location), vrf
+        )
+
+    def test_location_only_derives_site_and_tenant(self):
+        # No explicit site is passed — resolve_vrf must derive it (and the
+        # tenant) from the location itself.
+        vrf = VRF.objects.create(name="Site VRF")
+        assignment = VRFAssignment.objects.create(vrf=vrf)
+        assignment.sites.add(self.site)
+        self.assertEqual(resolve_vrf(location=self.location), vrf)
+
+    def test_tenant_binding_matches_via_site_tenant(self):
+        vrf = VRF.objects.create(name="Tenant VRF")
+        assignment = VRFAssignment.objects.create(vrf=vrf)
+        assignment.tenants.add(self.tenant)
+        self.assertEqual(resolve_vrf(site=self.site), vrf)
+
+    def test_location_tenant_overrides_site_tenant(self):
+        other_tenant = Tenant.objects.create(name="Other Co", slug="other-co")
+        location = Location.objects.create(
+            name="Rack 2", slug="rack-2", site=self.site, tenant=other_tenant
+        )
+        site_tenant_vrf = VRF.objects.create(name="Site Tenant VRF")
+        site_tenant_assignment = VRFAssignment.objects.create(vrf=site_tenant_vrf)
+        site_tenant_assignment.tenants.add(self.tenant)
+        other_tenant_vrf = VRF.objects.create(name="Other Tenant VRF")
+        other_tenant_assignment = VRFAssignment.objects.create(vrf=other_tenant_vrf)
+        other_tenant_assignment.tenants.add(other_tenant)
+        self.assertEqual(
+            resolve_vrf(site=self.site, location=location), other_tenant_vrf
+        )
+
+    def test_no_default_fallback_when_nothing_matches(self):
+        # Unlike resolve_scope, there is no Default VRF concept (ADR 0008).
+        vrf = VRF.objects.create(name="Unrelated VRF")
+        other_site = Site.objects.create(name="Wilmington", slug="wilmington")
+        assignment = VRFAssignment.objects.create(vrf=vrf)
+        assignment.sites.add(other_site)
+        self.assertIsNone(resolve_vrf(site=self.site))

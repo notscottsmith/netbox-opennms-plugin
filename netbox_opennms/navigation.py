@@ -50,6 +50,28 @@ menu_items = (
         ),
     ),
     PluginMenuItem(
+        link="plugins:netbox_opennms:vrfassignment_list",
+        link_text="VRF Assignments",
+        buttons=(
+            PluginMenuButton(
+                link="plugins:netbox_opennms:vrfassignment_add",
+                title="Add",
+                icon_class="mdi mdi-plus-thick",
+            ),
+        ),
+    ),
+    PluginMenuItem(
+        link="plugins:netbox_opennms:discoveryscan_list",
+        link_text="Discovery Scans",
+        buttons=(
+            PluginMenuButton(
+                link="plugins:netbox_opennms:discoveryscan_add",
+                title="Add",
+                icon_class="mdi mdi-plus-thick",
+            ),
+        ),
+    ),
+    PluginMenuItem(
         link="plugins:netbox_opennms:sync_preview",
         link_text="Sync Preview",
     ),

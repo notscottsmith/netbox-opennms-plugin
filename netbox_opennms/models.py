@@ -14,6 +14,8 @@ changes ``requisition-redesign`` (R1–R8) and ``replace-priority-with-conflicts
 (C1–C7) for the full design.
 """
 
+import ipaddress
+
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
@@ -32,7 +34,12 @@ from .choices import (
     PolicyPresetChoices,
     ServiceChoices,
 )
-from .derivation import validate_location_name, validate_requisition_name
+from .derivation import (
+    discovery_foreign_source_for,
+    monitoring_location_for,
+    validate_location_name,
+    validate_requisition_name,
+)
 from .fields import EncryptedJSONField, EncryptedTextField
 from .presets import (
     detector_required_params,
@@ -697,6 +704,148 @@ class MonitoringExclusion(NetBoxModel):
 
     def get_absolute_url(self):
         return reverse("plugins:netbox_opennms:monitoringexclusion", args=[self.pk])
+
+
+class VRFAssignment(NetBoxModel):
+    """Binds a VRF to a Scope, for resolving a Discovered Node's IP VRF (ADR 0008).
+
+    Reuses the identical five-level Scope/precedence engine as
+    ``OpenNMSServer``/``MonitoringExclusion`` (``scope.resolve_vrf``), but
+    resolved from a Discovery Scan's explicit NetBox site/location rather
+    than a Device/VM's own attributes — that site/location is what every
+    Discovered Node it produces uses to resolve VRF for its IP interfaces.
+    """
+
+    vrf = models.ForeignKey(to="ipam.VRF", on_delete=models.CASCADE, related_name="+")
+    description = models.CharField(max_length=200, blank=True)
+    tenant_groups = models.ManyToManyField(
+        to="tenancy.TenantGroup", blank=True, related_name="+"
+    )
+    tenants = models.ManyToManyField(to="tenancy.Tenant", blank=True, related_name="+")
+    site_groups = models.ManyToManyField(
+        to="dcim.SiteGroup", blank=True, related_name="+"
+    )
+    sites = models.ManyToManyField(to="dcim.Site", blank=True, related_name="+")
+    locations = models.ManyToManyField(to="dcim.Location", blank=True, related_name="+")
+
+    class Meta:
+        ordering = ("pk",)
+        verbose_name = "VRF assignment"
+        verbose_name_plural = "VRF assignments"
+
+    def __str__(self):
+        return self.description or f"VRF assignment: {self.vrf}"
+
+    def get_absolute_url(self):
+        return reverse("plugins:netbox_opennms:vrfassignment", args=[self.pk])
+
+
+class DiscoveryScan(NetBoxModel):
+    """One triggered OpenNMS Discovery scan over an IP range (ADR 0006).
+
+    ``POST /api/v2/discovery`` is fire-and-forget: OpenNMS gives no job-status
+    endpoint, so a Discovery Scan instead tags its request with a throwaway
+    ``foreign_source`` (derived once at creation via
+    ``derivation.discovery_foreign_source_for`` and never changed), which
+    routes every resulting ``newSuspect`` event into a live ``OnmsNode`` row
+    under that name. A later background Job (issue #27, out of scope here)
+    polls for those nodes to infer completion; this model only covers the
+    trigger itself.
+
+    ``site``/``location`` is the NetBox site/location this scan is *for* — it
+    supplies OpenNMS's own required Monitoring Location on the request
+    (``monitoring_location``, ADR 0006) and is what every Discovered Node the
+    scan produces uses to resolve VRF Assignment for its IP interfaces (ADR
+    0008). At least one of the two is required; ``location`` wins when both
+    are set.
+    """
+
+    server = models.ForeignKey(
+        to=OpenNMSServer, on_delete=models.CASCADE, related_name="discovery_scans"
+    )
+    site = models.ForeignKey(
+        to="dcim.Site",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    location = models.ForeignKey(
+        to="dcim.Location",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    # Derived once in save() — never user-editable (excluded from forms via
+    # editable=False, mirroring DeployedForeignSource's ownership model).
+    foreign_source = models.CharField(
+        max_length=100, unique=True, editable=False, blank=True
+    )
+    ip_range_begin = models.GenericIPAddressField()
+    ip_range_end = models.GenericIPAddressField()
+    retries = models.PositiveSmallIntegerField(default=1)
+    timeout = models.PositiveIntegerField(
+        default=2000, help_text="Per-address timeout, in milliseconds."
+    )
+    # Set by the Trigger action (mark_triggered) — None means never triggered.
+    last_triggered = models.DateTimeField(null=True, blank=True, editable=False)
+
+    class Meta:
+        ordering = ("-created",)
+        verbose_name = "discovery scan"
+        verbose_name_plural = "discovery scans"
+
+    def __str__(self):
+        return self.foreign_source or f"Discovery scan #{self.pk}"
+
+    def get_absolute_url(self):
+        return reverse("plugins:netbox_opennms:discoveryscan", args=[self.pk])
+
+    @property
+    def monitoring_location(self):
+        """The OpenNMS Monitoring Location this scan supplies (ADR 0006)."""
+        return monitoring_location_for(site=self.site, location=self.location)
+
+    def clean(self):
+        super().clean()
+        if not self.site_id and not self.location_id:
+            raise ValidationError(
+                "A Discovery Scan requires a NetBox site or location."
+            )
+        else:
+            field = "location" if self.location_id else "site"
+            try:
+                monitoring_location_for(site=self.site, location=self.location)
+            except ValueError as exc:
+                raise ValidationError({field: str(exc)}) from exc
+        if self.ip_range_begin and self.ip_range_end:
+            try:
+                begin = ipaddress.ip_address(self.ip_range_begin)
+                end = ipaddress.ip_address(self.ip_range_end)
+            except ValueError:
+                return  # field validators already flag an unparseable address
+            if begin.version != end.version:
+                raise ValidationError(
+                    {
+                        "ip_range_end": "Must be the same IP version as the "
+                        "range start."
+                    }
+                )
+            if end < begin:
+                raise ValidationError(
+                    {"ip_range_end": "Must not be before the range start."}
+                )
+
+    def save(self, *args, **kwargs):
+        if not self.foreign_source:
+            self.foreign_source = discovery_foreign_source_for(timezone.now())
+        super().save(*args, **kwargs)
+
+    def mark_triggered(self):
+        """Persist the fired timestamp — the single write path (Trigger action)."""
+        self.last_triggered = timezone.now()
+        self.save(update_fields=["last_triggered"])
 
 
 class DeployedForeignSource(models.Model):

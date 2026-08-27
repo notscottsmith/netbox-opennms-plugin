@@ -8,6 +8,7 @@ from netbox.tables import NetBoxTable, columns
 from .models import (
     AssetMapping,
     DiscoveredNode,
+    DiscoveryScan,
     MetadataEntry,
     MonitoredInterface,
     MonitoredService,
@@ -17,6 +18,7 @@ from .models import (
     MonitoringPolicy,
     OpenNMSServer,
     Requisition,
+    VRFAssignment,
 )
 
 
@@ -101,6 +103,76 @@ class MonitoringExclusionTable(NetBoxTable):
             "actions",
         )
         default_columns = ("description",)
+
+
+class VRFAssignmentTable(NetBoxTable):
+    description = tables.Column(linkify=True)
+    vrf = tables.Column(linkify=True)
+
+    class Meta(NetBoxTable.Meta):
+        model = VRFAssignment
+        fields = (
+            "pk",
+            "id",
+            "description",
+            "vrf",
+            "created",
+            "last_updated",
+            "actions",
+        )
+        default_columns = ("description", "vrf")
+
+
+class DiscoveryScanTable(NetBoxTable):
+    foreign_source = tables.Column(linkify=True, verbose_name="Discovery Scan")
+    server = tables.Column(linkify=True)
+    site = tables.Column(linkify=True)
+    location = tables.Column(linkify=True)
+    last_triggered = columns.DateTimeColumn()
+    trigger_action = tables.TemplateColumn(
+        template_code="""
+            <form method="post"
+                  action="{% url 'plugins:netbox_opennms:discoveryscan_trigger'
+                                  record.pk %}">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-sm btn-outline-secondary">
+                Trigger
+              </button>
+            </form>
+        """,
+        verbose_name="",
+        orderable=False,
+    )
+
+    class Meta(NetBoxTable.Meta):
+        model = DiscoveryScan
+        fields = (
+            "pk",
+            "id",
+            "foreign_source",
+            "server",
+            "site",
+            "location",
+            "ip_range_begin",
+            "ip_range_end",
+            "retries",
+            "timeout",
+            "last_triggered",
+            "trigger_action",
+            "created",
+            "last_updated",
+            "actions",
+        )
+        default_columns = (
+            "foreign_source",
+            "server",
+            "site",
+            "location",
+            "ip_range_begin",
+            "ip_range_end",
+            "last_triggered",
+            "trigger_action",
+        )
 
 
 class DiscoveredNodeTable(NetBoxTable):

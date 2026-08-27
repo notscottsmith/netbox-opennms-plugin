@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 """UI view (CRUD) tests for the plugin models."""
 
+from unittest import mock
+
 from dcim.models import (
     Device,
     DeviceRole,
@@ -10,12 +12,18 @@ from dcim.models import (
     Manufacturer,
     Site,
 )
-from ipam.models import IPAddress
+from django.contrib.auth.models import Permission, User
+from django.contrib.messages import get_messages
+from django.test import TestCase
+from django.urls import reverse
+from ipam.models import VRF, IPAddress
 from utilities.testing import ViewTestCases
 
+from netbox_opennms.client import OpenNMSError
 from netbox_opennms.models import (
     AssetMapping,
     DiscoveredNode,
+    DiscoveryScan,
     MetadataEntry,
     MonitoredInterface,
     MonitoredService,
@@ -25,6 +33,7 @@ from netbox_opennms.models import (
     MonitoringPolicy,
     OpenNMSServer,
     Requisition,
+    VRFAssignment,
 )
 
 DETECTOR_CLASS = "org.opennms.netmgt.provision.detector.icmp.IcmpDetector"
@@ -314,6 +323,136 @@ class MonitoringExclusionViewTest(
         cls.form_data = {
             "description": "excl-4",
         }
+
+
+class VRFAssignmentViewTest(
+    ViewTestCases.GetObjectViewTestCase,
+    ViewTestCases.GetObjectChangelogViewTestCase,
+    ViewTestCases.CreateObjectViewTestCase,
+    ViewTestCases.EditObjectViewTestCase,
+    ViewTestCases.DeleteObjectViewTestCase,
+    ViewTestCases.ListObjectsViewTestCase,
+    ViewTestCases.BulkDeleteObjectsViewTestCase,
+):
+    model = VRFAssignment
+
+    def _get_base_url(self):
+        return "plugins:netbox_opennms:vrfassignment_{}"
+
+    @classmethod
+    def setUpTestData(cls):
+        vrf = VRF.objects.create(name="Customer VRF")
+        for description in ("va-1", "va-2", "va-3"):
+            VRFAssignment.objects.create(vrf=vrf, description=description)
+        cls.form_data = {
+            "vrf": vrf.pk,
+            "description": "va-4",
+        }
+
+
+class DiscoveryScanViewTest(
+    ViewTestCases.GetObjectViewTestCase,
+    ViewTestCases.GetObjectChangelogViewTestCase,
+    ViewTestCases.CreateObjectViewTestCase,
+    ViewTestCases.EditObjectViewTestCase,
+    ViewTestCases.DeleteObjectViewTestCase,
+    ViewTestCases.ListObjectsViewTestCase,
+    ViewTestCases.BulkDeleteObjectsViewTestCase,
+):
+    model = DiscoveryScan
+
+    def _get_base_url(self):
+        return "plugins:netbox_opennms:discoveryscan_{}"
+
+    @classmethod
+    def setUpTestData(cls):
+        server = OpenNMSServer.objects.create(
+            name="Acme", url="https://onms.example"
+        )
+        site = Site.objects.create(name="Raleigh", slug="raleigh")
+        for i in range(3):
+            DiscoveryScan.objects.create(
+                server=server,
+                site=site,
+                ip_range_begin=f"10.0.{i}.1",
+                ip_range_end=f"10.0.{i}.254",
+            )
+        cls.form_data = {
+            "server": server.pk,
+            "site": site.pk,
+            "ip_range_begin": "10.0.9.1",
+            "ip_range_end": "10.0.9.254",
+            "retries": 1,
+            "timeout": 2000,
+        }
+
+
+class DiscoveryScanTriggerViewTest(TestCase):
+    """``DiscoveryScanTriggerView`` (issue #25): fires ``POST /api/v2/discovery``."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.site = Site.objects.create(name="Raleigh", slug="raleigh")
+        cls.server = OpenNMSServer.objects.create(
+            name="Acme", url="https://onms.example", username="svc", password="x"
+        )
+        cls.scan = DiscoveryScan.objects.create(
+            server=cls.server,
+            site=cls.site,
+            ip_range_begin="10.0.0.1",
+            ip_range_end="10.0.0.254",
+        )
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="tester")
+        self.user.user_permissions.add(
+            Permission.objects.get(
+                codename="change_discoveryscan",
+                content_type__app_label="netbox_opennms",
+            )
+        )
+        self.client.force_login(self.user)
+
+    def _url(self):
+        return reverse(
+            "plugins:netbox_opennms:discoveryscan_trigger", args=[self.scan.pk]
+        )
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_trigger_runs_discovery_and_marks_triggered(self, mock_from_server):
+        client = mock_from_server.return_value.__enter__.return_value
+        response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 302)
+        client.run_discovery.assert_called_once_with(
+            foreign_source=self.scan.foreign_source,
+            location=self.scan.monitoring_location,
+            ip_range_begin="10.0.0.1",
+            ip_range_end="10.0.0.254",
+            retries=self.scan.retries,
+            timeout=self.scan.timeout,
+        )
+        self.scan.refresh_from_db()
+        self.assertIsNotNone(self.scan.last_triggered)
+        messages = list(get_messages(response.wsgi_request))
+        self.assertTrue(any("Triggered" in str(m) for m in messages))
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_client_failure_shows_error_and_does_not_mark_triggered(
+        self, mock_from_server
+    ):
+        client = mock_from_server.return_value.__enter__.return_value
+        client.run_discovery.side_effect = OpenNMSError("unreachable")
+        response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 302)
+        self.scan.refresh_from_db()
+        self.assertIsNone(self.scan.last_triggered)
+        messages = list(get_messages(response.wsgi_request))
+        self.assertTrue(any("unreachable" in str(m) for m in messages))
+
+    def test_requires_change_permission(self):
+        self.user.user_permissions.clear()
+        response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 403)
 
 
 class DiscoveredNodeViewTest(

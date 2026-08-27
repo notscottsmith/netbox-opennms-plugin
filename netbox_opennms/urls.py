@@ -9,6 +9,7 @@ from . import views
 from .models import (
     AssetMapping,
     DiscoveredNode,
+    DiscoveryScan,
     MetadataEntry,
     MonitoredInterface,
     MonitoredService,
@@ -18,6 +19,7 @@ from .models import (
     MonitoringPolicy,
     OpenNMSServer,
     Requisition,
+    VRFAssignment,
 )
 
 
@@ -101,6 +103,13 @@ urlpatterns = (
     ),
     *_crud("monitoring-exclusions", "monitoringexclusion", "MonitoringExclusion",
            MonitoringExclusion),
+    *_crud("vrf-assignments", "vrfassignment", "VRFAssignment", VRFAssignment),
+    *_crud("discovery-scans", "discoveryscan", "DiscoveryScan", DiscoveryScan),
+    path(
+        "discovery-scans/<int:pk>/trigger/",
+        views.DiscoveryScanTriggerView.as_view(),
+        name="discoveryscan_trigger",
+    ),
     path(
         "discovered-nodes/",
         views.DiscoveredNodeListView.as_view(),
