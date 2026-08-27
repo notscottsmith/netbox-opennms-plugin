@@ -607,6 +607,23 @@ def resolve_target_server(resolution, foreign_source):
     return server
 
 
+def target_server_for(requisition):
+    """The Server (ADR 0002) *requisition* would render to right now, or ``None``.
+
+    The same (current members → ``DeployedForeignSource`` → ``None``)
+    fallback as ``resolve_target_server``, but keyed off a Requisition
+    instance being edited rather than an already-computed ``Resolution`` —
+    used by the Requisition form's Scope picker (issue #19) to constrain its
+    options to ``scope.scope_options()`` of this Server. A brand-new, unsaved
+    Requisition has no name in the database yet (nothing to resolve or have
+    been deployed), so this returns ``None`` — unconstrained — until the
+    Requisition is first saved.
+    """
+    if not requisition.pk:
+        return None
+    return resolve_target_server(resolve(requisition.name), requisition.name)
+
+
 def matching_requisitions(target):
     """Every Requisition whose filter matches a given Device/VM — no fleet pass.
 

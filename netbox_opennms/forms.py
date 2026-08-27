@@ -33,7 +33,7 @@ from virtualization.models import VirtualMachine
 from .catalog import get_detector_catalog, get_policy_catalog
 from .choices import ObjectTypeChoices, ServiceChoices
 from .derivation import location_name_error
-from .membership import filter_errors
+from .membership import filter_errors, target_server_for
 from .models import (
     AssetMapping,
     DiscoveredNode,
@@ -49,7 +49,7 @@ from .models import (
     Requisition,
     VRFAssignment,
 )
-from .scope import SCOPE_FIELDS, find_scope_collision
+from .scope import SCOPE_FIELDS, find_scope_collision, scope_options
 
 logger = logging.getLogger("netbox_opennms")
 
@@ -88,6 +88,54 @@ class RequisitionForm(NetBoxModelForm):
         help_text=_("Applied to every member's interfaces (overridable per object)."),
     )
 
+    # Scope picker (issue #19): five optional convenience fields that write/update
+    # the matching NetBox FilterSet key(s) in filter_params on save, so the common
+    # case (every Device/VM under one Tenant Group/Tenant/Site Group/Site/Location)
+    # doesn't require hand-writing a filter. Named "scope_*", not e.g. "location",
+    # to avoid colliding with the model's own ``location`` field (the OpenNMS
+    # monitoring location string, already on this form/Meta.fields below) — this is
+    # pure UI sugar over filter_params, not a second membership mechanism (ADR
+    # 0001): nothing is stored on the Requisition itself, a pick is merged into
+    # filter_params only on save, and the raw JSON stays hand-editable afterward.
+    scope_tenant_group = DynamicModelChoiceField(
+        queryset=TenantGroup.objects.all(), required=False, label=_("Tenant group")
+    )
+    scope_tenant = DynamicModelChoiceField(
+        queryset=Tenant.objects.all(),
+        required=False,
+        label=_("Tenant"),
+        query_params={"group_id": "$scope_tenant_group"},
+    )
+    scope_site_group = DynamicModelChoiceField(
+        queryset=SiteGroup.objects.all(), required=False, label=_("Site group")
+    )
+    scope_site = DynamicModelChoiceField(
+        queryset=Site.objects.all(),
+        required=False,
+        label=_("Site"),
+        query_params={"group_id": "$scope_site_group"},
+    )
+    scope_location = DynamicModelChoiceField(
+        queryset=Location.objects.all(),
+        required=False,
+        label=_("Location"),
+        help_text=_(
+            "Devices only — Virtual Machines have no NetBox Location, so this is "
+            "rejected on a Virtual-Machine-only Requisition."
+        ),
+        query_params={"site_id": "$scope_site"},
+    )
+
+    # (picker field name, scope.SCOPE_FIELDS key, filter_params key) for every
+    # picker level — drives __init__'s option-narrowing and clean()'s merge.
+    _SCOPE_PICKER_FIELDS = (
+        ("scope_tenant_group", "tenant_groups", "tenant_group"),
+        ("scope_tenant", "tenants", "tenant"),
+        ("scope_site_group", "site_groups", "site_group"),
+        ("scope_site", "sites", "site"),
+        ("scope_location", "locations", "location"),
+    )
+
     class Meta:
         model = Requisition
         fields = (
@@ -102,6 +150,30 @@ class RequisitionForm(NetBoxModelForm):
             "location",
             "tags",
         )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Constrain the picker to Scope objects that scope.resolve_scope actually
+        # resolves to THIS Requisition's own target Server (issue #19) — the same
+        # (current members, else DeployedForeignSource) resolution
+        # resolve_target_server already does elsewhere. A brand-new, never-scoped
+        # Requisition has no target Server yet, so options is None and every field
+        # keeps its full queryset (unconstrained) until the first level is picked
+        # and saved.
+        options = scope_options(target_server_for(self.instance))
+        if options is None:
+            return
+        for form_field, scope_field, _filter_key in self._SCOPE_PICKER_FIELDS:
+            field = self.fields[form_field]
+            queryset = options[scope_field]
+            field.queryset = queryset
+            # Also constrain the live APISelect widget itself (not just server-side
+            # validation) to the same static ID list, so the dropdown only offers
+            # what would actually validate.
+            field.query_params = {
+                **field.query_params,
+                "id": list(queryset.values_list("pk", flat=True)),
+            }
 
     def clean(self):
         super().clean()
@@ -120,6 +192,16 @@ class RequisitionForm(NetBoxModelForm):
                 )
             else:
                 self.cleaned_data["filter_params"] = dict(saved.parameters or {})
+        # Scope picker: a picked level writes/updates its matching filter key (by
+        # slug, the same key format NetBox's own Device/VM filter UI uses) merged
+        # into whatever's already in filter_params — an untouched key (including one
+        # a previous pick wrote and the user then hand-edited) is left alone.
+        params = dict(self.cleaned_data.get("filter_params") or {})
+        for form_field, _scope_field, filter_key in self._SCOPE_PICKER_FIELDS:
+            value = self.cleaned_data.get(form_field)
+            if value is not None:
+                params[filter_key] = [value.slug]
+        self.cleaned_data["filter_params"] = params
         # Reject unknown/empty filters here (the same guard the resolver uses), so a
         # typo can't be saved into a fleet-wide catch-all (H1). Read from
         # cleaned_data — self.instance isn't populated until _post_clean(), after this.

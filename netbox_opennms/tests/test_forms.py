@@ -8,13 +8,16 @@ from dcim.models import (
     DeviceRole,
     DeviceType,
     Interface,
+    Location,
     Manufacturer,
     Site,
+    SiteGroup,
 )
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 from extras.models import SavedFilter
 from ipam.models import VRF, IPAddress
+from tenancy.models import Tenant, TenantGroup
 
 from netbox_opennms.forms import (
     DiscoveryScanForm,
@@ -28,6 +31,7 @@ from netbox_opennms.models import (
     MonitoredService,
     MonitoringOverride,
     OpenNMSServer,
+    Requisition,
     VRFAssignment,
 )
 
@@ -101,6 +105,104 @@ class RequisitionSavedFilterImportTest(TestCase):
         )
         saved.object_types.set([ObjectType.objects.get_for_model(Device)])
         form = self._form(import_from_saved_filter=saved.pk)
+        self.assertFalse(form.is_valid())
+        self.assertIn("filter_params", form.errors)
+
+
+class RequisitionScopePickerTest(TestCase):
+    """Issue #19: the Scope picker writes/updates filter_params and its options
+    are constrained to the Requisition's own target Server."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.role = DeviceRole.objects.create(name="Router", slug="router")
+        mfr = Manufacturer.objects.create(name="Acme", slug="acme")
+        cls.device_type = DeviceType.objects.create(
+            manufacturer=mfr, model="M1", slug="m1"
+        )
+        cls.tenant_group = TenantGroup.objects.create(name="MSP", slug="msp")
+        cls.tenant = Tenant.objects.create(
+            name="Acme Corp", slug="acme-corp", group=cls.tenant_group
+        )
+        cls.site_group = SiteGroup.objects.create(name="East", slug="east")
+        cls.site_a = Site.objects.create(
+            name="Raleigh", slug="raleigh", group=cls.site_group
+        )
+        cls.site_b = Site.objects.create(name="Durham", slug="durham")
+        cls.location = Location.objects.create(
+            name="Rack 1", slug="rack-1", site=cls.site_a
+        )
+        cls.server_a = OpenNMSServer.objects.create(
+            name="Server A", url="https://a.example"
+        )
+        cls.server_a.sites.add(cls.site_a)
+        cls.server_b = OpenNMSServer.objects.create(
+            name="Server B", url="https://b.example"
+        )
+        cls.server_b.sites.add(cls.site_b)
+
+    def _data(self, **overrides):
+        data = {
+            "name": "core-switches",
+            "object_types": "device",
+            "filter_params": "{}",
+            "scan_interval": "1d",
+            "default_interfaces": "primary",
+        }
+        data.update(overrides)
+        return data
+
+    def test_new_requisition_picker_is_unconstrained(self):
+        # No target Server yet (never scoped, never deployed) — every Site is a
+        # valid pick, from either bound Server.
+        form = RequisitionForm()
+        sites = set(form.fields["scope_site"].queryset)
+        self.assertIn(self.site_a, sites)
+        self.assertIn(self.site_b, sites)
+
+    def test_picking_a_site_writes_filter_params(self):
+        form = RequisitionForm(data=self._data(scope_site=self.site_a.pk))
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(
+            form.cleaned_data["filter_params"], {"site": [self.site_a.slug]}
+        )
+
+    def test_picker_merges_with_hand_written_filter_params(self):
+        form = RequisitionForm(
+            data=self._data(
+                filter_params='{"role": ["router"]}', scope_tenant=self.tenant.pk
+            )
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(
+            form.cleaned_data["filter_params"],
+            {"role": ["router"], "tenant": [self.tenant.slug]},
+        )
+
+    def test_editing_requisition_constrains_picker_to_its_target_server(self):
+        # A Device on Site A gives the Requisition current members that resolve
+        # to Server A (bound to Site A) — resolve_target_server's "current
+        # members" path.
+        Device.objects.create(
+            name="rtr-a", device_type=self.device_type, role=self.role, site=self.site_a
+        )
+        requisition = Requisition.objects.create(
+            name="scoped-to-a",
+            object_types="device",
+            filter_params={"site": [self.site_a.slug]},
+        )
+        form = RequisitionForm(instance=requisition)
+        sites = set(form.fields["scope_site"].queryset)
+        self.assertIn(self.site_a, sites)
+        self.assertNotIn(self.site_b, sites)
+
+    def test_scope_location_rejected_for_vm_only_requisition(self):
+        # Virtual Machines have no NetBox Location — VirtualMachineFilterSet has
+        # no "location" key, so picking one on a VM-only Requisition trips the
+        # existing unknown-key guard (H8).
+        form = RequisitionForm(
+            data=self._data(object_types="vm", scope_location=self.location.pk)
+        )
         self.assertFalse(form.is_valid())
         self.assertIn("filter_params", form.errors)
 
