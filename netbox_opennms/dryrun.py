@@ -41,7 +41,7 @@ def _as_list(value, key=None):
 class NodeDiff:
     foreign_id: str
     label: str
-    status: str  # "added" | "removed" | "changed"
+    status: str  # "added" | "removed" | "changed" | "unchanged"
     changes: list = field(default_factory=list)
 
 
@@ -52,7 +52,7 @@ class DryRun:
     added: list = field(default_factory=list)
     removed: list = field(default_factory=list)
     changed: list = field(default_factory=list)
-    unchanged: int = 0
+    unchanged: list = field(default_factory=list)
     definition_changes: list = field(default_factory=list)
     warnings: list = field(default_factory=list)
     # Non-empty = the Requisition is FROZEN (C1): the conflicts are reported
@@ -231,7 +231,7 @@ def diff(resolution, current_requisition, current_definition, default_location="
                 NodeDiff(fid, desired[fid]["label"], "changed", changes)
             )
         else:
-            result.unchanged += 1
+            result.unchanged.append(NodeDiff(fid, desired[fid]["label"], "unchanged"))
 
     if resolution is not None:
         result.definition_changes = _definition_changes(

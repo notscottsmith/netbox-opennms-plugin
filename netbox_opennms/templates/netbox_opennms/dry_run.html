@@ -66,11 +66,14 @@
             {% for node in dryrun.removed %}
               <tr class="table-danger"><td>- REMOVE</td><td>{{ node.label }}</td><td><code>{{ node.foreign_id }}</code></td><td></td></tr>
             {% endfor %}
+            {% for node in dryrun.unchanged %}
+              <tr><td>UNCHANGED</td><td>{{ node.label }}</td><td><code>{{ node.foreign_id }}</code></td><td></td></tr>
+            {% endfor %}
           </tbody>
         </table>
-        <p class="text-muted">{{ dryrun.unchanged }} unchanged node(s).
-          {% if not dryrun.has_changes %}No changes — a sync would be a no-op.{% endif %}
-        </p>
+        {% if not dryrun.has_changes %}
+          <p class="text-muted">No changes — a sync would be a no-op.</p>
+        {% endif %}
       {% endif %}
     </div>
   </div>
