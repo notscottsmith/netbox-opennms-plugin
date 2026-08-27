@@ -8,7 +8,6 @@ from copy import deepcopy
 from dcim.models import Cable, Device, Interface, Site
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin, PermissionRequiredMixin
-from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -48,7 +47,7 @@ from .models import (
     VRFAssignment,
 )
 from .requisition_discovery import list_unmirrored
-from .scan import KIND_MODELS, scan_server
+from .scan import KIND_MODELS, scan_server, upsert_discovered_nodes
 from .validation import validate_resolution
 
 # Sync jobs are enqueued without an instance, so they run on the default RQ
@@ -630,42 +629,7 @@ class OpenNMSServerScanView(GetReturnURLMixin, PermissionRequiredMixin, View):
             )
             return redirect(return_url)
 
-        linked_ids = set(
-            server.discovered_nodes.filter(resolution="linked").values_list(
-                "opennms_node_id", flat=True
-            )
-        )
-        seen_ids = []
-        for match in matches:
-            seen_ids.append(match.opennms_node_id)
-            defaults = {
-                "label": match.label,
-                "foreign_source": match.foreign_source,
-                "foreign_id": match.foreign_id,
-                "location": match.location,
-            }
-            # A manually-linked row's match came from the operator, not this
-            # scan's Foreign-ID reconciliation — never overwrite it (issue #8).
-            if match.opennms_node_id not in linked_ids:
-                matched_object_type = None
-                if match.matched_kind:
-                    matched_object_type = ContentType.objects.get_for_model(
-                        KIND_MODELS[match.matched_kind]
-                    )
-                defaults.update(
-                    {
-                        "verdict": match.verdict,
-                        "diff_detail": match.diff_detail,
-                        "matched_object_type": matched_object_type,
-                        "matched_object_id": match.matched_pk,
-                    }
-                )
-            DiscoveredNode.objects.update_or_create(
-                server=server,
-                opennms_node_id=match.opennms_node_id,
-                defaults=defaults,
-            )
-        server.discovered_nodes.exclude(opennms_node_id__in=seen_ids).delete()
+        upsert_discovered_nodes(server, matches)
         messages.success(
             request, f"Discovery scan of {server.name!r} found {len(matches)} node(s)."
         )

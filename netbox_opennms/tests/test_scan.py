@@ -3,8 +3,9 @@
 """Tests for the pure Discovery reconciler (issue #7)."""
 
 from django.test import SimpleTestCase
+from django.utils import timezone
 
-from netbox_opennms.scan import NodeMatch, reconcile
+from netbox_opennms.scan import NodeMatch, _parse_node_created, reconcile
 
 
 def _opennms_node(
@@ -13,14 +14,18 @@ def _opennms_node(
     foreign_source="fs",
     foreign_id="device-1",
     location="Perth",
+    create_time=None,
 ):
-    return {
+    node = {
         "id": node_id,
         "label": label,
         "foreignSource": foreign_source,
         "foreignId": foreign_id,
         "location": location,
     }
+    if create_time is not None:
+        node["createTime"] = create_time
+    return node
 
 
 def _netbox_entry(kind="device", pk=42, label="rtr-1", location="Perth"):
@@ -112,3 +117,42 @@ class ReconcileTest(SimpleTestCase):
         match = results[0]
         self.assertEqual(match.opennms_node_id, 99)
         self.assertEqual(match.foreign_source, "acme")
+
+    def test_created_is_none_when_create_time_absent(self):
+        results = reconcile([_opennms_node()], {"device-1": _netbox_entry()})
+        self.assertIsNone(results[0].created)
+
+    def test_created_parses_create_time_on_green_and_red(self):
+        green = reconcile(
+            [_opennms_node(create_time="2026-08-01T10:00:00+00:00")],
+            {"device-1": _netbox_entry()},
+        )
+        red = reconcile(
+            [
+                _opennms_node(
+                    foreign_id="ghost", create_time="2026-08-01T10:00:00+00:00"
+                )
+            ],
+            {},
+        )
+        self.assertIsNotNone(green[0].created)
+        self.assertIsNotNone(red[0].created)
+
+
+class ParseNodeCreatedTest(SimpleTestCase):
+    def test_missing_create_time_returns_none(self):
+        self.assertIsNone(_parse_node_created({}))
+
+    def test_blank_create_time_returns_none(self):
+        self.assertIsNone(_parse_node_created({"createTime": ""}))
+
+    def test_unparseable_create_time_returns_none(self):
+        self.assertIsNone(_parse_node_created({"createTime": "not-a-date"}))
+
+    def test_aware_create_time_is_preserved(self):
+        parsed = _parse_node_created({"createTime": "2026-08-01T10:00:00+00:00"})
+        self.assertFalse(timezone.is_naive(parsed))
+
+    def test_naive_create_time_is_made_aware_as_utc(self):
+        parsed = _parse_node_created({"createTime": "2026-08-01T10:00:00"})
+        self.assertFalse(timezone.is_naive(parsed))

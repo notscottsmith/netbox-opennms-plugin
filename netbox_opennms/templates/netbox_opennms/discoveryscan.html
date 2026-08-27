@@ -17,6 +17,19 @@
           <tr><th scope="row">Retries</th><td>{{ object.retries }}</td></tr>
           <tr><th scope="row">Timeout (ms)</th><td>{{ object.timeout }}</td></tr>
           <tr><th scope="row">Last triggered</th><td>{{ object.last_triggered|placeholder }}</td></tr>
+          <tr>
+            <th scope="row">Status</th>
+            <td>
+              {% if object.status == "settled" %}
+                <span class="badge text-bg-green">Settled</span>
+              {% elif object.status == "running" %}
+                <span class="badge text-bg-cyan">Running</span>
+              {% else %}
+                <span class="badge text-bg-secondary">Pending</span>
+              {% endif %}
+            </td>
+          </tr>
+          <tr><th scope="row">Discovered nodes</th><td>{{ object.discovered_nodes.count }}</td></tr>
           {% if perms.netbox_opennms.change_discoveryscan %}
             <tr>
               <th scope="row">Trigger</th>

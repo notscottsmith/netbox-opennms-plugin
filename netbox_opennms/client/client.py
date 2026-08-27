@@ -200,19 +200,27 @@ class OpenNMSClient:
                 f"OpenNMS returned an unparseable {path} response."
             ) from exc
 
-    def list_nodes(self):
+    def list_nodes(self, foreign_source=None):
         """Every node OpenNMS currently holds (Discovery scan, issue #7).
 
         ``GET /api/v2/nodes`` (JSON) — the server's actual live inventory,
         independent of the Foreign Sources this plugin manages. Read-only.
         Parsed defensively like the other v2 list endpoints (bare list, or a
         wrapper keyed by ``node``).
+
+        *foreign_source*, when given, scopes the result to one Foreign Source
+        via OpenNMS's FIQL node search (``_s=foreignSource==<value>``) — the
+        Discovery Scan poll (issue #27) uses this so a scan only ever sees its
+        own throwaway Foreign Source's nodes, not every node on the server.
         """
+        params = {"limit": 0}
+        if foreign_source is not None:
+            params["_s"] = f"foreignSource=={foreign_source}"
         response = self._request(
             "GET",
             "/api/v2/nodes",
             headers={"Accept": "application/json"},
-            params={"limit": 0},
+            params=params,
         )
         try:
             payload = response.json()

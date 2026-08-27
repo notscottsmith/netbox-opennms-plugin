@@ -55,6 +55,10 @@ class NetBoxOpenNMSConfig(PluginConfig):
         # Prefix applied to every Foreign ID this plugin derives (AD-8). Change
         # with care: it is part of node identity, not just a label (issue #3).
         "foreign_id_prefix": "netbox",
+        # How long (minutes) a Discovery Scan must see no new OpenNMS node
+        # before PollDiscoveryScansJob infers it has settled (issue #27,
+        # ADR 0006 — OpenNMS gives no job-status endpoint to ask directly).
+        "discovery_settle_idle_minutes": "5",
     }
 
     def ready(self):

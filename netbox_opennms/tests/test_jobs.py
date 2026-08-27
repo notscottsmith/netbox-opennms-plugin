@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Tests for the OpenNMS sync background job (mocked port, no network)."""
 
+from datetime import timedelta
 from unittest import mock
 
 from core.exceptions import JobFailed
@@ -15,11 +16,13 @@ from dcim.models import (
     Site,
 )
 from django.test import TestCase
+from django.utils import timezone
 from ipam.models import IPAddress
 
 from netbox_opennms.client import OpenNMSError, OpenNMSHTTPError
 from netbox_opennms.jobs import (
     CheckServerHealthJob,
+    PollDiscoveryScansJob,
     ReconcileOrphansJob,
     SyncForeignSourceJob,
     unknown_locations,
@@ -27,6 +30,8 @@ from netbox_opennms.jobs import (
 from netbox_opennms.membership import monitored_foreign_sources, resolve
 from netbox_opennms.models import (
     DeployedForeignSource,
+    DiscoveredNode,
+    DiscoveryScan,
     MonitoringDetector,
     MonitoringOverride,
     OpenNMSServer,
@@ -552,4 +557,193 @@ class CheckServerHealthJobTest(TestCase):
         self.assertEqual(
             registry["system_jobs"][CheckServerHealthJob]["interval"],
             HEALTH_CHECK_INTERVAL_MINUTES,
+        )
+
+
+def _onms_node(node_id, foreign_id="a", create_time=None):
+    node = {
+        "id": node_id,
+        "label": "rtr-1",
+        "foreignSource": "netbox-discovery-x",
+        "foreignId": foreign_id,
+        "location": "Perth",
+    }
+    if create_time is not None:
+        node["createTime"] = create_time
+    return node
+
+
+class PollDiscoveryScansJobTest(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.server = OpenNMSServer.objects.create(
+            name="Acme", url="https://onms.example", username="svc", password="x"
+        )
+        cls.site = Site.objects.create(name="Perth", slug="perth")
+
+    def _scan(self, *, triggered=True, settled=False, idle_minutes_ago=0):
+        scan = DiscoveryScan.objects.create(
+            server=self.server,
+            site=self.site,
+            ip_range_begin="10.0.0.1",
+            ip_range_end="10.0.0.10",
+        )
+        if triggered:
+            DiscoveryScan.objects.filter(pk=scan.pk).update(
+                last_triggered=timezone.now() - timedelta(minutes=idle_minutes_ago)
+            )
+        if settled:
+            DiscoveryScan.objects.filter(pk=scan.pk).update(settled_at=timezone.now())
+        scan.refresh_from_db()
+        return scan
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_skips_pending_and_already_settled_scans(self, mock_from_server):
+        pending = self._scan(triggered=False)
+        settled = self._scan(settled=True)
+        client = mock_from_server.return_value.__enter__.return_value
+        client.list_nodes.return_value = []
+
+        PollDiscoveryScansJob(job=mock.Mock()).run()
+
+        client.list_nodes.assert_not_called()
+        pending.refresh_from_db()
+        settled.refresh_from_db()
+        self.assertIsNone(pending.settled_at)
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_upserts_discovered_nodes_scoped_to_scan(self, mock_from_server):
+        scan = self._scan()
+        client = mock_from_server.return_value.__enter__.return_value
+        client.list_nodes.return_value = [_onms_node(1), _onms_node(2, foreign_id="b")]
+
+        PollDiscoveryScansJob(job=mock.Mock()).run()
+
+        rows = DiscoveredNode.objects.filter(server=self.server, discovery_scan=scan)
+        self.assertEqual(rows.count(), 2)
+        client.list_nodes.assert_called_once_with(
+            foreign_source=scan.foreign_source
+        )
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_repolling_unchanged_state_refreshes_not_duplicates(
+        self, mock_from_server
+    ):
+        scan = self._scan()
+        client = mock_from_server.return_value.__enter__.return_value
+        client.list_nodes.return_value = [_onms_node(1), _onms_node(2, foreign_id="b")]
+
+        PollDiscoveryScansJob(job=mock.Mock()).run()
+        PollDiscoveryScansJob(job=mock.Mock()).run()
+
+        rows = DiscoveredNode.objects.filter(server=self.server, discovery_scan=scan)
+        self.assertEqual(rows.count(), 2)
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_stale_cleanup_scoped_to_own_scan_only(self, mock_from_server):
+        # Two Discovery Scans on the same Server, each finding a distinct node
+        # under its own throwaway Foreign Source.
+        scan_a = self._scan()
+        scan_b = self._scan()
+        client = mock_from_server.return_value.__enter__.return_value
+
+        def list_nodes(foreign_source=None):
+            if foreign_source == scan_a.foreign_source:
+                return [_onms_node(1, foreign_id="a")]
+            return [_onms_node(2, foreign_id="b")]
+
+        client.list_nodes.side_effect = list_nodes
+        PollDiscoveryScansJob(job=mock.Mock()).run()
+        rows_a = DiscoveredNode.objects.filter(discovery_scan=scan_a)
+        rows_b = DiscoveredNode.objects.filter(discovery_scan=scan_b)
+        self.assertEqual(rows_a.count(), 1)
+        self.assertEqual(rows_b.count(), 1)
+
+        # scan_a's node vanishes; scan_b's is still there. scan_a's stale-row
+        # cleanup must be scoped to ITS OWN rows only — it must not delete
+        # scan_b's row for node 2, which it never even queried for.
+        def list_nodes_after(foreign_source=None):
+            if foreign_source == scan_a.foreign_source:
+                return []
+            return [_onms_node(2, foreign_id="b")]
+
+        client.list_nodes.side_effect = list_nodes_after
+        PollDiscoveryScansJob(job=mock.Mock()).run()
+
+        self.assertEqual(
+            DiscoveredNode.objects.filter(discovery_scan=scan_a).count(), 0
+        )
+        self.assertEqual(
+            DiscoveredNode.objects.filter(discovery_scan=scan_b).count(), 1
+        )
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_settles_after_idle_window_with_no_new_nodes(self, mock_from_server):
+        scan = self._scan(idle_minutes_ago=10)
+        client = mock_from_server.return_value.__enter__.return_value
+        client.list_nodes.return_value = []
+
+        PollDiscoveryScansJob(job=mock.Mock()).run()
+
+        scan.refresh_from_db()
+        self.assertIsNotNone(scan.settled_at)
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_does_not_settle_within_idle_window(self, mock_from_server):
+        scan = self._scan(idle_minutes_ago=1)
+        client = mock_from_server.return_value.__enter__.return_value
+        client.list_nodes.return_value = []
+
+        PollDiscoveryScansJob(job=mock.Mock()).run()
+
+        scan.refresh_from_db()
+        self.assertIsNone(scan.settled_at)
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_new_node_resets_idle_clock(self, mock_from_server):
+        # last_triggered is old enough to have settled on its own, but a node
+        # with a recent createTime means the scan is still actively finding
+        # things — it must not settle yet.
+        scan = self._scan(idle_minutes_ago=10)
+        client = mock_from_server.return_value.__enter__.return_value
+        recent = (timezone.now() - timedelta(minutes=1)).isoformat()
+        client.list_nodes.return_value = [_onms_node(1, create_time=recent)]
+
+        PollDiscoveryScansJob(job=mock.Mock()).run()
+
+        scan.refresh_from_db()
+        self.assertIsNone(scan.settled_at)
+        self.assertIsNotNone(scan.latest_node_created)
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_opennms_error_on_one_scan_does_not_block_others(self, mock_from_server):
+        first = self._scan(idle_minutes_ago=10)
+        second = self._scan(idle_minutes_ago=10)
+        client = mock_from_server.return_value.__enter__.return_value
+
+        def list_nodes(foreign_source=None):
+            if foreign_source == first.foreign_source:
+                raise OpenNMSError("unreachable")
+            return []
+
+        client.list_nodes.side_effect = list_nodes
+
+        with self.assertLogs("netbox.jobs.PollDiscoveryScansJob", level="WARNING"):
+            PollDiscoveryScansJob(job=mock.Mock()).run()
+
+        first.refresh_from_db()
+        second.refresh_from_db()
+        # `first` errored so it never settles; `second` was unaffected.
+        self.assertIsNone(first.settled_at)
+        self.assertIsNotNone(second.settled_at)
+
+    def test_registered_as_recurring_system_job(self):
+        from netbox.registry import registry
+
+        from netbox_opennms.jobs import DISCOVERY_POLL_INTERVAL_MINUTES
+
+        self.assertIn(PollDiscoveryScansJob, registry["system_jobs"])
+        self.assertEqual(
+            registry["system_jobs"][PollDiscoveryScansJob]["interval"],
+            DISCOVERY_POLL_INTERVAL_MINUTES,
         )

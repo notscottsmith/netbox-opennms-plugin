@@ -430,6 +430,17 @@ class OpenNMSClientTest(SimpleTestCase):
         self.assertEqual(_client().list_nodes(), [{"id": 1, "label": "rtr-1"}])
 
     @mock.patch.object(requests.Session, "request")
+    def test_list_nodes_filters_by_foreign_source(self, mock_request):
+        mock_request.return_value = mock.Mock(
+            status_code=200, ok=True, json=mock.Mock(return_value=[]),
+        )
+        _client().list_nodes(foreign_source="netbox-discovery-1")
+        self.assertEqual(
+            mock_request.call_args.kwargs["params"],
+            {"limit": 0, "_s": "foreignSource==netbox-discovery-1"},
+        )
+
+    @mock.patch.object(requests.Session, "request")
     def test_list_nodes_unparseable_raises(self, mock_request):
         mock_request.return_value = mock.Mock(
             status_code=200, ok=True, json=mock.Mock(side_effect=ValueError("x"))

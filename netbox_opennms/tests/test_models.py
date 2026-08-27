@@ -13,6 +13,7 @@ from dcim.models import (
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, connection, transaction
 from django.test import TestCase
+from django.utils import timezone
 from ipam.models import VRF, IPAddress
 from tenancy.models import Tenant
 
@@ -420,3 +421,33 @@ class DiscoveryScanTest(TestCase):
         scan.mark_triggered()
         scan.refresh_from_db()
         self.assertIsNotNone(scan.last_triggered)
+
+    def test_status_pending_before_trigger(self):
+        scan = DiscoveryScan.objects.create(
+            server=self.server,
+            site=self.site,
+            ip_range_begin="10.0.0.1",
+            ip_range_end="10.0.0.10",
+        )
+        self.assertEqual(scan.status, "pending")
+
+    def test_status_running_after_trigger_before_settle(self):
+        scan = DiscoveryScan.objects.create(
+            server=self.server,
+            site=self.site,
+            ip_range_begin="10.0.0.1",
+            ip_range_end="10.0.0.10",
+        )
+        scan.mark_triggered()
+        self.assertEqual(scan.status, "running")
+
+    def test_status_settled_once_settled_at_is_set(self):
+        scan = DiscoveryScan.objects.create(
+            server=self.server,
+            site=self.site,
+            ip_range_begin="10.0.0.1",
+            ip_range_end="10.0.0.10",
+        )
+        scan.mark_triggered()
+        scan.settled_at = timezone.now()
+        self.assertEqual(scan.status, "settled")

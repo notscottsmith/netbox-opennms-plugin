@@ -13,9 +13,12 @@ uses — a node is a match regardless of which OpenNMS Server a NetBox object
 happens to be Scope-bound to, so ``netbox_index`` covers every Device/VM.
 """
 
+import datetime
 from dataclasses import dataclass, field
 
 from dcim.models import Device
+from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from virtualization.models import VirtualMachine
 
 from .derivation import foreign_id_for
@@ -40,6 +43,27 @@ class NodeMatch:
     diff_detail: list = field(default_factory=list)
     matched_kind: str = ""  # "device" | "vm" | "" (red = no match)
     matched_pk: int = None
+    created: object = None  # aware datetime | None (settle detection, issue #27)
+
+
+def _parse_node_created(node):
+    """Parse an OpenNMS node's ``createTime`` into an aware ``datetime``, or
+    ``None`` if absent/unparseable (issue #27's settle-detection signal — a
+    scan has "gone quiet" once no new node has appeared for a while).
+
+    A naive result (no offset in the source string) is treated as UTC, since
+    comparing a naive and an aware datetime raises rather than telling us
+    anything useful about "how long ago".
+    """
+    raw = node.get("createTime")
+    if not raw or not isinstance(raw, str):
+        return None
+    parsed = parse_datetime(raw)
+    if parsed is None:
+        return None
+    if timezone.is_naive(parsed):
+        parsed = timezone.make_aware(parsed, datetime.UTC)
+    return parsed
 
 
 def _netbox_node(obj, kind, locations):
@@ -95,10 +119,19 @@ def reconcile(opennms_nodes, netbox_index):
         foreign_source = node.get("foreignSource") or ""
         foreign_id = node.get("foreignId") or ""
         location = node.get("location") or ""
+        created = _parse_node_created(node)
         nb = netbox_index.get(foreign_id) if foreign_id else None
         if nb is None:
             results.append(
-                NodeMatch(node_id, label, foreign_source, foreign_id, location, "red")
+                NodeMatch(
+                    node_id,
+                    label,
+                    foreign_source,
+                    foreign_id,
+                    location,
+                    "red",
+                    created=created,
+                )
             )
             continue
         diffs = []
@@ -118,6 +151,7 @@ def reconcile(opennms_nodes, netbox_index):
                 diffs,
                 nb["kind"],
                 nb["pk"],
+                created=created,
             )
         )
     return results
@@ -135,3 +169,79 @@ def scan_server(server):
     with OpenNMSClient.from_server(server) as client:
         nodes = client.list_nodes()
     return reconcile(nodes, netbox_index())
+
+
+def scan_discovery(discovery_scan):
+    """Fetch one Discovery Scan's own live nodes and reconcile them against
+    NetBox — the polling counterpart to ``scan_server`` (issue #27).
+
+    Scoped to *discovery_scan*'s own throwaway Foreign Source
+    (``list_nodes(foreign_source=...)``), so a scan's poll never sees nodes
+    belonging to another scan or Requisition on the same Server. Raises
+    ``OpenNMSError`` on a client failure, like ``scan_server``.
+    """
+    from .client import OpenNMSClient
+
+    with OpenNMSClient.from_server(discovery_scan.server) as client:
+        nodes = client.list_nodes(foreign_source=discovery_scan.foreign_source)
+    return reconcile(nodes, netbox_index())
+
+
+def upsert_discovered_nodes(server, matches, *, discovery_scan=None):
+    """Upsert *matches* as ``DiscoveredNode`` rows for *server*, keyed on
+    ``(server, opennms_node_id)`` (issue #7), and delete any row for a node no
+    longer present. Returns the list of ``opennms_node_id`` values seen.
+
+    Shared by the per-Server scan view (issue #7) and the per-Discovery-Scan
+    poll (issue #27). When *discovery_scan* is given, each upserted row is
+    stamped with it AND stale-row cleanup is scoped to that scan's own rows
+    only — a scan's poll (filtered to its own Foreign Source) must never
+    delete rows belonging to a different scan or to a general per-Server scan
+    on the same Server.
+    """
+    from django.contrib.contenttypes.models import ContentType
+
+    from .models import DiscoveredNode
+
+    linked_ids = set(
+        server.discovered_nodes.filter(resolution="linked").values_list(
+            "opennms_node_id", flat=True
+        )
+    )
+    seen_ids = []
+    for match in matches:
+        seen_ids.append(match.opennms_node_id)
+        defaults = {
+            "label": match.label,
+            "foreign_source": match.foreign_source,
+            "foreign_id": match.foreign_id,
+            "location": match.location,
+        }
+        if discovery_scan is not None:
+            defaults["discovery_scan"] = discovery_scan
+        # A manually-linked row's match came from the operator, not this
+        # scan's Foreign-ID reconciliation — never overwrite it (issue #8).
+        if match.opennms_node_id not in linked_ids:
+            matched_object_type = None
+            if match.matched_kind:
+                matched_object_type = ContentType.objects.get_for_model(
+                    KIND_MODELS[match.matched_kind]
+                )
+            defaults.update(
+                {
+                    "verdict": match.verdict,
+                    "diff_detail": match.diff_detail,
+                    "matched_object_type": matched_object_type,
+                    "matched_object_id": match.matched_pk,
+                }
+            )
+        DiscoveredNode.objects.update_or_create(
+            server=server,
+            opennms_node_id=match.opennms_node_id,
+            defaults=defaults,
+        )
+    stale = server.discovered_nodes.exclude(opennms_node_id__in=seen_ids)
+    if discovery_scan is not None:
+        stale = stale.filter(discovery_scan=discovery_scan)
+    stale.delete()
+    return seen_ids

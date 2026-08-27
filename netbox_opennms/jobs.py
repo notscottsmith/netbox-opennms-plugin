@@ -24,11 +24,14 @@ Outcome maps to the NetBox ``Job`` lifecycle (AD-12): a clean return is
 bare ``202`` from import is "accepted for import", never "provisioned".
 """
 
+from datetime import timedelta
+
 from core.choices import JobStatusChoices
 from core.exceptions import JobFailed
 from core.models import Job
 from dcim.models import Device
 from django.contrib.contenttypes.models import ContentType
+from django.utils import timezone
 from django_pglocks import advisory_lock
 from netbox.jobs import JobRunner, system_job
 from netbox.plugins import get_plugin_config
@@ -43,7 +46,13 @@ from .membership import (
     resolve,
     resolve_target_server,
 )
-from .models import DeployedForeignSource, MonitoringOverride, OpenNMSServer
+from .models import (
+    DeployedForeignSource,
+    DiscoveryScan,
+    MonitoringOverride,
+    OpenNMSServer,
+)
+from .scan import scan_discovery, upsert_discovered_nodes
 from .translation import (
     RenderError,
     render_foreign_source_definition,
@@ -60,6 +69,10 @@ RECONCILE_INTERVAL_MINUTES = 60
 # Sync/Remove/Move hard-block in SyncForeignSourceJob, so unlike the
 # reconciler this has no config opt-out — it must always run.
 HEALTH_CHECK_INTERVAL_MINUTES = 60
+# How often unsettled Discovery Scans are polled (minutes, issue #27). A
+# literal for the same @system_job-is-import-time reason as above; the settle
+# idle window itself IS configurable (discovery_settle_idle_minutes).
+DISCOVERY_POLL_INTERVAL_MINUTES = 5
 
 
 def unknown_locations(client, locations):
@@ -501,3 +514,68 @@ class CheckServerHealthJob(JobRunner):
             else:
                 server.record_check_result(True)
                 self.logger.info(f"Server {server.name!r} health check OK.")
+
+
+@system_job(interval=DISCOVERY_POLL_INTERVAL_MINUTES)
+class PollDiscoveryScansJob(JobRunner):
+    """Poll every unsettled Discovery Scan, upsert its nodes, and infer completion.
+
+    ADR 0006: ``POST /api/v2/discovery`` gives no job-status endpoint, so
+    completion is inferred rather than observed. Each poll fetches the scan's
+    own live nodes (``scan.scan_discovery``, scoped by its throwaway Foreign
+    Source) and upserts them as ``DiscoveredNode`` rows
+    (``scan.upsert_discovered_nodes``) — the same reconciliation issue #7
+    uses for a general per-Server scan, reused here rather than duplicated.
+
+    Settle detection: a scan has "gone quiet" once
+    ``discovery_settle_idle_minutes`` have passed with no new node appearing.
+    The reference point is the newest node ``createTime`` seen so far
+    (``latest_node_created``); before any node has appeared, it falls back to
+    ``last_triggered`` so a scan that finds nothing eventually settles too,
+    rather than polling forever. Once ``settled_at`` is set it is never
+    cleared — a re-triggered scan gets a brand new ``DiscoveryScan`` row
+    (ADR 0006), not a reset of this one.
+
+    Best-effort per scan, like ``ReconcileOrphansJob``/``CheckServerHealthJob``:
+    an OpenNMS outage on one scan's Server logs and continues to the next.
+    """
+
+    class Meta:
+        name = "OpenNMS discovery scan poll"
+
+    def run(self, *args, **kwargs):
+        idle_minutes = int(
+            get_plugin_config(PLUGIN_NAME, "discovery_settle_idle_minutes")
+        )
+        idle_window = timedelta(minutes=idle_minutes)
+        scans = DiscoveryScan.objects.filter(
+            last_triggered__isnull=False, settled_at__isnull=True
+        )
+        for scan in scans:
+            try:
+                matches = scan_discovery(scan)
+            except OpenNMSError as exc:
+                self.logger.warning(
+                    f"poll skipped for Discovery Scan {scan} — OpenNMS error: {exc}"
+                )
+                continue
+            upsert_discovered_nodes(scan.server, matches, discovery_scan=scan)
+
+            latest = scan.latest_node_created
+            for match in matches:
+                if match.created and (latest is None or match.created > latest):
+                    latest = match.created
+
+            update_fields = []
+            if latest != scan.latest_node_created:
+                scan.latest_node_created = latest
+                update_fields.append("latest_node_created")
+
+            reference = latest or scan.last_triggered
+            if reference is not None and timezone.now() - reference >= idle_window:
+                scan.settled_at = timezone.now()
+                update_fields.append("settled_at")
+                self.logger.info(f"Discovery Scan {scan} settled.")
+
+            if update_fields:
+                scan.save(update_fields=update_fields)

@@ -790,6 +790,15 @@ class DiscoveryScan(NetBoxModel):
     )
     # Set by the Trigger action (mark_triggered) — None means never triggered.
     last_triggered = models.DateTimeField(null=True, blank=True, editable=False)
+    # Written by PollDiscoveryScansJob (issue #27) — the newest ``createTime``
+    # seen across this scan's own OpenNMS nodes on any poll so far. Together
+    # with last_triggered, this is the "reference point" completion inference
+    # measures idleness from: None means no node has appeared yet.
+    latest_node_created = models.DateTimeField(null=True, blank=True, editable=False)
+    # Set once the poll infers the scan has gone quiet (no new node for
+    # discovery_settle_idle_minutes) — never cleared, so a settled scan stays
+    # settled and the poll stops re-fetching it.
+    settled_at = models.DateTimeField(null=True, blank=True, editable=False)
 
     class Meta:
         ordering = ("-created",)
@@ -806,6 +815,21 @@ class DiscoveryScan(NetBoxModel):
     def monitoring_location(self):
         """The OpenNMS Monitoring Location this scan supplies (ADR 0006)."""
         return monitoring_location_for(site=self.site, location=self.location)
+
+    @property
+    def status(self):
+        """This scan's lifecycle state (ADR 0006/issue #27), for display.
+
+        ``"pending"`` — never triggered. ``"running"`` — triggered, still
+        being polled (nodes may still be appearing). ``"settled"`` — the poll
+        has inferred completion (no new node for a while); the scan's node
+        count is stable.
+        """
+        if not self.last_triggered:
+            return "pending"
+        if self.settled_at:
+            return "settled"
+        return "running"
 
     def clean(self):
         super().clean()
@@ -903,6 +927,17 @@ class DiscoveredNode(NetBoxModel):
     server = models.ForeignKey(
         to="netbox_opennms.OpenNMSServer",
         on_delete=models.CASCADE,
+        related_name="discovered_nodes",
+    )
+    # Set only when this row came from a Discovery Scan's own poll (issue
+    # #27); null for a row from the general per-Server scan (issue #7). Lets
+    # a scan's stale-row cleanup scope itself to just its own rows — see
+    # scan.upsert_discovered_nodes.
+    discovery_scan = models.ForeignKey(
+        to="netbox_opennms.DiscoveryScan",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
         related_name="discovered_nodes",
     )
     opennms_node_id = models.PositiveIntegerField()
