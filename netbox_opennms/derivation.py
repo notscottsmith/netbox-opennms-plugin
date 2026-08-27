@@ -84,11 +84,14 @@ def requisition_name_error(name):
 
     A Requisition's name IS the Foreign Source name and is placed directly into a
     REST URL path, so it must reject whitespace and URL-significant characters in
-    addition to the OpenNMS-forbidden set. An empty name is rejected (a Foreign
-    Source must be named).
+    addition to the OpenNMS-forbidden set. An empty name is NOT rejected here
+    (issue #20): a Requisition may derive its name from the Scope picker, so
+    whether a name is required at all is a decision for the model/form layer
+    (``Requisition.clean()`` / ``RequisitionForm``), not this character-safety
+    check.
     """
-    if not name or not name.strip():
-        return "A Requisition name is required."
+    if not name:
+        return None
     bad = sorted(_NAME_FORBIDDEN_CHARS.intersection(name))
     if bad:
         # repr() already renders whitespace legibly (' ', '\t', '\n').
@@ -106,6 +109,33 @@ def validate_requisition_name(name):
     if error:
         raise ValueError(error)
     return name
+
+
+# Fixed precedence for building a derived Requisition name (issue #20) --
+# independent of a caller's own scope_values key order or the naming
+# template's configured order.
+_SCOPE_NAME_ORDER = ("tenant_group", "tenant", "site_group", "site", "location")
+
+
+def default_requisition_name(scope_values, separator):
+    """Build a Requisition name from Scope-picker levels (issue #20).
+
+    Pure: no DB access beyond attribute reads on the already-resolved objects
+    passed in. ``scope_values`` maps a subset of "tenant_group", "tenant",
+    "site_group", "site", "location" to the picked object (a level the
+    caller doesn't want included -- e.g. one outside the configured naming
+    template -- is simply absent or ``None``). Levels are always ordered
+    tenant_group -> tenant -> site_group -> site -> location, regardless of
+    ``scope_values``'s own key order, each contributing its ``slug``. Callers
+    still run the result through ``validate_requisition_name`` -- a derived
+    name must be exactly as OpenNMS-safe as a hand-typed one.
+    """
+    parts = [
+        scope_values[level].slug
+        for level in _SCOPE_NAME_ORDER
+        if scope_values.get(level)
+    ]
+    return separator.join(parts)
 
 
 def site_for(target):

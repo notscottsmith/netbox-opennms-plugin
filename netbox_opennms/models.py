@@ -131,6 +131,12 @@ class Requisition(NetBoxModel):
 
     def clean(self):
         super().clean()
+        # A blank name is fine coming out of derivation.requisition_name_error
+        # (issue #20 -- an empty name might still be filled in by the Scope
+        # picker, in RequisitionForm.clean(), before this runs) but a
+        # Requisition must still end up named one way or another.
+        if not self.name:
+            raise ValidationError({"name": "A Requisition name is required."})
         try:
             validate_requisition_name(self.name)
         except ValueError as exc:

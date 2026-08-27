@@ -263,6 +263,43 @@ class RequisitionScopePickerTest(TestCase):
         )
 
 
+class RequisitionAutoNamingTest(TestCase):
+    """Issue #20: a blank name is derived from the Scope picker; a raw/freeform
+    filter (no Scope-picker fields set) still requires an explicit name."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.tenant = Tenant.objects.create(name="Acme Corp", slug="acme-corp")
+        cls.site = Site.objects.create(name="Raleigh", slug="raleigh")
+
+    def _data(self, **overrides):
+        data = {
+            "name": "",
+            "object_types": "device",
+            "filter_params": "{}",
+            "scan_interval": "1d",
+            "default_interfaces": "primary",
+        }
+        data.update(overrides)
+        return data
+
+    def test_blank_name_derived_from_scope_picker(self):
+        form = RequisitionForm(
+            data=self._data(scope_tenant=self.tenant.pk, scope_site=self.site.pk)
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["name"], "acme-corp-raleigh")
+
+    def test_blank_name_without_scope_picker_still_rejected(self):
+        # A raw/freeform filter with no Scope-picker fields set is unchanged:
+        # a name is still required, enforced by Requisition.clean().
+        form = RequisitionForm(
+            data=self._data(filter_params='{"role": ["router"]}')
+        )
+        self.assertFalse(form.is_valid())
+        self.assertIn("A Requisition name is required.", str(form.errors))
+
+
 class MonitoredInterfaceValidationTest(TestCase):
     @classmethod
     def setUpTestData(cls):

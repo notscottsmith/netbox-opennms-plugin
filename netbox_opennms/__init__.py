@@ -65,6 +65,13 @@ class NetBoxOpenNMSConfig(PluginConfig):
         # for an operator to review the scan's DiscoveredNode rows against
         # OpenNMS's own data before it's removed there.
         "discovery_retention_minutes": "1440",
+        # Which Scope levels (see scope.SCOPE_FIELDS, singularized) feed a
+        # Scope-picked Requisition's auto-derived name, in this order, when
+        # its Name field is left blank (issue #20).
+        "requisition_naming_template": ["tenant", "site", "location"],
+        # Separator joining requisition_naming_template's levels into the
+        # derived name (issue #20). "-" or "_" -- both OpenNMS-safe (H7).
+        "requisition_naming_separator": "-",
     }
 
     def ready(self):

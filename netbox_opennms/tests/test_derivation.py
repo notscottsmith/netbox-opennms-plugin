@@ -16,6 +16,7 @@ from django.test import SimpleTestCase, TestCase
 from virtualization.models import Cluster, ClusterType, VirtualMachine
 
 from netbox_opennms.derivation import (
+    default_requisition_name,
     foreign_id_for,
     foreign_source_for,
     validate_foreign_source_name,
@@ -159,10 +160,59 @@ class RequisitionNameValidationTest(SimpleTestCase):
             with self.assertRaises(ValueError):
                 validate_requisition_name(bad)
 
-    def test_empty_rejected(self):
-        for bad in ["", "   "]:
-            with self.assertRaises(ValueError):
-                validate_requisition_name(bad)
+    def test_whitespace_only_rejected(self):
+        with self.assertRaises(ValueError):
+            validate_requisition_name("   ")
+
+    def test_empty_not_rejected_here(self):
+        # issue #20: an empty name may still be filled in by the Scope
+        # picker before final (model-layer) validation runs -- "is a name
+        # required at all" is that layer's decision, not this one's.
+        self.assertEqual(validate_requisition_name(""), "")
+
+
+class DefaultRequisitionNameTest(SimpleTestCase):
+    """Issue #20: derived name is pure -- no DB access beyond .slug reads."""
+
+    def _obj(self, slug):
+        return mock.Mock(slug=slug)
+
+    def test_joins_whichever_levels_are_set_in_fixed_order(self):
+        # Set out of tenant_group -> tenant -> site_group -> site -> location
+        # order -- output order must not follow scope_values' own key order.
+        scope_values = {
+            "location": self._obj("core"),
+            "tenant": self._obj("acme"),
+        }
+        self.assertEqual(
+            default_requisition_name(scope_values, "-"), "acme-core"
+        )
+
+    def test_uses_every_level_when_all_set(self):
+        scope_values = {
+            "tenant_group": self._obj("msp"),
+            "tenant": self._obj("acme"),
+            "site_group": self._obj("east"),
+            "site": self._obj("raleigh"),
+            "location": self._obj("core"),
+        }
+        self.assertEqual(
+            default_requisition_name(scope_values, "-"),
+            "msp-acme-east-raleigh-core",
+        )
+
+    def test_absent_and_none_levels_are_skipped(self):
+        scope_values = {"tenant": self._obj("acme"), "site": None}
+        self.assertEqual(default_requisition_name(scope_values, "-"), "acme")
+
+    def test_no_levels_set_returns_empty_string(self):
+        self.assertEqual(default_requisition_name({}, "-"), "")
+
+    def test_uses_configured_separator(self):
+        scope_values = {"tenant": self._obj("acme"), "site": self._obj("raleigh")}
+        self.assertEqual(
+            default_requisition_name(scope_values, "_"), "acme_raleigh"
+        )
 
 
 class LocationNameValidationTest(SimpleTestCase):

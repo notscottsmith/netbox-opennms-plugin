@@ -22,6 +22,7 @@ from django.utils.translation import gettext_lazy as _
 from extras.models import SavedFilter
 from ipam.models import IPAddress
 from netbox.forms import NetBoxModelFilterSetForm, NetBoxModelForm
+from netbox.plugins import get_plugin_config
 from tenancy.models import Tenant, TenantGroup
 from utilities.forms.fields import (
     DynamicModelChoiceField,
@@ -32,7 +33,7 @@ from virtualization.models import VirtualMachine
 
 from .catalog import get_detector_catalog, get_policy_catalog
 from .choices import ObjectTypeChoices, ServiceChoices
-from .derivation import location_name_error
+from .derivation import default_requisition_name, location_name_error
 from .membership import filter_errors, target_server_for
 from .models import (
     AssetMapping,
@@ -56,6 +57,22 @@ logger = logging.getLogger("netbox_opennms")
 class RequisitionForm(NetBoxModelForm):
     """Create/edit a Requisition (one user-named OpenNMS Foreign Source)."""
 
+    # Required=False at the form level only (issue #20): the model field
+    # itself stays required (Requisition.clean() enforces it), but a blank
+    # submission must be allowed to reach clean() below so a Scope-picked
+    # Requisition can have its name auto-derived instead of bouncing off
+    # Django's own "This field is required." before that logic ever runs.
+    name = forms.CharField(
+        max_length=100,
+        required=False,
+        label=_("Name"),
+        help_text=_(
+            "The Foreign Source name. Leave blank when using the Scope "
+            "picker below to auto-derive one from the picked tenant/site/"
+            "location (per the configured naming template) — a raw/"
+            "freeform filter still requires an explicit name."
+        ),
+    )
     import_from_saved_filter = forms.ModelChoiceField(
         queryset=SavedFilter.objects.filter(
             Q(object_types__app_label="dcim", object_types__model="device")
@@ -224,11 +241,29 @@ class RequisitionForm(NetBoxModelForm):
         # into whatever's already in filter_params — an untouched key (including one
         # a previous pick wrote and the user then hand-edited) is left alone.
         params = dict(self.cleaned_data.get("filter_params") or {})
+        picked = {}
         for form_field, _scope_field, filter_key in self._SCOPE_PICKER_FIELDS:
             value = self.cleaned_data.get(form_field)
+            picked[filter_key] = value
             if value is not None:
                 params[filter_key] = [value.slug]
         self.cleaned_data["filter_params"] = params
+        # Auto-derive a blank name from the Scope picker (issue #20), scoped
+        # to whichever levels requisition_naming_template lists -- a raw/
+        # freeform filter (no Scope-picker fields set at all) is left blank
+        # here, falling through to Requisition.clean()'s "name required"
+        # check exactly as before this feature existed.
+        if not self.cleaned_data.get("name") and any(picked.values()):
+            template = get_plugin_config(
+                "netbox_opennms", "requisition_naming_template"
+            )
+            separator = get_plugin_config(
+                "netbox_opennms", "requisition_naming_separator"
+            )
+            scope_values = {level: picked.get(level) for level in template}
+            derived = default_requisition_name(scope_values, separator)
+            if derived:
+                self.cleaned_data["name"] = derived
         # Reject unknown/empty filters here (the same guard the resolver uses), so a
         # typo can't be saved into a fleet-wide catch-all (H1). Read from
         # cleaned_data — self.instance isn't populated until _post_clean(), after this.

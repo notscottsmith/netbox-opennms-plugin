@@ -208,6 +208,12 @@ PLUGINS_CONFIG = {
         # "netbox-device-42". Change with care: it is node identity, not just a
         # label — see "Adopting a pre-existing OpenNMS node" below.
         "foreign_id_prefix": "netbox",
+        # Scope levels (in this order) that feed a Scope-picked Requisition's
+        # auto-derived name when its Name field is left blank; a raw/freeform
+        # filter still requires an explicit name.
+        "requisition_naming_template": ["tenant", "site", "location"],
+        # Separator joining requisition_naming_template's levels. "-" or "_".
+        "requisition_naming_separator": "-",
     },
 }
 ```
