@@ -88,6 +88,41 @@ def resolve_scope(obj):
     return ScopeResolution(server=OpenNMSServer.objects.filter(is_default=True).first())
 
 
+_NESTED_SCOPE_FIELDS = ("locations", "site_groups", "tenant_groups")
+
+
+def scope_options(server):
+    """Which Scope objects (per level) resolve to *server* via ``resolve_scope``.
+
+    The reverse of ``resolve_scope``: used to constrain the Requisition Scope
+    picker (issue #19) to only the objects that would actually land a member
+    on *server*. A Scope object resolves to *server* if it's one of *server*'s
+    own bound M2M objects (direct binding), or — for the three nested-group
+    levels (``locations``/``site_groups``/``tenant_groups``) — a descendant of
+    one of them, cascading DOWN the hierarchy via ``get_descendants()`` (the
+    same hierarchy ``resolve_scope`` cascades UP via ``get_ancestors()``).
+    ``sites``/``tenants`` aren't nested (``NestedGroupModel``), so only direct
+    bindings apply to them.
+
+    Returns ``None`` (unconstrained — every object is a valid pick) when
+    *server* is ``None``; otherwise a dict of five querysets keyed by
+    ``SCOPE_FIELDS``.
+    """
+    if server is None:
+        return None
+    options = {}
+    for field_name in SCOPE_FIELDS:
+        direct = getattr(server, field_name).all()
+        if field_name not in _NESTED_SCOPE_FIELDS:
+            options[field_name] = direct
+            continue
+        pks = set(direct.values_list("pk", flat=True))
+        for obj in direct:
+            pks.update(obj.get_descendants().values_list("pk", flat=True))
+        options[field_name] = direct.model.objects.filter(pk__in=pks)
+    return options
+
+
 def find_scope_collision(field, selected, exclude_pk=None, model=OpenNMSServer):
     """The *model* row already bound directly to any of *selected* on *field*.
 

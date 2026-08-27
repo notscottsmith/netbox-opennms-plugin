@@ -16,7 +16,7 @@ from ipam.models import VRF
 from tenancy.models import Tenant, TenantGroup
 
 from netbox_opennms.models import MonitoringExclusion, OpenNMSServer, VRFAssignment
-from netbox_opennms.scope import resolve_scope, resolve_vrf
+from netbox_opennms.scope import resolve_scope, resolve_vrf, scope_options
 
 
 class ScopeResolutionTest(TestCase):
@@ -270,3 +270,96 @@ class VRFResolutionTest(TestCase):
         assignment = VRFAssignment.objects.create(vrf=vrf)
         assignment.sites.add(other_site)
         self.assertIsNone(resolve_vrf(site=self.site))
+
+
+class ScopeOptionsTest(TestCase):
+    """Tests for ``scope_options`` (issue #19) — the reverse of ``resolve_scope``:
+    which Scope objects, per level, resolve to a given Server."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.tenant_group = TenantGroup.objects.create(
+            name="MSP Customers", slug="msp-customers"
+        )
+        cls.child_tenant_group = TenantGroup.objects.create(
+            name="MSP Customers - EU", slug="msp-customers-eu", parent=cls.tenant_group
+        )
+        cls.unrelated_tenant_group = TenantGroup.objects.create(
+            name="Other", slug="other-tg"
+        )
+        cls.tenant = Tenant.objects.create(name="Acme Corp", slug="acme-corp")
+        cls.site_group = SiteGroup.objects.create(name="East Coast", slug="east-coast")
+        cls.child_site_group = SiteGroup.objects.create(
+            name="Raleigh Metro", slug="raleigh-metro", parent=cls.site_group
+        )
+        cls.unrelated_site_group = SiteGroup.objects.create(
+            name="West Coast", slug="west-coast"
+        )
+        cls.site = Site.objects.create(name="Raleigh", slug="raleigh")
+        cls.unrelated_site = Site.objects.create(name="Durham", slug="durham")
+        cls.location = Location.objects.create(
+            name="Rack 1", slug="rack-1", site=cls.site
+        )
+        cls.nested_location = Location.objects.create(
+            name="Shelf A", slug="shelf-a", site=cls.site, parent=cls.location
+        )
+        cls.unrelated_location = Location.objects.create(
+            name="Rack 2", slug="rack-2", site=cls.site
+        )
+        cls.server = OpenNMSServer.objects.create(
+            name="Server", url="https://onms.example"
+        )
+
+    def test_no_server_is_unconstrained(self):
+        self.assertIsNone(scope_options(None))
+
+    def test_direct_site_binding_only_includes_that_site(self):
+        self.server.sites.add(self.site)
+        options = scope_options(self.server)
+        self.assertEqual(set(options["sites"]), {self.site})
+
+    def test_direct_tenant_binding_only_includes_that_tenant(self):
+        self.server.tenants.add(self.tenant)
+        options = scope_options(self.server)
+        self.assertEqual(set(options["tenants"]), {self.tenant})
+
+    def test_site_group_binding_cascades_to_descendant_group(self):
+        self.server.site_groups.add(self.site_group)
+        options = scope_options(self.server)
+        self.assertEqual(
+            set(options["site_groups"]), {self.site_group, self.child_site_group}
+        )
+        self.assertNotIn(self.unrelated_site_group, options["site_groups"])
+
+    def test_tenant_group_binding_cascades_to_descendant_group(self):
+        self.server.tenant_groups.add(self.tenant_group)
+        options = scope_options(self.server)
+        self.assertEqual(
+            set(options["tenant_groups"]), {self.tenant_group, self.child_tenant_group}
+        )
+        self.assertNotIn(self.unrelated_tenant_group, options["tenant_groups"])
+
+    def test_location_binding_cascades_to_nested_location(self):
+        self.server.locations.add(self.location)
+        options = scope_options(self.server)
+        self.assertEqual(
+            set(options["locations"]), {self.location, self.nested_location}
+        )
+        self.assertNotIn(self.unrelated_location, options["locations"])
+
+    def test_site_group_binding_does_not_expand_to_member_sites(self):
+        # Sites aren't a NestedGroupModel — resolve_scope only matches a site
+        # itself at the "sites" level (a site under a bound site group instead
+        # matches at the site_groups level), so scope_options must not offer
+        # every site under a bound site group as a "sites" pick.
+        self.server.site_groups.add(self.site_group)
+        self.site.group = self.site_group
+        self.site.save()
+        options = scope_options(self.server)
+        self.assertNotIn(self.site, options["sites"])
+
+    def test_no_bindings_yields_empty_options(self):
+        options = scope_options(self.server)
+        fields = ("tenant_groups", "tenants", "site_groups", "sites", "locations")
+        for field_name in fields:
+            self.assertEqual(list(options[field_name]), [])
