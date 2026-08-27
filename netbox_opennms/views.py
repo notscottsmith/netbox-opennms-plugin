@@ -21,6 +21,7 @@ from virtualization.models import VirtualMachine
 from . import filtersets, forms, import_node, tables
 from .client import OpenNMSClient, OpenNMSError, parse_node_links
 from .dryrun import dry_run
+from .ip_reconcile import reconcile_node_interfaces
 from .jobs import (
     SyncForeignSourceJob,
     unknown_locations,
@@ -586,6 +587,9 @@ class DiscoveryScanServerLocationsAjaxView(PermissionRequiredMixin, View):
 
 class DiscoveredNodeView(generic.ObjectView):
     queryset = DiscoveredNode.objects.all()
+
+    def get_extra_context(self, request, instance):
+        return {"interface_verdicts": reconcile_node_interfaces(instance)}
 
 
 class DiscoveredNodeListView(generic.ObjectListView):

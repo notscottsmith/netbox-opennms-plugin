@@ -43,4 +43,49 @@
       </div>
     </div>
   </div>
+  {% if interface_verdicts %}
+    <div class="row">
+      <div class="col col-md-12">
+        <div class="card">
+          <h2 class="card-header">IP Interfaces</h2>
+          <table class="table table-hover">
+            <thead>
+              <tr>
+                <th>IP Address</th>
+                <th>Netmask</th>
+                <th>Verdict</th>
+                <th>Proposal</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for iv in interface_verdicts %}
+                <tr>
+                  <td>{{ iv.ip_address }}</td>
+                  <td>{{ iv.netmask|default:"—" }}</td>
+                  <td>
+                    {% if iv.verdict == "green" %}
+                      <span class="badge text-bg-green">Matches</span>
+                    {% elif iv.verdict == "orange" %}
+                      <span class="badge text-bg-orange" title="{{ iv.diff_detail|join:'; ' }}">Differs</span>
+                    {% else %}
+                      <span class="badge text-bg-red">Missing from NetBox</span>
+                    {% endif %}
+                  </td>
+                  <td>
+                    {% if iv.proposal.prefix %}
+                      Prefix {{ iv.proposal.prefix }}{% if iv.proposal.vrf %} (VRF {{ iv.proposal.vrf }}){% endif %}
+                    {% elif iv.proposal.start_address %}
+                      IP Range {{ iv.proposal.start_address }}–{{ iv.proposal.end_address }}{% if iv.proposal.vrf %} (VRF {{ iv.proposal.vrf }}){% endif %}
+                    {% else %}
+                      —
+                    {% endif %}
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  {% endif %}
 {% endblock %}

@@ -70,6 +70,10 @@ class FieldProposal:
 class InterfaceProposal:
     ip_address: str
     role: str = InterfaceRoleChoices.NOT_ELIGIBLE
+    # OpenNMS's netMask, when SNMP was reachable (issue #30, ADR 0008) --
+    # otherwise blank, meaning "unknown" to a per-IP reconciliation, not "no
+    # mask" in the networking sense.
+    netmask: str = ""
 
     @property
     def is_primary(self):
@@ -187,7 +191,8 @@ def _parse_ip_interfaces(ip_interfaces):
         role = str(iface.get("snmpPrimary", "N")).upper()
         if role not in (InterfaceRoleChoices.PRIMARY, InterfaceRoleChoices.SECONDARY):
             role = InterfaceRoleChoices.NOT_ELIGIBLE
-        interfaces.append(InterfaceProposal(ip_address=ip, role=role))
+        netmask = iface.get("netMask") or iface.get("net-mask") or ""
+        interfaces.append(InterfaceProposal(ip_address=ip, role=role, netmask=netmask))
     return interfaces
 
 
