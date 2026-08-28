@@ -850,6 +850,13 @@ class DiscoveryScanTriggerView(GetReturnURLMixin, PermissionRequiredMixin, View)
     def post(self, request, pk):
         scan = get_object_or_404(DiscoveryScan, pk=pk)
         return_url = request.META.get("HTTP_REFERER") or scan.get_absolute_url()
+        if scan.status != "pending":
+            messages.error(
+                request,
+                f"Discovery scan {scan} has already been triggered; create a "
+                "new Discovery Scan to scan again.",
+            )
+            return redirect(return_url)
         try:
             with OpenNMSClient.from_server(scan.server) as client:
                 client.run_discovery(
