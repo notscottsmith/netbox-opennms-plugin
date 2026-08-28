@@ -1,0 +1,25 @@
+{# Copyright 2026 Ronny Trommer <ronny@no42.org> #}
+{# SPDX-License-Identifier: MIT #}
+{% extends 'generic/object_list.html' %}
+
+{% block content %}
+  {% if no_worker_warning %}
+    <div class="alert alert-warning" role="alert">
+      <i class="mdi mdi-alert"></i> No background worker is running — Sync jobs will
+      stay pending until an RQ worker is started.
+    </div>
+  {% endif %}
+  {{ block.super }}
+{% endblock %}
+
+{% block buttons %}
+  {{ block.super }}
+  {% if perms.netbox_opennms.change_requisition %}
+    <form method="post" action="{% url 'plugins:netbox_opennms:sync_all' %}" class="d-inline">
+      {% csrf_token %}
+      <button type="submit" class="btn btn-outline-primary">
+        <i class="mdi mdi-sync"></i> Sync all
+      </button>
+    </form>
+  {% endif %}
+{% endblock %}

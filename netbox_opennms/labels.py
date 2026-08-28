@@ -16,8 +16,6 @@ NAV_SERVERS = "Servers"
 NAV_REQUISITIONS = "Requisitions"
 NAV_DISCOVERY = "Discovery"
 NAV_DISCOVERED_NODES = "Discovered Nodes"
-# Removed once Sync Preview is absorbed into Requisitions (issue #46).
-NAV_SYNC_PREVIEW = "Sync Preview"
 NAV_OVERRIDES = "Overrides"
 NAV_EXCLUSIONS = "Exclusions"
 

@@ -218,11 +218,6 @@ urlpatterns = (
         name="node_link_create_cable",
     ),
     path(
-        "sync/",
-        views.SyncPreviewView.as_view(),
-        name="sync_preview",
-    ),
-    path(
         "sync/all/",
         views.MonitoringSyncAllView.as_view(),
         name="sync_all",

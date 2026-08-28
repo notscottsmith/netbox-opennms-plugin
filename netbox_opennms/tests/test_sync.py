@@ -70,9 +70,7 @@ class SyncViewTest(TestCase):
     def test_sync_all_skips_frozen_requisitions(self, mock_enqueue):
         # Review #2: Sync-all must not enqueue a guaranteed-failed job for a
         # frozen requisition — it skips it with a warning.
-        Requisition.objects.create(
-            name="overlap", filter_params={"site": ["raleigh"]}
-        )
+        Requisition.objects.create(name="overlap", filter_params={"site": ["raleigh"]})
         self.client.force_login(self.superuser)
         url = reverse("plugins:netbox_opennms:sync_all")
         response = self.client.post(url, follow=True)
@@ -110,9 +108,7 @@ class SyncViewTest(TestCase):
             name="empty", filter_params={"site": ["raleigh"], "role": ["unused"]}
         )
         self.client.force_login(self.superuser)
-        url = reverse(
-            "plugins:netbox_opennms:requisition_duplicate", args=[empty.pk]
-        )
+        url = reverse("plugins:netbox_opennms:requisition_duplicate", args=[empty.pk])
         response = self.client.post(url, follow=True)
         self.assertNotContains(response, "frozen")
 
@@ -135,12 +131,15 @@ class SyncViewTest(TestCase):
         response = self.client.post(url, follow=True)
         self.assertContains(response, "Sync submitted")
 
-    def test_preview_renders(self):
+    def test_requisition_list_shows_resolved_columns(self):
+        # Sync Preview's old node-count/conflicts/warnings columns are now on
+        # the Requisitions list itself (issue #46).
         self.client.force_login(self.superuser)
-        url = reverse("plugins:netbox_opennms:sync_preview")
+        url = reverse("plugins:netbox_opennms:requisition_list")
         response = self.client.get(url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, FS)
+        self.assertContains(response, "Sync all")
 
     def test_sync_requires_permission(self):
         self.client.force_login(self.plain)

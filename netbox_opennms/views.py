@@ -7,7 +7,7 @@ from copy import deepcopy
 
 from dcim.models import Cable, Device, Interface, Site
 from django.contrib import messages
-from django.contrib.auth.mixins import LoginRequiredMixin, PermissionRequiredMixin
+from django.contrib.auth.mixins import PermissionRequiredMixin
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -147,9 +147,30 @@ class RequisitionView(generic.ObjectView):
 
 
 class RequisitionListView(generic.ObjectListView):
+    """The Requisition list, absorbing the former standalone Sync Preview
+    page (issue #46) — see also ``MonitoringSyncAllView``'s "Sync all"
+    action, now surfaced as a toolbar button on this page's template.
+    """
+
     queryset = Requisition.objects.all()
     table = tables.RequisitionTable
     filterset = filtersets.RequisitionFilterSet
+
+    def get_table(self, data, request, bulk_actions=True):
+        # One resolve_all() pass, keyed by pk, attached to each row as
+        # ``_resolution`` for RequisitionTable's conflicts/nodes/warnings/
+        # sync columns to read — resolve_all() has no per-object queryset
+        # filtering of its own to express as a Column accessor. Relies on
+        # QuerySet result-cache reuse: iterating ``data`` here evaluates and
+        # caches it, so the same model instances (now carrying
+        # ``_resolution``) are the ones the table renders below.
+        resolutions = {r.requisition.pk: r for r in resolve_all()}
+        for obj in data:
+            obj._resolution = resolutions.get(obj.pk)
+        return super().get_table(data, request, bulk_actions)
+
+    def get_extra_context(self, request):
+        return {"no_worker_warning": _no_worker_running()}
 
 
 class RequisitionEditView(generic.ObjectEditView):
@@ -1356,7 +1377,7 @@ class ForeignSourceSyncView(GetReturnURLMixin, PermissionRequiredMixin, View):
     """Enqueue a Sync (or Remove) for one Foreign Source named in the POST."""
 
     permission_required = SYNC_PERM
-    default_return_url = "plugins:netbox_opennms:sync_preview"
+    default_return_url = "plugins:netbox_opennms:requisition_list"
 
     def post(self, request):
         foreign_source = request.POST.get("foreign_source", "").strip()
@@ -1416,40 +1437,7 @@ class MonitoringSyncAllView(PermissionRequiredMixin, View):
             messages.success(request, f"Submitted {submitted} Foreign Source sync(s).")
         else:
             messages.info(request, "Nothing to sync.")
-        return redirect("plugins:netbox_opennms:sync_preview")
-
-
-class SyncPreviewView(LoginRequiredMixin, View):
-    """The preview-and-sync overview: every Requisition + its resolved members.
-
-    Lists every Requisition with its node count, any resolution warnings
-    (rejected filters, member skips), and its blocking conflicts (a frozen
-    Requisition cannot sync until the overlap is resolved — C1), so the operator
-    sees what will go before pressing Sync. The per-node dry-run diff against
-    OpenNMS is a per-Requisition action (RequisitionDryRunView).
-    """
-
-    template_name = "netbox_opennms/sync_preview.html"
-
-    def get(self, request):
-        rows = []
-        for resolution in resolve_all():
-            rows.append(
-                {
-                    "foreign_source": resolution.foreign_source,
-                    "requisition": resolution.requisition,
-                    "node_count": len(resolution.nodes),
-                    # Rejected-filter errors join the warnings badge so a broken
-                    # filter stays visible on the preview.
-                    "warnings": [*resolution.rejected, *resolution.warnings],
-                    "conflicts": resolution.conflicts,
-                }
-            )
-        return render(
-            request,
-            self.template_name,
-            {"rows": rows, "no_worker_warning": _no_worker_running()},
-        )
+        return redirect("plugins:netbox_opennms:requisition_list")
 
 
 class OpenNMSServerTestView(PermissionRequiredMixin, View):

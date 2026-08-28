@@ -55,10 +55,6 @@ menu = PluginMenu(
                     link="plugins:netbox_opennms:discoverednode_list",
                     link_text=labels.NAV_DISCOVERED_NODES,
                 ),
-                PluginMenuItem(
-                    link="plugins:netbox_opennms:sync_preview",
-                    link_text=labels.NAV_SYNC_PREVIEW,
-                ),
             ),
         ),
         (

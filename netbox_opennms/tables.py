@@ -414,7 +414,51 @@ class DiscoveredNodeTable(NetBoxTable):
 
 
 class RequisitionTable(NetBoxTable):
+    """The Requisition list, absorbing the former standalone Sync Preview page
+    (issue #46): conflicts/nodes/warnings come from a ``membership.Resolution``
+    the view attaches to each row as ``record._resolution`` (``resolve_all()``
+    has no per-object queryset filtering of its own, so it can't be expressed
+    as a table ``Column`` accessor/annotation — the view resolves once for
+    every Requisition and hands each row its match).
+    """
+
     name = tables.Column(linkify=True)
+    conflicts = tables.Column(
+        empty_values=(), orderable=False, verbose_name="Conflicts"
+    )
+    node_count = tables.Column(empty_values=(), orderable=False, verbose_name="Nodes")
+    warnings = tables.Column(empty_values=(), orderable=False, verbose_name="Warnings")
+    # See OpenNMSServerTable.test_action above (#32) — formaction/formmethod
+    # avoids nesting a <form> inside the list view's outer bulk-action form.
+    sync_action = _ActionColumn(
+        template_code="""
+            <a href="{{ dry_run_url }}" class="btn btn-sm btn-outline-primary">
+              Dry run
+            </a>
+            <button type="submit"
+                    formaction="{{ sync_url }}"
+                    formmethod="post"
+                    class="btn btn-sm btn-primary"
+                    {% if frozen %}
+                      disabled title="Frozen — resolve the filter conflicts first"
+                    {% endif %}>
+              Sync
+            </button>
+        """,
+        context_fn=lambda record, table: {
+            "dry_run_url": reverse(
+                "plugins:netbox_opennms:requisition_dry_run", args=[record.pk]
+            ),
+            "sync_url": reverse(
+                "plugins:netbox_opennms:requisition_sync", args=[record.pk]
+            ),
+            "frozen": bool(
+                getattr(record, "_resolution", None) and record._resolution.conflicts
+            ),
+        },
+        verbose_name="",
+        orderable=False,
+    )
 
     class Meta(NetBoxTable.Meta):
         model = Requisition
@@ -427,8 +471,12 @@ class RequisitionTable(NetBoxTable):
             "scan_interval",
             "default_interfaces",
             "location",
+            "conflicts",
+            "node_count",
+            "warnings",
             "created",
             "last_updated",
+            "sync_action",
             "actions",
         )
         default_columns = (
@@ -436,7 +484,35 @@ class RequisitionTable(NetBoxTable):
             "object_types",
             "scan_interval",
             "location",
+            "conflicts",
+            "node_count",
+            "warnings",
+            "sync_action",
         )
+
+    def render_conflicts(self, record):
+        resolution = getattr(record, "_resolution", None)
+        if resolution and resolution.conflicts:
+            return format_html(
+                '<span class="badge text-bg-danger" '
+                'title="Sync blocked — resolve the filter overlap">'
+                "{} — frozen</span>",
+                len(resolution.conflicts),
+            )
+        return "—"
+
+    def render_node_count(self, record):
+        resolution = getattr(record, "_resolution", None)
+        return len(resolution.nodes) if resolution else 0
+
+    def render_warnings(self, record):
+        resolution = getattr(record, "_resolution", None)
+        if not resolution:
+            return "—"
+        count = len(resolution.rejected) + len(resolution.warnings)
+        if not count:
+            return "—"
+        return format_html('<span class="badge text-bg-warning">{}</span>', count)
 
 
 class MonitoringDetectorTable(NetBoxTable):
