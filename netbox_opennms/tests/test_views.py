@@ -1056,10 +1056,110 @@ class RequisitionNodeWalkViewTest(TestCase):
                 "ldpRemPort": "Gi0/1",
             }
         }
+        client.get_node.return_value = {}
+        client.list_ip_interfaces.return_value = []
         response = self.client.get(self._url())
         content = response.content.decode()
         self.assertIn("eth0", content)
         self.assertIn("switch-1", content)
+
+    @mock.patch("netbox_opennms.views.target_server_for")
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_categories_and_assets_show_mapping_status(
+        self, mock_from_server, mock_target_server_for
+    ):
+        # Issue #39: assets that match a configured Asset Mapping are flagged
+        # as such, distinct from ones with no mapping configured.
+        AssetMapping.objects.create(
+            requisition=self.requisition,
+            netbox_source="serial",
+            asset_field="serialNumber",
+        )
+        mock_target_server_for.return_value = self.server
+        client = mock_from_server.return_value.__enter__.return_value
+        client.list_snmp_interfaces.return_value = []
+        client.get_node_links.return_value = None
+        client.get_node.return_value = {
+            "categories": {"category": [{"name": "Routers"}]},
+            "assetRecord": {
+                "serialNumber": "ABC123",
+                "assetNumber": "UNMAPPED-1",
+            },
+        }
+        client.list_ip_interfaces.return_value = []
+        response = self.client.get(self._url())
+        content = response.content.decode()
+        self.assertIn("Routers", content)
+        self.assertIn("ABC123", content)
+        self.assertIn("UNMAPPED-1", content)
+        self.assertIn("Mapped", content)
+        self.assertIn("Unmapped", content)
+
+    @mock.patch("netbox_opennms.views.target_server_for")
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_snmp_metadata_excludes_categories_and_assets(
+        self, mock_from_server, mock_target_server_for
+    ):
+        mock_target_server_for.return_value = self.server
+        client = mock_from_server.return_value.__enter__.return_value
+        client.list_snmp_interfaces.return_value = []
+        client.get_node_links.return_value = None
+        client.get_node.return_value = {
+            "sysObjectId": "1.3.6.1.4.1.9.1.1",
+            "sysLocation": "DC1",
+            "categories": {"category": [{"name": "Routers"}]},
+            "assetRecord": {"serialNumber": "ABC123"},
+        }
+        client.list_ip_interfaces.return_value = []
+        response = self.client.get(self._url())
+        content = response.content.decode()
+        self.assertIn("sysObjectId", content)
+        self.assertIn("1.3.6.1.4.1.9.1.1", content)
+        self.assertIn("sysLocation", content)
+        self.assertIn("DC1", content)
+
+    @mock.patch("netbox_opennms.views.target_server_for")
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_ip_interfaces_and_services_are_rendered(
+        self, mock_from_server, mock_target_server_for
+    ):
+        mock_target_server_for.return_value = self.server
+        client = mock_from_server.return_value.__enter__.return_value
+        client.list_snmp_interfaces.return_value = []
+        client.get_node_links.return_value = None
+        client.get_node.return_value = {}
+        client.list_ip_interfaces.return_value = [
+            {"ipAddress": "10.0.0.1", "snmpPrimary": "P"}
+        ]
+        client.list_services.return_value = [{"serviceType": {"name": "ICMP"}}]
+        response = self.client.get(self._url())
+        content = response.content.decode()
+        self.assertIn("10.0.0.1", content)
+        self.assertIn("ICMP", content)
+
+    @mock.patch("netbox_opennms.views.target_server_for")
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_no_categories_assets_or_snmp_data_renders_cleanly(
+        self, mock_from_server, mock_target_server_for
+    ):
+        # Issue #39 acceptance criterion: a node with nothing to report on
+        # any of these fronts renders cleanly rather than erroring (related
+        # to issue #40's spurious "unparseable snmpinterfaces" bug).
+        mock_target_server_for.return_value = self.server
+        client = mock_from_server.return_value.__enter__.return_value
+        client.list_snmp_interfaces.return_value = []
+        client.get_node_links.return_value = None
+        client.get_node.return_value = {}
+        client.list_ip_interfaces.return_value = []
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        self.assertIsNone(response.context.get("error"))
+        self.assertIn("No categories reported", content)
+        self.assertIn("No asset record fields reported", content)
+        self.assertIn("No SNMP metadata reported", content)
+        self.assertIn("No SNMP interfaces available", content)
+        self.assertIn("No IP interfaces available", content)
 
 
 class RequisitionSyncNodeViewTest(TestCase):
