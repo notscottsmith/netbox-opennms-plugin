@@ -10,7 +10,9 @@ from .models import (
     AssetMapping,
     DiscoveredNode,
     DiscoveryScan,
+    MetadataContext,
     MetadataEntry,
+    MetadataKey,
     MonitoredInterface,
     MonitoredService,
     MonitoringDetector,
@@ -127,6 +129,8 @@ urlpatterns = (
         MonitoredInterface,
     ),
     *_crud("asset-mappings", "assetmapping", "AssetMapping", AssetMapping),
+    *_crud("metadata-contexts", "metadatacontext", "MetadataContext", MetadataContext),
+    *_crud("metadata-keys", "metadatakey", "MetadataKey", MetadataKey),
     *_crud("metadata-entries", "metadataentry", "MetadataEntry", MetadataEntry),
     *_crud("servers", "opennmsserver", "OpenNMSServer", OpenNMSServer),
     path(

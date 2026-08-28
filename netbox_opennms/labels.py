@@ -18,6 +18,8 @@ NAV_DISCOVERY = "Discovery"
 NAV_DISCOVERED_NODES = "Discovered Nodes"
 NAV_OVERRIDES = "Overrides"
 NAV_EXCLUSIONS = "Exclusions"
+NAV_METADATA_CONTEXTS = "Metadata Contexts"
+NAV_METADATA_KEYS = "Metadata Keys"
 
 # --- Requisition table columns (tables.py) ----------------------------------
 

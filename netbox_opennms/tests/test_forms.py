@@ -21,11 +21,17 @@ from tenancy.models import Tenant, TenantGroup
 
 from netbox_opennms.forms import (
     DiscoveryScanForm,
+    MetadataContextForm,
+    MetadataEntryForm,
+    MetadataKeyForm,
     MonitoringOverrideForm,
     OpenNMSServerForm,
     RequisitionForm,
 )
 from netbox_opennms.models import (
+    MetadataContext,
+    MetadataEntry,
+    MetadataKey,
     MonitoredInterface,
     MonitoredService,
     MonitoringOverride,
@@ -532,3 +538,89 @@ class InterfaceServicePruneTest(TestCase):
                 override=self.override, ip_address=self.ip_a
             ).exists()
         )
+
+
+class MetadataContextFormTest(TestCase):
+    def test_rejects_non_x_prefixed_name(self):
+        form = MetadataContextForm(data={"name": "custom", "description": ""})
+        self.assertFalse(form.is_valid())
+        self.assertIn("name", form.errors)
+
+    def test_accepts_x_prefixed_name(self):
+        form = MetadataContextForm(data={"name": "X-billing", "description": ""})
+        self.assertTrue(form.is_valid(), form.errors)
+
+
+class MetadataKeyFormTest(TestCase):
+    def test_accepts_any_name_no_prefix_required(self):
+        # Unlike MetadataContextForm, OpenNMS defines no naming-reservation
+        # rule for custom keys.
+        node = MetadataContext.objects.get(name="node")
+        form = MetadataKeyForm(
+            data={"context": node.pk, "name": "anything-goes", "description": ""}
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_duplicate_name_in_same_context_is_rejected(self):
+        node = MetadataContext.objects.get(name="node")
+        MetadataKey.objects.create(context=node, name="X-dup")
+        form = MetadataKeyForm(
+            data={"context": node.pk, "name": "X-dup", "description": ""}
+        )
+        self.assertFalse(form.is_valid())
+
+
+class MetadataEntryFormContextChoicesTest(TestCase):
+    """MetadataEntryForm.context is a dropdown sourced from MetadataContext (#41)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.req = Requisition.objects.create(
+            name="me-form-req", filter_params={"role": ["switch"]}
+        )
+
+    def test_context_choices_include_seeded_base_contexts(self):
+        form = MetadataEntryForm()
+        choice_values = {value for value, _label in form.fields["context"].choices}
+        self.assertTrue(
+            {"node", "requisition", "interface", "service", "pattern"}.issubset(
+                choice_values
+            )
+        )
+
+    def test_context_choices_include_registered_custom_context(self):
+        MetadataContext.objects.create(name="X-billing")
+        form = MetadataEntryForm()
+        choice_values = {value for value, _label in form.fields["context"].choices}
+        self.assertIn("X-billing", choice_values)
+
+    def test_unregistered_context_is_rejected_on_submit(self):
+        form = MetadataEntryForm(
+            data={
+                "requisition": self.req.pk,
+                "scope": "node",
+                "context": "X-not-registered",
+                "key": "k1",
+                "value_source": "",
+                "literal_value": "v",
+            }
+        )
+        self.assertFalse(form.is_valid())
+        self.assertIn("context", form.errors)
+
+    def test_existing_instances_unregistered_value_stays_selectable(self):
+        # An entry saved before its context was registered (e.g. a fixture,
+        # or data that pre-dates migration 0020's backfill) must still show
+        # its current value in the dropdown when editing, even though it
+        # wouldn't otherwise validate as a fresh submission.
+        entry = MetadataEntry(
+            requisition=self.req,
+            scope="node",
+            context="requisition",
+            key="k1",
+            literal_value="v",
+        )
+        entry.context = "X-legacy-unregistered"
+        form = MetadataEntryForm(instance=entry)
+        choice_values = {value for value, _label in form.fields["context"].choices}
+        self.assertIn("X-legacy-unregistered", choice_values)

@@ -8,7 +8,9 @@ from ..filtersets import (
     AssetMappingFilterSet,
     DiscoveredNodeFilterSet,
     DiscoveryScanFilterSet,
+    MetadataContextFilterSet,
     MetadataEntryFilterSet,
+    MetadataKeyFilterSet,
     MonitoredInterfaceFilterSet,
     MonitoredServiceFilterSet,
     MonitoringDetectorFilterSet,
@@ -22,7 +24,9 @@ from ..models import (
     AssetMapping,
     DiscoveredNode,
     DiscoveryScan,
+    MetadataContext,
     MetadataEntry,
+    MetadataKey,
     MonitoredInterface,
     MonitoredService,
     MonitoringDetector,
@@ -36,7 +40,9 @@ from .serializers import (
     AssetMappingSerializer,
     DiscoveredNodeSerializer,
     DiscoveryScanSerializer,
+    MetadataContextSerializer,
     MetadataEntrySerializer,
+    MetadataKeySerializer,
     MonitoredInterfaceSerializer,
     MonitoredServiceSerializer,
     MonitoringDetectorSerializer,
@@ -90,6 +96,26 @@ class AssetMappingViewSet(NetBoxModelViewSet):
     queryset = AssetMapping.objects.select_related("requisition")
     serializer_class = AssetMappingSerializer
     filterset_class = AssetMappingFilterSet
+
+
+class MetadataContextViewSet(NetBoxModelViewSet):
+    # No further destroy()/perform_destroy() override needed: a built-in
+    # row's MetadataContext.delete() raises ProtectedError, which NetBox's
+    # DRF exception handler already turns into a 409 (the same path as any
+    # on_delete=PROTECT FK elsewhere in NetBox core).
+    queryset = MetadataContext.objects.all()
+    serializer_class = MetadataContextSerializer
+    filterset_class = MetadataContextFilterSet
+
+
+class MetadataKeyViewSet(NetBoxModelViewSet):
+    # No further destroy()\perform_destroy() override needed: same rationale
+    # as MetadataContextViewSet above — MetadataKey.delete() raises
+    # ProtectedError for built-in rows, which NetBox's DRF exception handler
+    # already turns into a 409.
+    queryset = MetadataKey.objects.select_related("context")
+    serializer_class = MetadataKeySerializer
+    filterset_class = MetadataKeyFilterSet
 
 
 class MetadataEntryViewSet(NetBoxModelViewSet):

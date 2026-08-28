@@ -12,7 +12,9 @@ from .models import (
     AssetMapping,
     DiscoveredNode,
     DiscoveryScan,
+    MetadataContext,
     MetadataEntry,
+    MetadataKey,
     MonitoredInterface,
     MonitoredService,
     MonitoringDetector,
@@ -272,7 +274,14 @@ class NodeDiffTable(BaseTable):
             return "—"
         base = self.server_url.rstrip("/")
         url = f"{base}/element/node.jsp?node={record.opennms_node_id}"
-        return format_html('<a href="{}">{}</a>', url, record.opennms_node_id)
+        # The live OpenNMS label (issue #38) — not record.label, which is the
+        # desired/NetBox-side name and can differ from what's actually live in
+        # OpenNMS for a "changed" row mid-rename. Falls back to the numeric id
+        # only if OpenNMS somehow didn't report a label for this node.
+        text = record.opennms_node_label or record.opennms_node_id
+        return format_html(
+            '<a href="{}" target="_blank" rel="noopener">{}</a>', url, text
+        )
 
     def render_changes(self, record):
         return "; ".join(record.changes) or "—"
@@ -680,6 +689,46 @@ class AssetMappingTable(NetBoxTable):
             "actions",
         )
         default_columns = ("requisition", "netbox_source", "asset_field")
+
+
+class MetadataContextTable(NetBoxTable):
+    name = tables.Column(linkify=True)
+    is_builtin = columns.BooleanColumn(verbose_name="Built-in")
+
+    class Meta(NetBoxTable.Meta):
+        model = MetadataContext
+        fields = (
+            "pk",
+            "id",
+            "name",
+            "is_builtin",
+            "description",
+            "created",
+            "last_updated",
+            "actions",
+        )
+        default_columns = ("name", "is_builtin", "description")
+
+
+class MetadataKeyTable(NetBoxTable):
+    name = tables.Column(linkify=True)
+    context = tables.Column(linkify=True)
+    is_builtin = columns.BooleanColumn(verbose_name="Built-in")
+
+    class Meta(NetBoxTable.Meta):
+        model = MetadataKey
+        fields = (
+            "pk",
+            "id",
+            "name",
+            "context",
+            "is_builtin",
+            "description",
+            "created",
+            "last_updated",
+            "actions",
+        )
+        default_columns = ("name", "context", "is_builtin", "description")
 
 
 class MetadataEntryTable(NetBoxTable):

@@ -20,6 +20,7 @@ from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.db.models import ProtectedError
 from django.urls import reverse
 from django.utils import timezone
 from netbox.models import NetBoxModel
@@ -522,13 +523,161 @@ class AssetMapping(NetBoxModel):
             )
 
 
+class MetadataContext(NetBoxModel):
+    """A registered OpenNMS metadata Context (RD-3, issue #41).
+
+    OpenNMS fixes five built-in contexts — ``node``, ``requisition``,
+    ``interface``, ``service``, ``pattern`` (see the Horizon deep-dive doc on
+    meta-data, "Metadata Contexts") — seeded here with ``is_builtin=True`` and
+    protected from deletion. Users may register their own by prefixing the
+    name ``X-``, OpenNMS's own reservation rule so a user-defined context never
+    collides with a future built-in one (``clean()`` below enforces this for
+    anything not seeded as built-in).
+
+    ``MetadataEntry.context`` stays a plain ``CharField`` (not a ForeignKey to
+    this table): the relationship mirrors ``AssetMapping.asset_field``, which
+    is also a validated ``CharField`` against a known set (``catalog.
+    get_asset_fields()``) rather than a hard FK — avoiding a schema change (and
+    a data migration re-typing every existing row) to the already-shipped
+    ``MetadataEntry`` table for what is fundamentally a name-registry check.
+    """
+
+    name = models.CharField(max_length=64, unique=True)
+    # Seeded by the 0020 migration; not exposed on the edit form (an
+    # is_builtin row is only ever created there, never through the UI).
+    is_builtin = models.BooleanField(default=False, editable=False)
+    description = models.CharField(max_length=200, blank=True)
+
+    class Meta:
+        ordering = ("name",)
+        verbose_name = "metadata context"
+        verbose_name_plural = "metadata contexts"
+
+    def __str__(self):
+        return self.name
+
+    def get_absolute_url(self):
+        return reverse("plugins:netbox_opennms:metadatacontext", args=[self.pk])
+
+    def clean(self):
+        super().clean()
+        if self.pk and self.is_builtin:
+            # Renaming a built-in row (e.g. via a PATCH through the API,
+            # which bypasses MetadataContextEditView's is_builtin=False
+            # queryset scoping) would silently break OpenNMS compatibility
+            # for anything already relying on the original name. Identity is
+            # immutable once seeded; description is still editable.
+            original_name = (
+                MetadataContext.objects.filter(pk=self.pk)
+                .values_list("name", flat=True)
+                .first()
+            )
+            if original_name is not None and original_name != self.name:
+                raise ValidationError(
+                    {
+                        "name": f"{original_name!r} is a built-in OpenNMS context; "
+                        "its name cannot be changed."
+                    }
+                )
+        if self.name and not self.is_builtin and not self.name.startswith("X-"):
+            raise ValidationError({"name": "A custom context must be prefixed 'X-'."})
+
+    def delete(self, *args, **kwargs):
+        # Defense in depth for ORM/API/management-shell deletes; the CRUD
+        # views additionally scope their querysets to exclude built-in rows
+        # (see MetadataContextDeleteView/MetadataContextBulkDeleteView) since
+        # a bulk queryset.delete() never calls an instance's delete() method
+        # and so would otherwise bypass this check entirely.
+        if self.is_builtin:
+            raise ProtectedError(
+                f"{self.name!r} is a built-in OpenNMS context and cannot be deleted.",
+                {self},
+            )
+        return super().delete(*args, **kwargs)
+
+
+class MetadataKey(NetBoxModel):
+    """A registered OpenNMS metadata Key, scoped to a Context (RD-3, issue #41).
+
+    OpenNMS's metadata documentation (Horizon deep-dive, "Metadata Contexts")
+    fixes a vocabulary of keys for the ``node``, ``interface`` and ``service``
+    contexts (e.g. node's ``foreign-source``, ``sys-location``); ``requisition``
+    and ``pattern`` carry no such vocabulary and are seeded with none here.
+    Unlike ``MetadataContext.name``, OpenNMS defines **no** naming-reservation
+    rule for user-added keys (no 'X-'-prefix requirement) — a custom key can be
+    named freely, so ``clean()`` below only blocks renaming a built-in row, not
+    the shape of a custom one.
+
+    ``MetadataEntry.key`` stays a plain ``CharField`` (not a ForeignKey to this
+    table), for the same reason documented on ``MetadataContext``: a validated
+    CharField against a known set — here, scoped by the entry's own
+    ``context`` — rather than a schema change to the already-shipped table.
+    """
+
+    context = models.ForeignKey(
+        to=MetadataContext, on_delete=models.CASCADE, related_name="keys"
+    )
+    name = models.CharField(max_length=100)
+    # Seeded by the 0021 migration; not exposed on the edit form.
+    is_builtin = models.BooleanField(default=False, editable=False)
+    description = models.CharField(max_length=200, blank=True)
+
+    class Meta:
+        ordering = ("context", "name")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("context", "name"),
+                name="%(app_label)s_%(class)s_unique_key",
+            ),
+        ]
+        verbose_name = "metadata key"
+        verbose_name_plural = "metadata keys"
+
+    def __str__(self):
+        return f"{self.context}: {self.name}"
+
+    def get_absolute_url(self):
+        return reverse("plugins:netbox_opennms:metadatakey", args=[self.pk])
+
+    def clean(self):
+        super().clean()
+        if self.pk and self.is_builtin:
+            original_name = (
+                MetadataKey.objects.filter(pk=self.pk)
+                .values_list("name", flat=True)
+                .first()
+            )
+            if original_name is not None and original_name != self.name:
+                raise ValidationError(
+                    {
+                        "name": f"{original_name!r} is a built-in OpenNMS key; "
+                        "its name cannot be changed."
+                    }
+                )
+
+    def delete(self, *args, **kwargs):
+        # Defense in depth; see MetadataContext.delete() for why the CRUD
+        # views additionally scope their querysets to exclude built-in rows.
+        if self.is_builtin:
+            raise ProtectedError(
+                f"{self.name!r} is a built-in OpenNMS key and cannot be deleted.",
+                {self},
+            )
+        return super().delete(*args, **kwargs)
+
+
 class MetadataEntry(NetBoxModel):
     """A metadata triad at node / interface / service scope on a Requisition (RD-3).
 
     Rendered as ``<meta-data context=… key=… value=…/>`` under the matching element.
-    ``context`` defaults to ``requisition``; a custom context MUST be ``X-``-prefixed.
-    The value is a literal or resolved per member from ``value_source`` (a curated
-    attribute or ``cf_<name>``); an unresolved value omits the ``<meta-data>``.
+    ``context`` must always name a registered ``MetadataContext``. ``key`` is
+    checked against the ``MetadataKey`` registry only for a context that
+    actually has registered keys (``node``/``interface``/``service`` are
+    always seeded with OpenNMS's documented vocabulary; ``requisition`` and
+    ``pattern`` have none and so stay freeform, matching real OpenNMS
+    behaviour — see ``MetadataKey``). The value is a literal or resolved per
+    member from ``value_source`` (a curated attribute or ``cf_<name>``); an
+    unresolved value omits the ``<meta-data>``.
     """
 
     requisition = models.ForeignKey(
@@ -562,13 +711,39 @@ class MetadataEntry(NetBoxModel):
 
     def clean(self):
         super().clean()
-        if self.context != "requisition" and not self.context.startswith("X-"):
+        if (
+            self.context
+            and not MetadataContext.objects.filter(name=self.context).exists()
+        ):
             raise ValidationError(
                 {
-                    "context": "A custom context must be prefixed 'X-' (or use "
-                    "'requisition')."
+                    "context": f"Unknown context {self.context!r}. Register it "
+                    "first (custom contexts must be 'X-'-prefixed) before "
+                    "using it here."
                 }
             )
+        if self.context and self.key:
+            # Opt-in enforcement, not universal: OpenNMS documents a fixed
+            # key vocabulary for node/interface/service (seeded by migration
+            # 0021) but none at all for requisition/pattern (Horizon
+            # deep-dive doc, "Metadata Contexts") — so a context only
+            # constrains its keys once it actually has at least one
+            # registered. A context with zero registered keys (either of
+            # those two, or a custom one nobody has curated yet) stays fully
+            # freeform, matching real OpenNMS behaviour instead of
+            # retroactively over-restricting it.
+            context_keys = MetadataKey.objects.filter(context__name=self.context)
+            if (
+                context_keys.exists()
+                and not context_keys.filter(name=self.key).exists()
+            ):
+                raise ValidationError(
+                    {
+                        "key": f"Unknown key {self.key!r} for context "
+                        f"{self.context!r}. Register it first before using "
+                        "it here."
+                    }
+                )
         if not self.value_source and not self.literal_value:
             raise ValidationError("Set a value source or a literal value.")
         if self.value_source and self.literal_value:

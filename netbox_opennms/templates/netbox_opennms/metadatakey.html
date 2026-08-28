@@ -1,0 +1,20 @@
+{# Copyright 2026 Ronny Trommer <ronny@no42.org> #}
+{# SPDX-License-Identifier: MIT #}
+{% extends 'generic/object.html' %}
+{% load helpers %}
+
+{% block content %}
+  <div class="row">
+    <div class="col col-md-6">
+      <div class="card">
+        <h2 class="card-header">Metadata Key</h2>
+        <table class="table table-hover attr-table">
+          <tr><th scope="row">Context</th><td>{{ object.context|linkify }}</td></tr>
+          <tr><th scope="row">Name</th><td>{{ object.name }}</td></tr>
+          <tr><th scope="row">Built-in</th><td>{% if object.is_builtin %}Yes (protected){% else %}No{% endif %}</td></tr>
+          <tr><th scope="row">Description</th><td>{{ object.description|placeholder }}</td></tr>
+        </table>
+      </div>
+    </div>
+  </div>
+{% endblock %}

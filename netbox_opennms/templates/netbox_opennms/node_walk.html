@@ -26,6 +26,115 @@
   </div>
 
   <div class="row mt-3">
+    <div class="col col-md-6">
+      <div class="card">
+        <h2 class="card-header">Categories</h2>
+        <div class="card-body">
+          {% for row in category_rows %}
+            {% if row.already_exists %}
+              <span class="badge text-bg-green">{{ row.name }}</span>
+              <small class="text-muted">already exists</small>
+            {% elif row.pending_policy %}
+              <span class="badge text-bg-blue">{{ row.name }}</span>
+              <small class="text-muted">would be created by policy</small>
+            {% else %}
+              <span class="badge text-bg-secondary">{{ row.name }}</span>
+            {% endif %}
+          {% empty %}
+            <p class="text-muted mb-0">No categories reported for this node.</p>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+    <div class="col col-md-6">
+      <div class="card">
+        <h2 class="card-header">Assets</h2>
+        <table class="table table-hover">
+          <thead>
+            <tr>
+              <th>Field</th>
+              <th>Value</th>
+              <th>Asset Mapping</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in asset_rows %}
+              <tr>
+                <td>{{ row.field }}</td>
+                <td>{{ row.value }}</td>
+                <td>
+                  {% if row.mapped %}
+                    <span class="badge text-bg-green">Mapped</span>
+                  {% else %}
+                    <span class="badge text-bg-secondary">Unmapped</span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="3" class="text-muted">No asset record fields reported for this node.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="row mt-3">
+    <div class="col col-md-12">
+      <div class="card">
+        <h2 class="card-header">SNMP Metadata</h2>
+        {% if snmp_metadata %}
+          <table class="table table-hover attr-table">
+            {% for key, value in snmp_metadata.items %}
+              <tr><th scope="row">{{ key }}</th><td>{{ value }}</td></tr>
+            {% endfor %}
+          </table>
+        {% else %}
+          <div class="card-body">
+            <p class="text-muted mb-0">No SNMP metadata reported for this node.</p>
+          </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="row mt-3">
+    <div class="col col-md-12">
+      <div class="card">
+        <h2 class="card-header">IP Interfaces &amp; Monitored Services</h2>
+        <table class="table table-hover">
+          <thead>
+            <tr>
+              <th>IP Address</th>
+              <th>Role</th>
+              <th>Netmask</th>
+              <th>Services</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in live_interface_rows %}
+              <tr>
+                <td>{{ row.interface.ip_address }}</td>
+                <td>{{ row.interface.role }}</td>
+                <td>{{ row.interface.netmask|placeholder }}</td>
+                <td>
+                  {% for name in row.services %}
+                    <span class="badge text-bg-secondary">{{ name }}</span>
+                  {% empty %}
+                    <span class="text-muted">—</span>
+                  {% endfor %}
+                </td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="4" class="text-muted">No IP interfaces available.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="row mt-3">
     <div class="col col-md-12">
       <div class="card">
         <h2 class="card-header">SNMP Interfaces</h2>

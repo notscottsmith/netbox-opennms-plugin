@@ -15,7 +15,9 @@ from ..models import (
     AssetMapping,
     DiscoveredNode,
     DiscoveryScan,
+    MetadataContext,
     MetadataEntry,
+    MetadataKey,
     MonitoredInterface,
     MonitoredService,
     MonitoringDetector,
@@ -445,6 +447,51 @@ class DiscoveredNodeSerializer(NetBoxModelSerializer):
         serializer = get_serializer_for_model(obj.matched_object)
         context = {"request": self.context["request"]}
         return serializer(obj.matched_object, nested=True, context=context).data
+
+
+class MetadataContextSerializer(NetBoxModelSerializer):
+    url = serializers.HyperlinkedIdentityField(
+        view_name="plugins-api:netbox_opennms-api:metadatacontext-detail"
+    )
+
+    class Meta:
+        model = MetadataContext
+        fields = (
+            "id",
+            "url",
+            "display",
+            "name",
+            "is_builtin",
+            "description",
+            "tags",
+            "custom_fields",
+            "created",
+            "last_updated",
+        )
+        brief_fields = ("id", "url", "display", "name")
+
+
+class MetadataKeySerializer(NetBoxModelSerializer):
+    url = serializers.HyperlinkedIdentityField(
+        view_name="plugins-api:netbox_opennms-api:metadatakey-detail"
+    )
+
+    class Meta:
+        model = MetadataKey
+        fields = (
+            "id",
+            "url",
+            "display",
+            "context",
+            "name",
+            "is_builtin",
+            "description",
+            "tags",
+            "custom_fields",
+            "created",
+            "last_updated",
+        )
+        brief_fields = ("id", "url", "display", "name")
 
 
 class MetadataEntrySerializer(NetBoxModelSerializer):

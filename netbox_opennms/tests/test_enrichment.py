@@ -18,7 +18,12 @@ from ipam.models import IPAddress
 
 from netbox_opennms.enrichment import resolve_source
 from netbox_opennms.membership import resolve_node
-from netbox_opennms.models import AssetMapping, MetadataEntry, Requisition
+from netbox_opennms.models import (
+    AssetMapping,
+    MetadataContext,
+    MetadataEntry,
+    Requisition,
+)
 
 
 class ResolveSourceTest(SimpleTestCase):
@@ -73,6 +78,7 @@ class MetadataEntryValidationTest(TestCase):
         cls.req = Requisition.objects.create(
             name="meta-req", filter_params={"role": ["x"]}
         )
+        MetadataContext.objects.create(name="X-netbox")
 
     def _entry(self, **kw):
         kw.setdefault("requisition", self.req)
@@ -118,16 +124,23 @@ class EnrichmentResolveTest(TestCase):
         cls.req = Requisition.objects.create(
             name="enrich", filter_params={"role": ["rtr"]}, services=["ICMP"]
         )
+        MetadataContext.objects.create(name="X-netbox")
         AssetMapping.objects.create(
             requisition=cls.req, netbox_source="serial", asset_field="serialNumber"
         )
         MetadataEntry.objects.create(
-            requisition=cls.req, scope="node", context="requisition",
-            key="owner", literal_value="neteng",
+            requisition=cls.req,
+            scope="node",
+            context="requisition",
+            key="owner",
+            literal_value="neteng",
         )
         MetadataEntry.objects.create(
-            requisition=cls.req, scope="interface", context="X-netbox",
-            key="src", value_source="name",
+            requisition=cls.req,
+            scope="interface",
+            context="X-netbox",
+            key="src",
+            value_source="name",
         )
 
     def test_resolve_node_attaches_enrichment(self):
@@ -142,6 +155,4 @@ class EnrichmentResolveTest(TestCase):
             requisition=self.req, netbox_source="asset_tag", asset_field="assetNumber"
         )
         node, _ = resolve_node(self.device, self.req, None)
-        self.assertNotIn(
-            "assetNumber", [name for name, _ in node.assets]
-        )
+        self.assertNotIn("assetNumber", [name for name, _ in node.assets])

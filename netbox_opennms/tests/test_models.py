@@ -12,6 +12,7 @@ from dcim.models import (
 )
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, connection, transaction
+from django.db.models import ProtectedError
 from django.test import TestCase
 from django.utils import timezone
 from ipam.models import IPAddress
@@ -19,6 +20,9 @@ from tenancy.models import Tenant
 
 from netbox_opennms.models import (
     DiscoveryScan,
+    MetadataContext,
+    MetadataEntry,
+    MetadataKey,
     MonitoredService,
     MonitoringDetector,
     MonitoringExclusion,
@@ -511,3 +515,252 @@ class DiscoveryScanTest(TestCase):
         scan.mark_triggered()
         scan.settled_at = timezone.now()
         self.assertEqual(scan.status, "settled")
+
+
+class MetadataContextTest(TestCase):
+    """MetadataContext registry: seeded base contexts, X- validation, protection."""
+
+    def test_base_contexts_are_seeded_by_migration(self):
+        # Migration 0020 seeds these five as is_builtin=True; every test's DB
+        # already has them applied (migrations run before the test suite).
+        seeded = set(
+            MetadataContext.objects.filter(is_builtin=True).values_list(
+                "name", flat=True
+            )
+        )
+        self.assertEqual(
+            seeded, {"node", "requisition", "interface", "service", "pattern"}
+        )
+
+    def test_custom_context_requires_x_prefix(self):
+        context = MetadataContext(name="custom")
+        with self.assertRaises(ValidationError):
+            context.full_clean()
+
+    def test_x_prefixed_custom_context_is_valid(self):
+        context = MetadataContext(name="X-billing")
+        context.full_clean()  # does not raise
+        context.save()
+        self.assertTrue(MetadataContext.objects.filter(name="X-billing").exists())
+
+    def test_builtin_context_cannot_be_deleted(self):
+        builtin = MetadataContext.objects.get(name="node")
+        with self.assertRaises(ProtectedError):
+            builtin.delete()
+        self.assertTrue(MetadataContext.objects.filter(pk=builtin.pk).exists())
+
+    def test_custom_context_can_be_deleted(self):
+        context = MetadataContext.objects.create(name="X-scratch")
+        context.delete()
+        self.assertFalse(MetadataContext.objects.filter(name="X-scratch").exists())
+
+    def test_builtin_context_cannot_be_renamed(self):
+        # Closes an API-shaped hole: MetadataContextEditView's queryset
+        # excludes is_builtin rows, but a direct PATCH (or any other write
+        # path that calls full_clean(), which NetBoxModelSerializer.
+        # validate() does) would otherwise be able to rename a builtin row
+        # since is_builtin=True short-circuits the X- prefix check.
+        builtin = MetadataContext.objects.get(name="interface")
+        builtin.name = "X-hijacked"
+        with self.assertRaises(ValidationError):
+            builtin.full_clean()
+        self.assertTrue(MetadataContext.objects.filter(name="interface").exists())
+
+    def test_builtin_context_description_can_be_edited(self):
+        # Identity (name) is immutable once seeded; other fields are not.
+        builtin = MetadataContext.objects.get(name="pattern")
+        builtin.description = "Pattern-matching context"
+        builtin.full_clean()  # does not raise
+        builtin.save()
+        builtin.refresh_from_db()
+        self.assertEqual(builtin.description, "Pattern-matching context")
+
+    def test_custom_context_can_be_renamed(self):
+        context = MetadataContext.objects.create(name="X-old-name")
+        context.name = "X-new-name"
+        context.full_clean()  # does not raise
+
+
+class MetadataEntryContextValidationTest(TestCase):
+    """MetadataEntry.context must name a registered MetadataContext (issue #41)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.req = Requisition.objects.create(
+            name="netbox.raleigh.router-meta", filter_params=FILTER
+        )
+
+    def test_seeded_base_context_is_valid(self):
+        entry = MetadataEntry(
+            requisition=self.req,
+            scope="node",
+            context="requisition",
+            key="k1",
+            literal_value="v",
+        )
+        entry.full_clean()  # does not raise
+
+    def test_unregistered_context_is_rejected(self):
+        entry = MetadataEntry(
+            requisition=self.req,
+            scope="node",
+            context="X-not-registered",
+            key="k1",
+            literal_value="v",
+        )
+        with self.assertRaises(ValidationError):
+            entry.full_clean()
+
+    def test_registered_custom_context_is_valid(self):
+        MetadataContext.objects.create(name="X-billing")
+        entry = MetadataEntry(
+            requisition=self.req,
+            scope="node",
+            context="X-billing",
+            key="k1",
+            literal_value="v",
+        )
+        entry.full_clean()  # does not raise
+
+    def test_unknown_non_x_context_is_rejected(self):
+        entry = MetadataEntry(
+            requisition=self.req,
+            scope="node",
+            context="bogus",
+            key="k1",
+            literal_value="v",
+        )
+        with self.assertRaises(ValidationError):
+            entry.full_clean()
+
+
+class MetadataKeyTest(TestCase):
+    """MetadataKey registry: seeded base keys, per-context uniqueness, protection."""
+
+    def test_node_keys_are_seeded_by_migration(self):
+        # Migration 0021 seeds OpenNMS's documented node vocabulary as
+        # is_builtin=True; every test's DB already has them applied.
+        seeded = set(
+            MetadataKey.objects.filter(
+                context__name="node", is_builtin=True
+            ).values_list("name", flat=True)
+        )
+        self.assertIn("foreign-source", seeded)
+        self.assertIn("sys-location", seeded)
+
+    def test_requisition_and_pattern_have_no_seeded_keys(self):
+        # No documented vocabulary for these two contexts (Horizon deep-dive
+        # doc) -- seeding any would be inventing a restriction OpenNMS
+        # doesn't itself impose.
+        self.assertFalse(
+            MetadataKey.objects.filter(context__name="requisition").exists()
+        )
+        self.assertFalse(MetadataKey.objects.filter(context__name="pattern").exists())
+
+    def test_same_key_name_allowed_under_different_contexts(self):
+        node = MetadataContext.objects.get(name="node")
+        interface = MetadataContext.objects.get(name="interface")
+        MetadataKey.objects.create(context=node, name="X-shared")
+        # Does not raise: uniqueness is scoped to (context, name), not name
+        # alone.
+        MetadataKey.objects.create(context=interface, name="X-shared")
+
+    def test_duplicate_key_name_in_same_context_is_rejected(self):
+        node = MetadataContext.objects.get(name="node")
+        MetadataKey.objects.create(context=node, name="X-dup")
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                MetadataKey.objects.create(context=node, name="X-dup")
+
+    def test_builtin_key_cannot_be_deleted(self):
+        builtin = MetadataKey.objects.get(context__name="node", name="label")
+        with self.assertRaises(ProtectedError):
+            builtin.delete()
+        self.assertTrue(MetadataKey.objects.filter(pk=builtin.pk).exists())
+
+    def test_custom_key_can_be_deleted(self):
+        node = MetadataContext.objects.get(name="node")
+        key = MetadataKey.objects.create(context=node, name="X-scratch")
+        key.delete()
+        self.assertFalse(MetadataKey.objects.filter(pk=key.pk).exists())
+
+    def test_builtin_key_cannot_be_renamed(self):
+        builtin = MetadataKey.objects.get(context__name="node", name="os")
+        builtin.name = "X-hijacked"
+        with self.assertRaises(ValidationError):
+            builtin.full_clean()
+
+    def test_custom_key_has_no_naming_restriction(self):
+        # Unlike MetadataContext.name, OpenNMS defines no reservation rule
+        # for custom keys -- any name is valid, no 'X-' prefix required.
+        node = MetadataContext.objects.get(name="node")
+        key = MetadataKey(context=node, name="anything-goes")
+        key.full_clean()  # does not raise
+
+
+class MetadataEntryKeyValidationTest(TestCase):
+    """MetadataEntry.key is opt-in validated against MetadataKey (#41 follow-up)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.req = Requisition.objects.create(
+            name="netbox.raleigh.router-metakey", filter_params=FILTER
+        )
+
+    def test_seeded_node_key_is_valid(self):
+        entry = MetadataEntry(
+            requisition=self.req,
+            scope="node",
+            context="node",
+            key="sys-location",
+            literal_value="rack-1",
+        )
+        entry.full_clean()  # does not raise
+
+    def test_unregistered_node_key_is_rejected(self):
+        # "node" has a seeded vocabulary (migration 0021), so it is enforced.
+        entry = MetadataEntry(
+            requisition=self.req,
+            scope="node",
+            context="node",
+            key="not-a-real-key",
+            literal_value="v",
+        )
+        with self.assertRaises(ValidationError):
+            entry.full_clean()
+
+    def test_unregistered_key_under_requisition_context_is_freeform(self):
+        # "requisition" has zero registered keys -- no enforcement applies,
+        # matching real OpenNMS behaviour (no documented vocabulary there).
+        entry = MetadataEntry(
+            requisition=self.req,
+            scope="node",
+            context="requisition",
+            key="anything",
+            literal_value="v",
+        )
+        entry.full_clean()  # does not raise
+
+    def test_unregistered_key_under_custom_context_with_no_keys_is_freeform(self):
+        MetadataContext.objects.create(name="X-billing")
+        entry = MetadataEntry(
+            requisition=self.req,
+            scope="node",
+            context="X-billing",
+            key="anything",
+            literal_value="v",
+        )
+        entry.full_clean()  # does not raise
+
+    def test_once_a_custom_context_has_a_registered_key_it_is_enforced(self):
+        context = MetadataContext.objects.create(name="X-billing")
+        MetadataKey.objects.create(context=context, name="cost-centre")
+        entry = MetadataEntry(
+            requisition=self.req,
+            scope="node",
+            context="X-billing",
+            key="not-cost-centre",
+            literal_value="v",
+        )
+        with self.assertRaises(ValidationError):
+            entry.full_clean()
