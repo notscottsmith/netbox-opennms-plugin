@@ -17,6 +17,7 @@ from ..models import (
     DiscoveryScan,
     MetadataContext,
     MetadataEntry,
+    MetadataKey,
     MonitoredInterface,
     MonitoredService,
     MonitoringDetector,
@@ -459,6 +460,29 @@ class MetadataContextSerializer(NetBoxModelSerializer):
             "id",
             "url",
             "display",
+            "name",
+            "is_builtin",
+            "description",
+            "tags",
+            "custom_fields",
+            "created",
+            "last_updated",
+        )
+        brief_fields = ("id", "url", "display", "name")
+
+
+class MetadataKeySerializer(NetBoxModelSerializer):
+    url = serializers.HyperlinkedIdentityField(
+        view_name="plugins-api:netbox_opennms-api:metadatakey-detail"
+    )
+
+    class Meta:
+        model = MetadataKey
+        fields = (
+            "id",
+            "url",
+            "display",
+            "context",
             "name",
             "is_builtin",
             "description",

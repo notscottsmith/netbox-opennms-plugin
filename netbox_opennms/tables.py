@@ -14,6 +14,7 @@ from .models import (
     DiscoveryScan,
     MetadataContext,
     MetadataEntry,
+    MetadataKey,
     MonitoredInterface,
     MonitoredService,
     MonitoringDetector,
@@ -707,6 +708,27 @@ class MetadataContextTable(NetBoxTable):
             "actions",
         )
         default_columns = ("name", "is_builtin", "description")
+
+
+class MetadataKeyTable(NetBoxTable):
+    name = tables.Column(linkify=True)
+    context = tables.Column(linkify=True)
+    is_builtin = columns.BooleanColumn(verbose_name="Built-in")
+
+    class Meta(NetBoxTable.Meta):
+        model = MetadataKey
+        fields = (
+            "pk",
+            "id",
+            "name",
+            "context",
+            "is_builtin",
+            "description",
+            "created",
+            "last_updated",
+            "actions",
+        )
+        default_columns = ("name", "context", "is_builtin", "description")
 
 
 class MetadataEntryTable(NetBoxTable):

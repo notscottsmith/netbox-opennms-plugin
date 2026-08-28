@@ -71,6 +71,20 @@ menu = PluginMenu(
                         ),
                     ),
                 ),
+                # Same rationale as Metadata Contexts above (issue #41
+                # follow-up): a shared, cross-Requisition registry, not
+                # surfaced only inline on a single object.
+                PluginMenuItem(
+                    link="plugins:netbox_opennms:metadatakey_list",
+                    link_text=labels.NAV_METADATA_KEYS,
+                    buttons=(
+                        PluginMenuButton(
+                            link="plugins:netbox_opennms:metadatakey_add",
+                            title="Add",
+                            icon_class="mdi mdi-plus-thick",
+                        ),
+                    ),
+                ),
             ),
         ),
         (

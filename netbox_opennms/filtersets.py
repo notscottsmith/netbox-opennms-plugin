@@ -11,6 +11,7 @@ from .models import (
     DiscoveryScan,
     MetadataContext,
     MetadataEntry,
+    MetadataKey,
     MonitoredInterface,
     MonitoredService,
     MonitoringDetector,
@@ -160,6 +161,17 @@ class MetadataContextFilterSet(NetBoxModelFilterSet):
     class Meta:
         model = MetadataContext
         fields = ("id", "name", "is_builtin")
+
+    def search(self, queryset, name, value):
+        if value:
+            return queryset.filter(name__icontains=value)
+        return queryset
+
+
+class MetadataKeyFilterSet(NetBoxModelFilterSet):
+    class Meta:
+        model = MetadataKey
+        fields = ("id", "name", "context", "is_builtin")
 
     def search(self, queryset, name, value):
         if value:

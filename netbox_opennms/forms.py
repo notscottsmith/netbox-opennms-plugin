@@ -43,6 +43,7 @@ from .models import (
     DiscoveryScan,
     MetadataContext,
     MetadataEntry,
+    MetadataKey,
     MonitoredInterface,
     MonitoredService,
     MonitoringDetector,
@@ -870,6 +871,23 @@ class MetadataContextForm(NetBoxModelForm):
         }
 
 
+class MetadataKeyForm(NetBoxModelForm):
+    """Register a custom OpenNMS metadata Key, scoped to a Context (issue #41).
+
+    Only for user-defined keys — OpenNMS's documented built-in keys for the
+    node/interface/service contexts are seeded (and protected from deletion)
+    by migration ``0021``, not created through this form.
+    """
+
+    class Meta:
+        model = MetadataKey
+        fields = ("context", "name", "description", "tags")
+        help_texts = {
+            "name": "OpenNMS places no naming-reservation rule on custom "
+            "keys (unlike contexts, which must be 'X-'-prefixed).",
+        }
+
+
 class MetadataEntryForm(NetBoxModelForm):
     """Define a metadata triad at a scope on a Requisition (RD-3)."""
 
@@ -901,7 +919,7 @@ class MetadataEntryForm(NetBoxModelForm):
         current = getattr(self.instance, "context", "") or ""
         if current and current not in names:
             names.append(current)
-        add_url = reverse("plugins:netbox_opennms:metadatacontext_add")
+        context_add_url = reverse("plugins:netbox_opennms:metadatacontext_add")
         self.fields["context"] = forms.ChoiceField(
             choices=[(n, n) for n in names],
             label=_("Context"),
@@ -909,6 +927,23 @@ class MetadataEntryForm(NetBoxModelForm):
                 "One of OpenNMS's built-in contexts, or a registered custom "
                 'one. <a href="{}" target="_blank" rel="noopener">Register a '
                 "new 'X-' context</a>.",
-                add_url,
+                context_add_url,
             ),
+        )
+        # Key stays a plain text field, unlike context above (issue #41
+        # follow-up): MetadataEntry.clean() only enforces the MetadataKey
+        # registry for a context that actually has registered keys
+        # (node/interface/service) — requisition/pattern (and any custom
+        # context nobody has curated yet) stay genuinely freeform, matching
+        # real OpenNMS behaviour. A hard ChoiceField here would wrongly block
+        # that freeform case, so this is a help-text pointer, not a
+        # constraint the form itself imposes.
+        key_list_url = reverse("plugins:netbox_opennms:metadatakey_list")
+        self.fields["key"].help_text = format_html(
+            "For node/interface/service contexts, must match a key already "
+            'registered under that context (see the <a href="{}" '
+            'target="_blank" rel="noopener">Metadata Keys registry</a>). '
+            "Other contexts (e.g. requisition, pattern, or a custom context "
+            "with no keys registered yet) accept any key.",
+            key_list_url,
         )

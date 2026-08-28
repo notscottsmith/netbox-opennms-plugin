@@ -23,6 +23,7 @@ from netbox_opennms.forms import (
     DiscoveryScanForm,
     MetadataContextForm,
     MetadataEntryForm,
+    MetadataKeyForm,
     MonitoringOverrideForm,
     OpenNMSServerForm,
     RequisitionForm,
@@ -30,6 +31,7 @@ from netbox_opennms.forms import (
 from netbox_opennms.models import (
     MetadataContext,
     MetadataEntry,
+    MetadataKey,
     MonitoredInterface,
     MonitoredService,
     MonitoringOverride,
@@ -547,6 +549,25 @@ class MetadataContextFormTest(TestCase):
     def test_accepts_x_prefixed_name(self):
         form = MetadataContextForm(data={"name": "X-billing", "description": ""})
         self.assertTrue(form.is_valid(), form.errors)
+
+
+class MetadataKeyFormTest(TestCase):
+    def test_accepts_any_name_no_prefix_required(self):
+        # Unlike MetadataContextForm, OpenNMS defines no naming-reservation
+        # rule for custom keys.
+        node = MetadataContext.objects.get(name="node")
+        form = MetadataKeyForm(
+            data={"context": node.pk, "name": "anything-goes", "description": ""}
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_duplicate_name_in_same_context_is_rejected(self):
+        node = MetadataContext.objects.get(name="node")
+        MetadataKey.objects.create(context=node, name="X-dup")
+        form = MetadataKeyForm(
+            data={"context": node.pk, "name": "X-dup", "description": ""}
+        )
+        self.assertFalse(form.is_valid())
 
 
 class MetadataEntryFormContextChoicesTest(TestCase):

@@ -26,6 +26,7 @@ from netbox_opennms.models import (
     DiscoveryScan,
     MetadataContext,
     MetadataEntry,
+    MetadataKey,
     MonitoredInterface,
     MonitoredService,
     MonitoringDetector,
@@ -526,3 +527,40 @@ class MetadataContextAPITest(_NoGraphQL, APIViewTestCases.APIViewTestCase):
 
     def _get_queryset(self):
         return MetadataContext.objects.filter(is_builtin=False)
+
+
+class MetadataKeyAPITest(_NoGraphQL, APIViewTestCases.APIViewTestCase):
+    """See MetadataContextAPITest above for why _get_queryset() is scoped to
+    non-builtin rows -- the same built-in/custom-row-ordering flake risk
+    applies here (Meta.ordering = ("context", "name")).
+    """
+
+    model = MetadataKey
+    view_namespace = "plugins-api:netbox_opennms"
+    brief_fields = ["display", "id", "name", "url"]
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.context = MetadataContext.objects.create(name="X-api-keys")
+        for name in ["X-api-key-1", "X-api-key-2", "X-api-key-3"]:
+            MetadataKey.objects.create(context=cls.context, name=name)
+        cls.create_data = [
+            {
+                "context": cls.context.pk,
+                "name": "X-api-key-4",
+                "description": "created via API",
+            },
+            {
+                "context": cls.context.pk,
+                "name": "X-api-key-5",
+                "description": "created via API",
+            },
+            {
+                "context": cls.context.pk,
+                "name": "X-api-key-6",
+                "description": "created via API",
+            },
+        ]
+
+    def _get_queryset(self):
+        return MetadataKey.objects.filter(is_builtin=False)

@@ -30,8 +30,16 @@
       <div class="card">
         <h2 class="card-header">Categories</h2>
         <div class="card-body">
-          {% for category in categories %}
-            <span class="badge text-bg-secondary">{{ category }}</span>
+          {% for row in category_rows %}
+            {% if row.already_exists %}
+              <span class="badge text-bg-green">{{ row.name }}</span>
+              <small class="text-muted">already exists</small>
+            {% elif row.pending_policy %}
+              <span class="badge text-bg-blue">{{ row.name }}</span>
+              <small class="text-muted">would be created by policy</small>
+            {% else %}
+              <span class="badge text-bg-secondary">{{ row.name }}</span>
+            {% endif %}
           {% empty %}
             <p class="text-muted mb-0">No categories reported for this node.</p>
           {% endfor %}

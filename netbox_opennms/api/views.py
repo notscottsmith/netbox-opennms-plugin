@@ -10,6 +10,7 @@ from ..filtersets import (
     DiscoveryScanFilterSet,
     MetadataContextFilterSet,
     MetadataEntryFilterSet,
+    MetadataKeyFilterSet,
     MonitoredInterfaceFilterSet,
     MonitoredServiceFilterSet,
     MonitoringDetectorFilterSet,
@@ -25,6 +26,7 @@ from ..models import (
     DiscoveryScan,
     MetadataContext,
     MetadataEntry,
+    MetadataKey,
     MonitoredInterface,
     MonitoredService,
     MonitoringDetector,
@@ -40,6 +42,7 @@ from .serializers import (
     DiscoveryScanSerializer,
     MetadataContextSerializer,
     MetadataEntrySerializer,
+    MetadataKeySerializer,
     MonitoredInterfaceSerializer,
     MonitoredServiceSerializer,
     MonitoringDetectorSerializer,
@@ -103,6 +106,16 @@ class MetadataContextViewSet(NetBoxModelViewSet):
     queryset = MetadataContext.objects.all()
     serializer_class = MetadataContextSerializer
     filterset_class = MetadataContextFilterSet
+
+
+class MetadataKeyViewSet(NetBoxModelViewSet):
+    # No further destroy()\perform_destroy() override needed: same rationale
+    # as MetadataContextViewSet above — MetadataKey.delete() raises
+    # ProtectedError for built-in rows, which NetBox's DRF exception handler
+    # already turns into a 409.
+    queryset = MetadataKey.objects.select_related("context")
+    serializer_class = MetadataKeySerializer
+    filterset_class = MetadataKeyFilterSet
 
 
 class MetadataEntryViewSet(NetBoxModelViewSet):

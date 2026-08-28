@@ -48,6 +48,7 @@ from .models import (
     DiscoveryScan,
     MetadataContext,
     MetadataEntry,
+    MetadataKey,
     MonitoredInterface,
     MonitoredService,
     MonitoringDetector,
@@ -551,6 +552,7 @@ class RequisitionNodeWalkView(PermissionRequiredMixin, View):
         links = []
         node_detail = {}
         categories = []
+        category_rows = []
         asset_rows = []
         live_interface_rows = []
         mapped_asset_fields = set(
@@ -571,6 +573,32 @@ class RequisitionNodeWalkView(PermissionRequiredMixin, View):
                 error = str(exc)
             else:
                 categories = import_node.parse_categories(node_detail)
+                # Cross-reference against this Requisition's own
+                # set-node-category policies (issue #39 follow-up) -- there is
+                # no separate "category mapping" model; a MonitoringPolicy
+                # using that preset already *is* the category-mapping
+                # mechanism (see MonitoringPolicy/presets.py), so this reuses
+                # it rather than inventing a redundant, functionally-inert one.
+                policy_categories = {
+                    policy.parameters.get("category")
+                    for policy in MonitoringPolicy.objects.filter(
+                        requisition=requisition, preset="set-node-category"
+                    )
+                    if policy.parameters.get("category")
+                }
+                category_rows = [
+                    {
+                        "name": name,
+                        # Live on the node AND a configured policy targets it:
+                        # the policy has already taken effect.
+                        "already_exists": name in policy_categories,
+                    }
+                    for name in categories
+                ]
+                # Configured by a policy but not yet live on the node: a sync
+                # would create it.
+                for name in sorted(policy_categories - set(categories)):
+                    category_rows.append({"name": name, "pending_policy": True})
                 asset_record = node_detail.get("assetRecord") or {}
                 asset_rows = [
                     {
@@ -609,7 +637,7 @@ class RequisitionNodeWalkView(PermissionRequiredMixin, View):
                 "opennms_node_id": opennms_node_id,
                 "snmp_interfaces": snmp_interfaces,
                 "links": links,
-                "categories": categories,
+                "category_rows": category_rows,
                 "asset_rows": asset_rows,
                 "snmp_metadata": snmp_metadata,
                 "live_interface_rows": live_interface_rows,
@@ -818,6 +846,41 @@ class MetadataContextBulkDeleteView(generic.BulkDeleteView):
     # only thing protecting built-in rows from a bulk selection.
     queryset = MetadataContext.objects.filter(is_builtin=False)
     table = tables.MetadataContextTable
+
+
+# --- Metadata Key ------------------------------------------------------------
+
+
+class MetadataKeyView(generic.ObjectView):
+    queryset = MetadataKey.objects.select_related("context")
+
+
+class MetadataKeyListView(generic.ObjectListView):
+    queryset = MetadataKey.objects.select_related("context")
+    table = tables.MetadataKeyTable
+    filterset = filtersets.MetadataKeyFilterSet
+
+
+class MetadataKeyEditView(generic.ObjectEditView):
+    # Excludes built-in rows for existing-object lookups — same protection
+    # rationale as MetadataContextEditView above.
+    queryset = MetadataKey.objects.filter(is_builtin=False)
+    form = forms.MetadataKeyForm
+
+
+class MetadataKeyDeleteView(generic.ObjectDeleteView):
+    # Excludes built-in rows so a direct delete attempt 404s instead of
+    # reaching MetadataKey.delete()'s ProtectedError — same rationale as
+    # MetadataContextDeleteView above.
+    queryset = MetadataKey.objects.filter(is_builtin=False)
+
+
+class MetadataKeyBulkDeleteView(generic.BulkDeleteView):
+    # Same exclusion as above — bulk delete uses a queryset.delete(), which
+    # never calls the per-instance delete() override, so this filter is the
+    # only thing protecting built-in rows from a bulk selection.
+    queryset = MetadataKey.objects.filter(is_builtin=False)
+    table = tables.MetadataKeyTable
 
 
 # --- Metadata Entry ---------------------------------------------------------

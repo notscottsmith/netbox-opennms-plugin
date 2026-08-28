@@ -34,6 +34,7 @@ from netbox_opennms.models import (
     DiscoveryScan,
     MetadataContext,
     MetadataEntry,
+    MetadataKey,
     MonitoredInterface,
     MonitoredService,
     MonitoringDetector,
@@ -1070,18 +1071,34 @@ class RequisitionNodeWalkViewTest(TestCase):
         self, mock_from_server, mock_target_server_for
     ):
         # Issue #39: assets that match a configured Asset Mapping are flagged
-        # as such, distinct from ones with no mapping configured.
+        # as such, distinct from ones with no mapping configured. Likewise,
+        # categories already live on the node that a policy also targets are
+        # flagged as already existing, categories only targeted by a policy
+        # are flagged as pending, and categories with no policy at all are
+        # unbadged.
         AssetMapping.objects.create(
             requisition=self.requisition,
             netbox_source="serial",
             asset_field="serialNumber",
+        )
+        MonitoringPolicy.objects.create(
+            requisition=self.requisition,
+            name="cat-routers",
+            preset="set-node-category",
+            parameters={"category": "Routers"},
+        )
+        MonitoringPolicy.objects.create(
+            requisition=self.requisition,
+            name="cat-servers",
+            preset="set-node-category",
+            parameters={"category": "Servers"},
         )
         mock_target_server_for.return_value = self.server
         client = mock_from_server.return_value.__enter__.return_value
         client.list_snmp_interfaces.return_value = []
         client.get_node_links.return_value = None
         client.get_node.return_value = {
-            "categories": {"category": [{"name": "Routers"}]},
+            "categories": {"category": [{"name": "Routers"}, {"name": "Edge"}]},
             "assetRecord": {
                 "serialNumber": "ABC123",
                 "assetNumber": "UNMAPPED-1",
@@ -1091,10 +1108,20 @@ class RequisitionNodeWalkViewTest(TestCase):
         response = self.client.get(self._url())
         content = response.content.decode()
         self.assertIn("Routers", content)
+        self.assertIn("Edge", content)
+        self.assertIn("Servers", content)
+        self.assertIn("already exists", content)
+        self.assertIn("would be created by policy", content)
         self.assertIn("ABC123", content)
         self.assertIn("UNMAPPED-1", content)
         self.assertIn("Mapped", content)
         self.assertIn("Unmapped", content)
+
+        category_rows = {row["name"]: row for row in response.context["category_rows"]}
+        self.assertTrue(category_rows["Routers"]["already_exists"])
+        self.assertFalse(category_rows["Edge"].get("already_exists"))
+        self.assertFalse(category_rows["Edge"].get("pending_policy"))
+        self.assertTrue(category_rows["Servers"]["pending_policy"])
 
     @mock.patch("netbox_opennms.views.target_server_for")
     @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
@@ -1575,6 +1602,88 @@ class MetadataContextProtectionViewTest(TestCase):
         # #41's protection), so it must survive regardless of the response
         # returned for the (partially invalid) selection.
         self.assertTrue(MetadataContext.objects.filter(pk=builtin.pk).exists())
+
+
+class MetadataKeyViewTest(
+    ViewTestCases.GetObjectViewTestCase,
+    ViewTestCases.GetObjectChangelogViewTestCase,
+    ViewTestCases.CreateObjectViewTestCase,
+    ViewTestCases.ListObjectsViewTestCase,
+):
+    """Get/changelog/create/list only -- see MetadataContextViewTest above for
+    why Edit/Delete/BulkDelete aren't exercised through the generic mixins
+    (the same builtin-row-vs-collation ordering flake risk applies here).
+    """
+
+    model = MetadataKey
+
+    def _get_base_url(self):
+        return "plugins:netbox_opennms:metadatakey_{}"
+
+    @classmethod
+    def setUpTestData(cls):
+        context = MetadataContext.objects.create(name="X-vt-keys")
+        for name in ("X-vt-key-1", "X-vt-key-2", "X-vt-key-3"):
+            MetadataKey.objects.create(context=context, name=name)
+        cls.form_data = {
+            "context": context.pk,
+            "name": "X-vt-key-4",
+            "description": "created by the view test suite",
+        }
+
+
+class MetadataKeyProtectionViewTest(TestCase):
+    """Built-in rows are immutable/undeletable through the CRUD views (#41)."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="mk-tester")
+        self.client.force_login(self.user)
+
+    def _grant(self, *codenames):
+        for codename in codenames:
+            self.user.user_permissions.add(
+                Permission.objects.get(
+                    codename=codename, content_type__app_label="netbox_opennms"
+                )
+            )
+
+    def test_builtin_edit_view_404s(self):
+        builtin = MetadataKey.objects.get(context__name="node", name="label")
+        self._grant("change_metadatakey")
+        url = reverse("plugins:netbox_opennms:metadatakey_edit", args=[builtin.pk])
+        self.assertEqual(self.client.get(url).status_code, 404)
+
+    def test_builtin_delete_view_404s(self):
+        builtin = MetadataKey.objects.get(context__name="node", name="label")
+        self._grant("delete_metadatakey")
+        url = reverse("plugins:netbox_opennms:metadatakey_delete", args=[builtin.pk])
+        response = self.client.post(url, data={"confirm": "true"})
+        self.assertEqual(response.status_code, 404)
+        self.assertTrue(MetadataKey.objects.filter(pk=builtin.pk).exists())
+
+    def test_custom_key_delete_view_succeeds(self):
+        context = MetadataContext.objects.get(name="node")
+        custom = MetadataKey.objects.create(context=context, name="X-protection-test")
+        self._grant("delete_metadatakey")
+        url = reverse("plugins:netbox_opennms:metadatakey_delete", args=[custom.pk])
+        response = self.client.post(url, data={"confirm": "true"})
+        self.assertIn(response.status_code, (200, 302))
+        self.assertFalse(MetadataKey.objects.filter(pk=custom.pk).exists())
+
+    def test_bulk_delete_skips_builtin_rows(self):
+        builtin = MetadataKey.objects.get(context__name="node", name="label")
+        context = MetadataContext.objects.get(name="node")
+        custom = MetadataKey.objects.create(context=context, name="X-bulk-test")
+        self._grant("delete_metadatakey")
+        url = reverse("plugins:netbox_opennms:metadatakey_bulk_delete")
+        self.client.post(
+            url,
+            data={"pk": [builtin.pk, custom.pk], "confirm": "true", "_confirm": "1"},
+        )
+        # The builtin row is excluded from BulkDeleteView's queryset (issue
+        # #41's protection), so it must survive regardless of the response
+        # returned for the (partially invalid) selection.
+        self.assertTrue(MetadataKey.objects.filter(pk=builtin.pk).exists())
 
 
 class MetadataEntryViewTest(
