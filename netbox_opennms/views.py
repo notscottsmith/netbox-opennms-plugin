@@ -814,6 +814,19 @@ class MonitoringExclusionBulkDeleteView(generic.BulkDeleteView):
 class DiscoveryScanView(generic.ObjectView):
     queryset = DiscoveryScan.objects.all()
 
+    def get_extra_context(self, request, instance):
+        """Attach a ``DiscoveredNodeTable`` over this scan's nodes (issue #54).
+
+        Reuses the standalone Discovered Nodes list's table (verdict/
+        resolution/completeness badges, sorting, pagination, column
+        picker) instead of the hand-rolled inline ``<table>`` the template
+        used to render — see ``NodeDiffTable`` for the unrelated concept
+        (Requisition pre-sync diff) this is deliberately *not* reusing.
+        """
+        table = tables.DiscoveredNodeTable(instance.discovered_nodes.all())
+        table.configure(request)
+        return {"discovered_nodes_table": table}
+
 
 class DiscoveryScanListView(generic.ObjectListView):
     queryset = DiscoveryScan.objects.all()
