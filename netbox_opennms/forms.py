@@ -18,6 +18,8 @@ from django import forms
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
 from django.db.models import Q
+from django.urls import reverse
+from django.utils.html import format_html
 from django.utils.translation import gettext_lazy as _
 from extras.models import SavedFilter
 from ipam.models import IPAddress
@@ -39,6 +41,7 @@ from .models import (
     AssetMapping,
     DiscoveredNode,
     DiscoveryScan,
+    MetadataContext,
     MetadataEntry,
     MonitoredInterface,
     MonitoredService,
@@ -849,6 +852,24 @@ class DiscoveredNodeBulkImportForm(DiscoveredNodeImportFieldsMixin):
     """
 
 
+class MetadataContextForm(NetBoxModelForm):
+    """Register a custom OpenNMS metadata Context (RD-3, issue #41).
+
+    Only for user-defined contexts — the five OpenNMS built-in contexts are
+    seeded (and protected from deletion) by migration ``0020``, not created
+    through this form.
+    """
+
+    class Meta:
+        model = MetadataContext
+        fields = ("name", "description", "tags")
+        help_texts = {
+            "name": "Must be prefixed 'X-' (OpenNMS's own reservation rule, so "
+            "a user-defined context never collides with a future built-in "
+            "one).",
+        }
+
+
 class MetadataEntryForm(NetBoxModelForm):
     """Define a metadata triad at a scope on a Requisition (RD-3)."""
 
@@ -866,4 +887,28 @@ class MetadataEntryForm(NetBoxModelForm):
             "value_source",
             "literal_value",
             "tags",
+        )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Context is a dropdown sourced from the persisted MetadataContext
+        # registry (issue #41), the same "validated CharField, not a hard FK"
+        # shape as AssetMappingForm.asset_field above. A not-yet-registered
+        # value on the bound instance (e.g. data seeded before this ticket,
+        # or a not-yet-migrated fixture) is appended so editing an existing
+        # row never silently drops its current value from the choices.
+        names = sorted(MetadataContext.objects.values_list("name", flat=True))
+        current = getattr(self.instance, "context", "") or ""
+        if current and current not in names:
+            names.append(current)
+        add_url = reverse("plugins:netbox_opennms:metadatacontext_add")
+        self.fields["context"] = forms.ChoiceField(
+            choices=[(n, n) for n in names],
+            label=_("Context"),
+            help_text=format_html(
+                "One of OpenNMS's built-in contexts, or a registered custom "
+                'one. <a href="{}" target="_blank" rel="noopener">Register a '
+                "new 'X-' context</a>.",
+                add_url,
+            ),
         )

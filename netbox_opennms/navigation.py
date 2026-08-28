@@ -55,6 +55,22 @@ menu = PluginMenu(
                     link="plugins:netbox_opennms:discoverednode_list",
                     link_text=labels.NAV_DISCOVERED_NODES,
                 ),
+                # A shared, cross-Requisition registry (issue #41) — unlike
+                # Asset Mappings/Metadata Entries, which are surfaced inline
+                # on the owning Requisition's detail page, Contexts are
+                # reusable across every Requisition, so it needs its own
+                # entry point rather than living only under a single object.
+                PluginMenuItem(
+                    link="plugins:netbox_opennms:metadatacontext_list",
+                    link_text=labels.NAV_METADATA_CONTEXTS,
+                    buttons=(
+                        PluginMenuButton(
+                            link="plugins:netbox_opennms:metadatacontext_add",
+                            title="Add",
+                            icon_class="mdi mdi-plus-thick",
+                        ),
+                    ),
+                ),
             ),
         ),
         (

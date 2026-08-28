@@ -12,6 +12,7 @@ from dcim.models import (
 )
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, connection, transaction
+from django.db.models import ProtectedError
 from django.test import TestCase
 from django.utils import timezone
 from ipam.models import IPAddress
@@ -19,6 +20,8 @@ from tenancy.models import Tenant
 
 from netbox_opennms.models import (
     DiscoveryScan,
+    MetadataContext,
+    MetadataEntry,
     MonitoredService,
     MonitoringDetector,
     MonitoringExclusion,
@@ -511,3 +514,120 @@ class DiscoveryScanTest(TestCase):
         scan.mark_triggered()
         scan.settled_at = timezone.now()
         self.assertEqual(scan.status, "settled")
+
+
+class MetadataContextTest(TestCase):
+    """MetadataContext registry: seeded base contexts, X- validation, protection."""
+
+    def test_base_contexts_are_seeded_by_migration(self):
+        # Migration 0020 seeds these five as is_builtin=True; every test's DB
+        # already has them applied (migrations run before the test suite).
+        seeded = set(
+            MetadataContext.objects.filter(is_builtin=True).values_list(
+                "name", flat=True
+            )
+        )
+        self.assertEqual(
+            seeded, {"node", "requisition", "interface", "service", "pattern"}
+        )
+
+    def test_custom_context_requires_x_prefix(self):
+        context = MetadataContext(name="custom")
+        with self.assertRaises(ValidationError):
+            context.full_clean()
+
+    def test_x_prefixed_custom_context_is_valid(self):
+        context = MetadataContext(name="X-billing")
+        context.full_clean()  # does not raise
+        context.save()
+        self.assertTrue(MetadataContext.objects.filter(name="X-billing").exists())
+
+    def test_builtin_context_cannot_be_deleted(self):
+        builtin = MetadataContext.objects.get(name="node")
+        with self.assertRaises(ProtectedError):
+            builtin.delete()
+        self.assertTrue(MetadataContext.objects.filter(pk=builtin.pk).exists())
+
+    def test_custom_context_can_be_deleted(self):
+        context = MetadataContext.objects.create(name="X-scratch")
+        context.delete()
+        self.assertFalse(MetadataContext.objects.filter(name="X-scratch").exists())
+
+    def test_builtin_context_cannot_be_renamed(self):
+        # Closes an API-shaped hole: MetadataContextEditView's queryset
+        # excludes is_builtin rows, but a direct PATCH (or any other write
+        # path that calls full_clean(), which NetBoxModelSerializer.
+        # validate() does) would otherwise be able to rename a builtin row
+        # since is_builtin=True short-circuits the X- prefix check.
+        builtin = MetadataContext.objects.get(name="interface")
+        builtin.name = "X-hijacked"
+        with self.assertRaises(ValidationError):
+            builtin.full_clean()
+        self.assertTrue(MetadataContext.objects.filter(name="interface").exists())
+
+    def test_builtin_context_description_can_be_edited(self):
+        # Identity (name) is immutable once seeded; other fields are not.
+        builtin = MetadataContext.objects.get(name="pattern")
+        builtin.description = "Pattern-matching context"
+        builtin.full_clean()  # does not raise
+        builtin.save()
+        builtin.refresh_from_db()
+        self.assertEqual(builtin.description, "Pattern-matching context")
+
+    def test_custom_context_can_be_renamed(self):
+        context = MetadataContext.objects.create(name="X-old-name")
+        context.name = "X-new-name"
+        context.full_clean()  # does not raise
+
+
+class MetadataEntryContextValidationTest(TestCase):
+    """MetadataEntry.context must name a registered MetadataContext (issue #41)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.req = Requisition.objects.create(
+            name="netbox.raleigh.router-meta", filter_params=FILTER
+        )
+
+    def test_seeded_base_context_is_valid(self):
+        entry = MetadataEntry(
+            requisition=self.req,
+            scope="node",
+            context="requisition",
+            key="k1",
+            literal_value="v",
+        )
+        entry.full_clean()  # does not raise
+
+    def test_unregistered_context_is_rejected(self):
+        entry = MetadataEntry(
+            requisition=self.req,
+            scope="node",
+            context="X-not-registered",
+            key="k1",
+            literal_value="v",
+        )
+        with self.assertRaises(ValidationError):
+            entry.full_clean()
+
+    def test_registered_custom_context_is_valid(self):
+        MetadataContext.objects.create(name="X-billing")
+        entry = MetadataEntry(
+            requisition=self.req,
+            scope="node",
+            context="X-billing",
+            key="k1",
+            literal_value="v",
+        )
+        entry.full_clean()  # does not raise
+
+    def test_unknown_non_x_context_is_rejected(self):
+        entry = MetadataEntry(
+            requisition=self.req,
+            scope="node",
+            context="bogus",
+            key="k1",
+            literal_value="v",
+        )
+        with self.assertRaises(ValidationError):
+            entry.full_clean()

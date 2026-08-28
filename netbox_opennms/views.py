@@ -46,6 +46,7 @@ from .models import (
     AssetMapping,
     DiscoveredNode,
     DiscoveryScan,
+    MetadataContext,
     MetadataEntry,
     MonitoredInterface,
     MonitoredService,
@@ -779,6 +780,44 @@ class AssetMappingDeleteView(generic.ObjectDeleteView):
 class AssetMappingBulkDeleteView(generic.BulkDeleteView):
     queryset = AssetMapping.objects.all()
     table = tables.AssetMappingTable
+
+
+# --- Metadata Context --------------------------------------------------------
+
+
+class MetadataContextView(generic.ObjectView):
+    queryset = MetadataContext.objects.all()
+
+
+class MetadataContextListView(generic.ObjectListView):
+    queryset = MetadataContext.objects.all()
+    table = tables.MetadataContextTable
+    filterset = filtersets.MetadataContextFilterSet
+
+
+class MetadataContextEditView(generic.ObjectEditView):
+    # Excludes built-in rows for existing-object lookups (pk is only present
+    # when editing, never for the "add" route) so a built-in's name can't be
+    # silently repointed away from what MetadataEntry.clean() and OpenNMS
+    # both expect — the same protection rationale as the Delete views below.
+    queryset = MetadataContext.objects.filter(is_builtin=False)
+    form = forms.MetadataContextForm
+
+
+class MetadataContextDeleteView(generic.ObjectDeleteView):
+    # Excludes built-in rows so a direct delete attempt 404s instead of
+    # reaching MetadataContext.delete()'s ProtectedError (issue #41): a
+    # clean "not found" here is friendlier than surfacing that exception
+    # through the generic delete view's error handling.
+    queryset = MetadataContext.objects.filter(is_builtin=False)
+
+
+class MetadataContextBulkDeleteView(generic.BulkDeleteView):
+    # Same exclusion as above — bulk delete uses a queryset.delete(), which
+    # never calls the per-instance delete() override, so this filter is the
+    # only thing protecting built-in rows from a bulk selection.
+    queryset = MetadataContext.objects.filter(is_builtin=False)
+    table = tables.MetadataContextTable
 
 
 # --- Metadata Entry ---------------------------------------------------------

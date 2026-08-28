@@ -32,6 +32,7 @@ from netbox_opennms.models import (
     AssetMapping,
     DiscoveredNode,
     DiscoveryScan,
+    MetadataContext,
     MetadataEntry,
     MonitoredInterface,
     MonitoredService,
@@ -1481,6 +1482,99 @@ class RequisitionSyncNodeOverrideViewTest(TestCase):
         self.assertEqual(response.status_code, 302)
         messages = list(get_messages(response.wsgi_request))
         self.assertTrue(any("failed" in str(m) for m in messages))
+
+
+class MetadataContextViewTest(
+    ViewTestCases.GetObjectViewTestCase,
+    ViewTestCases.GetObjectChangelogViewTestCase,
+    ViewTestCases.CreateObjectViewTestCase,
+    ViewTestCases.ListObjectsViewTestCase,
+):
+    """Get/changelog/create/list only.
+
+    Edit/Delete/BulkDelete are deliberately NOT exercised through NetBox's
+    generic ``ViewTestCases`` mixins here: those mixins operate on
+    ``self._get_queryset().first()``, and migration 0020 seeds five
+    ``is_builtin=True`` rows alongside whatever ``setUpTestData`` creates —
+    which row sorts first under ``Meta.ordering = ("name",)`` depends on the
+    test database's collation (e.g. Postgres's default locale collation
+    interleaves case, unlike SQLite's byte-order collation), so ``.first()``
+    is not reliably one of the non-builtin rows created below. Since
+    MetadataContextEditView/DeleteView/BulkDeleteView all intentionally
+    exclude built-in rows from their querysets (issue #41's undeletable-base
+    guarantee), a generic mixin landing on a builtin row would 404
+    unpredictably depending on the backend, not because of a real bug. The
+    hand-written tests below instead target known rows by name, and assert
+    the protection semantics directly rather than incidentally.
+    """
+
+    model = MetadataContext
+
+    def _get_base_url(self):
+        return "plugins:netbox_opennms:metadatacontext_{}"
+
+    @classmethod
+    def setUpTestData(cls):
+        for name in ("X-vt-1", "X-vt-2", "X-vt-3"):
+            MetadataContext.objects.create(name=name)
+        cls.form_data = {
+            "name": "X-vt-4",
+            "description": "created by the view test suite",
+        }
+
+
+class MetadataContextProtectionViewTest(TestCase):
+    """Built-in rows are immutable/undeletable through the CRUD views (#41)."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="mc-tester")
+        self.client.force_login(self.user)
+
+    def _grant(self, *codenames):
+        for codename in codenames:
+            self.user.user_permissions.add(
+                Permission.objects.get(
+                    codename=codename, content_type__app_label="netbox_opennms"
+                )
+            )
+
+    def test_builtin_edit_view_404s(self):
+        builtin = MetadataContext.objects.get(name="node")
+        self._grant("change_metadatacontext")
+        url = reverse("plugins:netbox_opennms:metadatacontext_edit", args=[builtin.pk])
+        self.assertEqual(self.client.get(url).status_code, 404)
+
+    def test_builtin_delete_view_404s(self):
+        builtin = MetadataContext.objects.get(name="node")
+        self._grant("delete_metadatacontext")
+        url = reverse(
+            "plugins:netbox_opennms:metadatacontext_delete", args=[builtin.pk]
+        )
+        response = self.client.post(url, data={"confirm": "true"})
+        self.assertEqual(response.status_code, 404)
+        self.assertTrue(MetadataContext.objects.filter(pk=builtin.pk).exists())
+
+    def test_custom_context_delete_view_succeeds(self):
+        custom = MetadataContext.objects.create(name="X-protection-test")
+        self._grant("delete_metadatacontext")
+        url = reverse("plugins:netbox_opennms:metadatacontext_delete", args=[custom.pk])
+        response = self.client.post(url, data={"confirm": "true"})
+        self.assertIn(response.status_code, (200, 302))
+        self.assertFalse(MetadataContext.objects.filter(pk=custom.pk).exists())
+
+    def test_bulk_delete_skips_builtin_rows(self):
+        builtin = MetadataContext.objects.get(name="node")
+        custom = MetadataContext.objects.create(name="X-bulk-test")
+        self._grant("delete_metadatacontext")
+        url = reverse("plugins:netbox_opennms:metadatacontext_bulk_delete")
+        self.client.post(
+            url,
+            data={"pk": [builtin.pk, custom.pk], "confirm": "true", "_confirm": "1"},
+        )
+        # The builtin row is excluded from BulkDeleteView's queryset (issue
+        # #41's protection), so it must survive regardless of the response
+        # returned for the (partially invalid) selection.
+        self.assertTrue(MetadataContext.objects.filter(pk=builtin.pk).exists())
 
 
 class MetadataEntryViewTest(
