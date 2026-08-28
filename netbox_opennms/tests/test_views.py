@@ -436,6 +436,37 @@ class DiscoveryScanTriggerViewTest(TestCase):
         response = self.client.post(self._url())
         self.assertEqual(response.status_code, 403)
 
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_rejects_retrigger_of_running_scan(self, mock_from_server):
+        self.scan.mark_triggered()
+        response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 302)
+        mock_from_server.assert_not_called()
+        messages = list(get_messages(response.wsgi_request))
+        self.assertTrue(any("already been triggered" in str(m) for m in messages))
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_rejects_retrigger_of_settled_scan(self, mock_from_server):
+        self.scan.mark_triggered()
+        DiscoveryScan.objects.filter(pk=self.scan.pk).update(settled_at=timezone.now())
+        response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 302)
+        mock_from_server.assert_not_called()
+        messages = list(get_messages(response.wsgi_request))
+        self.assertTrue(any("already been triggered" in str(m) for m in messages))
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_rejects_retrigger_of_cleaned_up_scan(self, mock_from_server):
+        self.scan.mark_triggered()
+        DiscoveryScan.objects.filter(pk=self.scan.pk).update(
+            settled_at=timezone.now(), cleaned_up_at=timezone.now()
+        )
+        response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 302)
+        mock_from_server.assert_not_called()
+        messages = list(get_messages(response.wsgi_request))
+        self.assertTrue(any("already been triggered" in str(m) for m in messages))
+
 
 class DiscoveredNodeViewTest(
     ViewTestCases.GetObjectViewTestCase,
