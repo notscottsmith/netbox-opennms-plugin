@@ -75,10 +75,23 @@ RECONCILE_INTERVAL_MINUTES = 60
 # Sync/Remove/Move hard-block in SyncForeignSourceJob, so unlike the
 # reconciler this has no config opt-out — it must always run.
 HEALTH_CHECK_INTERVAL_MINUTES = 60
-# How often unsettled Discovery Scans are polled (minutes, issue #27). A
-# literal for the same @system_job-is-import-time reason as above; the settle
-# idle window itself IS configurable (discovery_settle_idle_minutes).
-DISCOVERY_POLL_INTERVAL_MINUTES = 5
+# How often PollDiscoveryScansJob polls each unsettled Discovery Scan
+# (minutes, issue #27; configurable per issue #52). Read via get_plugin_config
+# at import time — same as RECONCILE_INTERVAL_MINUTES/HEALTH_CHECK_INTERVAL_MINUTES
+# needing a value before @system_job's class-definition-time decoration runs,
+# except this one comes from plugin config (discovery_poll_interval_minutes,
+# default "1") instead of a hardcoded literal, so operators can tune cadence
+# without a code change. The settle idle window itself is a separate config
+# key (discovery_settle_idle_minutes), read inside .run() instead, since it
+# only needs to be current at each poll rather than at import.
+DISCOVERY_POLL_INTERVAL_MINUTES = int(
+    get_plugin_config(PLUGIN_NAME, "discovery_poll_interval_minutes")
+)
+# How often settled-and-expired Discovery Scans are cleaned up (minutes). A
+# literal for the same @system_job-is-import-time reason as above; unlike
+# DISCOVERY_POLL_INTERVAL_MINUTES this cadence isn't independently
+# configurable (issue #52 scoped the config knob to the poll job only).
+DISCOVERY_CLEANUP_INTERVAL_MINUTES = 5
 
 
 def unknown_locations(client, locations):
@@ -164,9 +177,7 @@ class SyncForeignSourceJob(JobRunner):
         resolution = resolve(foreign_source)
 
         if resolution is None and not allow_empty:
-            self.logger.info(
-                f"{foreign_source} has no Requisition — skipped."
-            )
+            self.logger.info(f"{foreign_source} has no Requisition — skipped.")
             return False
 
         # Validate FIRST (FR-8/AD-12): conflicts (C1 freeze), rejected filters, and
@@ -629,7 +640,7 @@ class PollDiscoveryScansJob(JobRunner):
             )
 
 
-@system_job(interval=DISCOVERY_POLL_INTERVAL_MINUTES)
+@system_job(interval=DISCOVERY_CLEANUP_INTERVAL_MINUTES)
 class CleanupDiscoveryScansJob(JobRunner):
     """Delete the OpenNMS-side data for Discovery Scans past their retention
     window (issue #29, ADR 0006 — the retention half of the same lifecycle
@@ -663,8 +674,7 @@ class CleanupDiscoveryScansJob(JobRunner):
                     client.delete_requisition(scan.foreign_source)
             except OpenNMSError as exc:
                 self.logger.warning(
-                    f"cleanup skipped for Discovery Scan {scan} — OpenNMS "
-                    f"error: {exc}"
+                    f"cleanup skipped for Discovery Scan {scan} — OpenNMS error: {exc}"
                 )
                 continue
             scan.cleaned_up_at = timezone.now()
