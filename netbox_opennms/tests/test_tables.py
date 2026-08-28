@@ -41,8 +41,8 @@ class OpenNMSServerTableActionsTest(TestCase):
 
         self.assertNotIn("<form", html)
         self.assertIn("formaction=", html)
-        self.assertIn("formmethod=\"post\"", html)
-        self.assertIn(f"/opennms-servers/{self.server.pk}/test/", html)
+        self.assertIn('formmethod="post"', html)
+        self.assertIn(f"/servers/{self.server.pk}/test/", html)
 
     def test_scan_action_has_no_nested_form(self):
         table = OpenNMSServerTable(OpenNMSServer.objects.all())
@@ -50,7 +50,7 @@ class OpenNMSServerTableActionsTest(TestCase):
 
         self.assertNotIn("<form", html)
         self.assertIn("formaction=", html)
-        self.assertIn(f"/opennms-servers/{self.server.pk}/scan/", html)
+        self.assertIn(f"/servers/{self.server.pk}/scan/", html)
 
     def test_list_page_rows_have_no_nested_forms(self):
         user = User.objects.create_user(username="tester", is_superuser=True)
@@ -59,9 +59,7 @@ class OpenNMSServerTableActionsTest(TestCase):
             "plugins:netbox_opennms:opennmsserver_test", args=[self.server.pk]
         )
 
-        response = self.client.get(
-            reverse("plugins:netbox_opennms:opennmsserver_list")
-        )
+        response = self.client.get(reverse("plugins:netbox_opennms:opennmsserver_list"))
 
         self.assertEqual(response.status_code, 200)
         tbody = _tbody(response)
@@ -90,7 +88,7 @@ class DiscoveryScanTableActionsTest(TestCase):
 
         self.assertNotIn("<form", html)
         self.assertIn("formaction=", html)
-        self.assertIn(f"/discovery-scans/{self.scan.pk}/trigger/", html)
+        self.assertIn(f"/discovery/{self.scan.pk}/trigger/", html)
 
     def test_list_page_rows_have_no_nested_forms(self):
         user = User.objects.create_user(username="tester", is_superuser=True)
@@ -99,9 +97,7 @@ class DiscoveryScanTableActionsTest(TestCase):
             "plugins:netbox_opennms:discoveryscan_trigger", args=[self.scan.pk]
         )
 
-        response = self.client.get(
-            reverse("plugins:netbox_opennms:discoveryscan_list")
-        )
+        response = self.client.get(reverse("plugins:netbox_opennms:discoveryscan_list"))
 
         self.assertEqual(response.status_code, 200)
         tbody = _tbody(response)
