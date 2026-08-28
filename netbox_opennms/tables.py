@@ -7,6 +7,7 @@ from django.urls import reverse
 from django.utils.html import format_html
 from netbox.tables import BaseTable, NetBoxTable, columns
 
+from . import labels
 from .models import (
     AssetMapping,
     DiscoveredNode,
@@ -423,6 +424,7 @@ class RequisitionTable(NetBoxTable):
     """
 
     name = tables.Column(linkify=True)
+    location = tables.Column(verbose_name=labels.MONITORING_LOCATION)
     conflicts = tables.Column(
         empty_values=(), orderable=False, verbose_name="Conflicts"
     )
