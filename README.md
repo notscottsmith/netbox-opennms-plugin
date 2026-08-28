@@ -45,7 +45,7 @@ implicitly moved).
   so a node always lives in exactly one Foreign Source.
 - **Graded node status** — a member with no management IP becomes an
   inventory-only node with a **warning**, not a silent skip.
-- **Dry-run before sync** — a per-node diff of exactly what a Sync would
+- **Scan before sync** — a per-node diff of exactly what a Sync would
   add / remove / change against the live OpenNMS state.
 - **Honest background sync** — Sync/Remove run as NetBox **Jobs**; an OpenNMS
   `202` is reported as *submitted for import*, never "provisioned"; a drift
@@ -122,7 +122,7 @@ and netbox-docker, not the package.)
    ```dockerfile
    # Dockerfile
    FROM netboxcommunity/netbox:v4.6      # NetBox 4.6.1+; keep in step with the chart appVersion
-   RUN /opt/netbox/venv/bin/pip install netbox-opennms-plugin==0.1.13
+   RUN /opt/netbox/venv/bin/pip install netbox-opennms-plugin==0.1.14
    ```
 
    Pin the plugin version so image builds stay reproducible; for an air-gapped

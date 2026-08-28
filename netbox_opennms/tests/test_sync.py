@@ -75,6 +75,9 @@ class SyncViewTest(TestCase):
         url = reverse("plugins:netbox_opennms:sync_all")
         response = self.client.post(url, follow=True)
         mock_enqueue.assert_not_called()
+        self.assertRedirects(
+            response, reverse("plugins:netbox_opennms:requisition_list")
+        )
         self.assertContains(response, "frozen")
 
     @mock.patch("netbox_opennms.views.SyncForeignSourceJob.enqueue_sync")
@@ -90,6 +93,9 @@ class SyncViewTest(TestCase):
             reverse("plugins:netbox_opennms:sync_all"), follow=True
         )
         mock_enqueue.assert_not_called()
+        self.assertRedirects(
+            response, reverse("plugins:netbox_opennms:requisition_list")
+        )
         self.assertContains(response, "Skipped 1 requisition")
 
     def test_duplicate_of_populated_requisition_warns_frozen(self):
@@ -118,6 +124,9 @@ class SyncViewTest(TestCase):
         self.client.force_login(self.superuser)
         url = reverse("plugins:netbox_opennms:sync_all")
         response = self.client.post(url, follow=True)
+        self.assertRedirects(
+            response, reverse("plugins:netbox_opennms:requisition_list")
+        )
         self.assertContains(response, "Submitted 1 Foreign Source sync(s)")
         mock_enqueue.assert_called_once()
 
