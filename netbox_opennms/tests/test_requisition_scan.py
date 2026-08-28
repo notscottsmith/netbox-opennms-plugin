@@ -219,16 +219,28 @@ class AttachOpenNMSNodeIdsTest(SimpleTestCase):
         _attach_opennms_node_ids(result, [{"id": 7, "foreignId": "device-1"}])
         self.assertEqual(result.added[0].opennms_node_id, 7)
 
+    def test_matching_row_gets_the_live_node_label(self):
+        # Issue #38: the scan table's "OpenNMS node" column shows OpenNMS's
+        # own live label, sourced from the same batched list_nodes() fetch
+        # used for opennms_node_id — no extra REST call.
+        result = diff(_resolution([_node()]), None, None)
+        _attach_opennms_node_ids(
+            result, [{"id": 7, "foreignId": "device-1", "label": "rtr-1-live"}]
+        )
+        self.assertEqual(result.added[0].opennms_node_label, "rtr-1-live")
+
     def test_unmatched_row_stays_none(self):
         # An "added" row isn't provisioned in OpenNMS yet — nothing to match.
         result = diff(_resolution([_node()]), None, None)
         _attach_opennms_node_ids(result, [])
         self.assertIsNone(result.added[0].opennms_node_id)
+        self.assertIsNone(result.added[0].opennms_node_label)
 
     def test_ignores_malformed_entries(self):
         result = diff(_resolution([_node()]), None, None)
         _attach_opennms_node_ids(result, [{}, "not-a-dict", None])
         self.assertIsNone(result.added[0].opennms_node_id)
+        self.assertIsNone(result.added[0].opennms_node_label)
 
 
 FS = "netbox.raleigh.router"
@@ -277,10 +289,13 @@ class ScanFetchTest(TestCase):
         client = mock_from_server.return_value.__enter__.return_value
         client.get_requisition.return_value = None
         client.get_foreign_source.return_value = None
-        client.list_nodes.return_value = [{"id": 99, "foreignId": "netbox-device-1"}]
+        client.list_nodes.return_value = [
+            {"id": 99, "foreignId": "netbox-device-1", "label": "rtr-1-live"}
+        ]
         result = scan_requisition(FS)
         client.list_nodes.assert_called_once_with(foreign_source=FS)
         self.assertEqual(result.added[0].opennms_node_id, 99)
+        self.assertEqual(result.added[0].opennms_node_label, "rtr-1-live")
 
     @mock.patch("netbox_opennms.requisition_scan.OpenNMSClient.from_server")
     def test_result_carries_the_resolved_server(self, mock_from_server):

@@ -52,6 +52,12 @@ class NodeDiff:
     # The live OpenNMS node id, resolved separately (a batched list_nodes()
     # lookup, not part of the pure diff) — None until attached (issue #34).
     opennms_node_id: int | None = None
+    # The live OpenNMS node's own label, attached alongside opennms_node_id
+    # (issue #38) — deliberately NOT the same as ``label`` above: for a
+    # "changed" row, ``label`` is the *desired* (NetBox-side) label, which may
+    # differ from what's currently live in OpenNMS if a rename is mid-flight.
+    # None until attached, same as opennms_node_id.
+    opennms_node_label: str | None = None
 
 
 @dataclass
@@ -275,20 +281,26 @@ def diff(resolution, current_requisition, current_definition, default_location="
 
 
 def _attach_opennms_node_ids(result, opennms_nodes):
-    """Set ``NodeDiff.opennms_node_id`` from a batched ``list_nodes()`` fetch.
+    """Set ``NodeDiff.opennms_node_id``/``opennms_node_label`` from a batched
+    ``list_nodes()`` fetch.
 
     Pure given the already-fetched node list (issue #34's "OpenNMS node link" /
-    node-walk-link columns): one ``foreignId`` -> ``id`` lookup built once,
-    instead of a per-row GET. A row with no match (e.g. "added" — not yet
-    provisioned in OpenNMS) simply keeps ``opennms_node_id=None``.
+    node-walk-link columns): one ``foreignId`` -> ``(id, label)`` lookup built
+    once, instead of a per-row GET. A row with no match (e.g. "added" — not yet
+    provisioned in OpenNMS) simply keeps both fields ``None``. The label
+    attached here is OpenNMS's own live label (issue #38) — distinct from
+    ``NodeDiff.label``, which is the desired/NetBox-side label and may differ
+    for a "changed" row mid-rename.
     """
-    node_id_by_foreign_id = {
-        node.get("foreignId"): node.get("id")
+    node_by_foreign_id = {
+        node.get("foreignId"): node
         for node in opennms_nodes
         if isinstance(node, dict) and node.get("foreignId")
     }
     for row in (*result.added, *result.removed, *result.changed, *result.unchanged):
-        row.opennms_node_id = node_id_by_foreign_id.get(row.foreign_id)
+        node = node_by_foreign_id.get(row.foreign_id)
+        row.opennms_node_id = node.get("id") if node else None
+        row.opennms_node_label = node.get("label") if node else None
 
 
 def scan_requisition(foreign_source):
