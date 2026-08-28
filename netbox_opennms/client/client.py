@@ -356,6 +356,21 @@ class OpenNMSClient:
             headers={"Content-Type": "application/xml"},
         )
 
+    def post_node(self, foreign_source, xml_bytes):
+        """Upsert a single node into a Foreign Source's PENDING requisition (#35).
+
+        ``POST /rest/requisitions/{foreignSource}/nodes`` adds or replaces one
+        node without touching the rest of the requisition. Like
+        ``post_requisition``, this only stages the change — it is not applied
+        to the deployed requisition until ``import_requisition`` runs.
+        """
+        return self._request(
+            "POST",
+            f"/rest/requisitions/{quote(foreign_source, safe='')}/nodes",
+            data=xml_bytes,
+            headers={"Content-Type": "application/xml"},
+        )
+
     def import_requisition(self, foreign_source, rescan_existing="false"):
         """Activate the staged requisition (async — OpenNMS returns ``202``).
 

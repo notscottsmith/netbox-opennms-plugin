@@ -15,6 +15,7 @@ from netbox_opennms.models import (
 from netbox_opennms.translation import (
     RenderError,
     render_foreign_source_definition,
+    render_node_document,
     render_requisition,
 )
 
@@ -134,6 +135,51 @@ class RenderRequisitionTest(SimpleTestCase):
         ).find(f"{MI}node")
         self.assertIsNotNone(n)
         self.assertIsNone(n.find(f"{MI}interface"))
+
+
+class RenderNodeDocumentTest(SimpleTestCase):
+    """render_node_document (issue #35) shares render_node with render_requisition."""
+
+    def _node(self, **kw):
+        kw.setdefault("node_label", "rtr-1")
+        kw.setdefault("foreign_id", "device-1")
+        kw.setdefault("location", "")
+        kw.setdefault(
+            "interfaces", [InterfaceSpec("10.0.0.1", "P", services=["ICMP"])]
+        )
+        return NodeSpec(**kw)
+
+    def test_renders_single_node_element_as_the_document_root(self):
+        xml = render_node_document(self._node())
+        root = etree.fromstring(xml)
+        self.assertEqual(root.tag, f"{MI}node")
+        self.assertEqual(root.get("node-label"), "rtr-1")
+        self.assertEqual(root.get("foreign-id"), "device-1")
+        iface = root.find(f"{MI}interface")
+        self.assertEqual(iface.get("ip-addr"), "10.0.0.1")
+
+    def test_matches_the_per_node_fragment_render_requisition_emits(self):
+        node = self._node(
+            assets=[("serialNumber", "SN-1")],
+            node_metadata=[("requisition", "owner", "neteng")],
+        )
+        standalone = etree.tostring(etree.fromstring(render_node_document(node)))
+        in_document = etree.tostring(
+            etree.fromstring(render_requisition("fs", [node])).find(f"{MI}node")
+        )
+        self.assertEqual(standalone, in_document)
+
+    def test_location_uses_node_then_default(self):
+        with_loc = render_node_document(self._node(location="edge-1"))
+        self.assertEqual(etree.fromstring(with_loc).get("location"), "edge-1")
+        fallback = render_node_document(
+            self._node(location=""), default_location="core"
+        )
+        self.assertEqual(etree.fromstring(fallback).get("location"), "core")
+
+    def test_render_error_no_label(self):
+        with self.assertRaises(RenderError):
+            render_node_document(self._node(node_label=""))
 
 
 class RenderForeignSourceDefinitionTest(TestCase):

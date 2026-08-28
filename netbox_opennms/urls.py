@@ -72,6 +72,11 @@ urlpatterns = (
         views.RequisitionNodeWalkView.as_view(),
         name="requisition_node_walk",
     ),
+    path(
+        "requisitions/<int:pk>/nodes/<str:foreign_id>/sync/",
+        views.RequisitionSyncNodeView.as_view(),
+        name="requisition_sync_node",
+    ),
     *_crud("monitoring-detectors", "monitoringdetector", "MonitoringDetector",
            MonitoringDetector),
     *_crud("monitoring-policies", "monitoringpolicy", "MonitoringPolicy",

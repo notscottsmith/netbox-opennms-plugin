@@ -5,7 +5,13 @@
 from .requisition import (
     RenderError,
     render_foreign_source_definition,
+    render_node_document,
     render_requisition,
 )
 
-__all__ = ["RenderError", "render_requisition", "render_foreign_source_definition"]
+__all__ = [
+    "RenderError",
+    "render_requisition",
+    "render_node_document",
+    "render_foreign_source_definition",
+]

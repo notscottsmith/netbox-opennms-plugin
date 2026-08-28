@@ -124,6 +124,27 @@ class NodeDiffTable(BaseTable):
         accessor="opennms_node_id", verbose_name="OpenNMS node", orderable=False
     )
     changes = tables.Column(orderable=False)
+    # A plain per-row <form> is safe here (unlike OpenNMSServerTable's
+    # formaction/formmethod workaround, #32): this page's table is included
+    # via NetBox's bare htmx/table.html, not rendered inside an
+    # ObjectListView bulk-action <form> (confirmed against the pinned
+    # NetBox 4.6.8 template source — no outer <form> wraps it).
+    sync_action = tables.TemplateColumn(
+        template_code="""
+            {% if record.status == "added" or record.status == "changed" %}
+              <form method="post"
+                    action="{% url 'plugins:netbox_opennms:requisition_sync_node'
+                                    table.requisition_pk record.foreign_id %}">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-sm btn-outline-primary">
+                  Sync to OpenNMS
+                </button>
+              </form>
+            {% endif %}
+        """,
+        verbose_name="",
+        orderable=False,
+    )
 
     class Meta(BaseTable.Meta):
         fields = (
@@ -134,6 +155,7 @@ class NodeDiffTable(BaseTable):
             "netbox_object",
             "opennms_node",
             "changes",
+            "sync_action",
         )
         default_columns = fields
         empty_text = "No nodes"

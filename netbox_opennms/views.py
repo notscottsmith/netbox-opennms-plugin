@@ -13,13 +13,16 @@ from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.views.generic import View
+from netbox.plugins import get_plugin_config
 from netbox.views import generic
 from utilities.rqworker import any_workers_for_queue
 from utilities.views import GetReturnURLMixin, ViewTab, register_model_view
 from virtualization.models import VirtualMachine
 
 from . import filtersets, forms, import_node, tables
+from .adoption import adopt_foreign_ids, existing_foreign_ids_by_label
 from .client import OpenNMSClient, OpenNMSError, parse_node_links
+from .derivation import validate_location_name
 from .dryrun import dry_run
 from .ip_reconcile import (
     ConfirmRejected,
@@ -28,6 +31,7 @@ from .ip_reconcile import (
     required_confirm_permissions,
 )
 from .jobs import (
+    PLUGIN_NAME,
     SyncForeignSourceJob,
     unknown_locations,
 )
@@ -61,6 +65,7 @@ from .reverse_sync import (
     run_reverse_sync,
 )
 from .scan import KIND_MODELS, scan_server, upsert_discovered_nodes
+from .translation import RenderError, render_node_document
 from .validation import validate_resolution
 
 # Sync jobs are enqueued without an instance, so they run on the default RQ
@@ -240,6 +245,123 @@ class RequisitionSyncView(PermissionRequiredMixin, View):
                 request, f"Sync submitted for {requisition.name} (job #{job.pk})."
             )
         return redirect(requisition.get_absolute_url())
+
+
+class RequisitionSyncNodeView(PermissionRequiredMixin, View):
+    """Push one node from the dry-run row to OpenNMS immediately (issue #35).
+
+    Scopes ``jobs._render_and_replace``'s own machinery to one node instead of
+    building a parallel implementation: the same ``validate_resolution`` gate,
+    the same adoption pass (``adopt_foreign_ids`` / ``existing_foreign_ids_by_
+    label`` — without it, a node adopted into an existing OpenNMS Foreign
+    Source would be looked up under its freshly-derived foreign-id and never
+    match the adopted id the dry-run row actually shows), the same
+    ``import_mode`` validation, and the same ``translation.render_node_
+    document`` (the per-node fragment ``render_requisition`` uses internally)
+    → ``client.post_node`` + ``client.import_requisition`` pair the full push
+    uses, just scoped to one node via ``post_node`` rather than
+    ``post_requisition``.
+
+    Runs synchronously in the request (unlike ``RequisitionSyncView``'s
+    background Job) so this node's success/failure is known and reported
+    immediately, distinct from a whole-Requisition sync's Job-log outcome.
+    """
+
+    permission_required = SYNC_PERM
+
+    def post(self, request, pk, foreign_id):
+        requisition = get_object_or_404(Requisition, pk=pk)
+        return_url = reverse(
+            "plugins:netbox_opennms:requisition_dry_run", args=[pk]
+        )
+        resolution = resolve(requisition.name)
+
+        validation = validate_resolution(resolution)
+        if validation.errors:
+            messages.error(request, "; ".join(validation.errors))
+            return redirect(return_url)
+
+        if resolution is None or not resolution.nodes:
+            messages.error(
+                request, f"{requisition.name} has no resolvable membership."
+            )
+            return redirect(return_url)
+
+        # A clean (non-blocking) resolution with at least one node is
+        # guaranteed to have already resolved to exactly one Server
+        # (``membership._resolve_server``) — no deployed-Server fallback
+        # needed here, unlike a Remove/empty resolution.
+        server = resolution.server
+        if not server.is_healthy:
+            messages.error(
+                request,
+                f"Server {server.name!r} is marked unhealthy "
+                f"({server.last_check_message or 'no detail'}) — refusing to "
+                "sync until the connection is restored.",
+            )
+            return redirect(return_url)
+
+        default_location = server.default_location
+        if default_location:
+            try:
+                validate_location_name(default_location)
+            except ValueError as exc:
+                messages.error(
+                    request,
+                    f"Server {server.name!r} default_location is invalid: {exc}",
+                )
+                return redirect(return_url)
+
+        rescan = str(get_plugin_config(PLUGIN_NAME, "import_mode")).strip().lower()
+        if rescan not in ("true", "false", "dbonly"):
+            messages.error(
+                request,
+                f"Invalid import_mode {rescan!r} (expected true/false/dbonly).",
+            )
+            return redirect(return_url)
+
+        try:
+            with OpenNMSClient.from_server(server) as client:
+                try:
+                    current_requisition = client.get_requisition(requisition.name)
+                except OpenNMSError as exc:
+                    messages.error(
+                        request,
+                        "Cannot check existing OpenNMS state for "
+                        f"{requisition.name}: {exc}",
+                    )
+                    return redirect(return_url)
+                adopt_foreign_ids(
+                    resolution.nodes,
+                    existing_foreign_ids_by_label(current_requisition),
+                )
+
+                node = next(
+                    (n for n in resolution.nodes if n.foreign_id == foreign_id),
+                    None,
+                )
+                if node is None:
+                    messages.error(
+                        request,
+                        f"Node {foreign_id!r} is no longer part of "
+                        f"{requisition.name} — reload the dry run.",
+                    )
+                    return redirect(return_url)
+
+                node_xml = render_node_document(
+                    node, default_location=default_location
+                )
+                client.post_node(requisition.name, node_xml)
+                client.import_requisition(requisition.name, rescan_existing=rescan)
+        except (RenderError, OpenNMSError) as exc:
+            messages.error(request, f"Sync of node {foreign_id!r} failed: {exc}")
+        else:
+            messages.success(
+                request,
+                f"Node {node.node_label!r} pushed to OpenNMS (accepted for "
+                "import — AD-12).",
+            )
+        return redirect(return_url)
 
 
 class RequisitionDryRunView(PermissionRequiredMixin, View):

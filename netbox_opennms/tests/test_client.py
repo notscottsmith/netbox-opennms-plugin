@@ -94,6 +94,23 @@ class OpenNMSClientTest(SimpleTestCase):
         self.assertEqual(mock_request.call_args.kwargs["data"], b"<model-import/>")
 
     @mock.patch.object(requests.Session, "request")
+    def test_post_node(self, mock_request):
+        mock_request.return_value = mock.Mock(status_code=202, ok=True)
+        _client().post_node("netbox.raleigh.router", b"<node/>")
+        method, url = mock_request.call_args.args
+        self.assertEqual(method, "POST")
+        self.assertEqual(
+            url,
+            "https://onms.example/opennms/rest/requisitions/"
+            "netbox.raleigh.router/nodes",
+        )
+        self.assertEqual(mock_request.call_args.kwargs["data"], b"<node/>")
+        self.assertEqual(
+            mock_request.call_args.kwargs["headers"]["Content-Type"],
+            "application/xml",
+        )
+
+    @mock.patch.object(requests.Session, "request")
     def test_run_discovery(self, mock_request):
         mock_request.return_value = mock.Mock(status_code=202, ok=True)
         _client().run_discovery(

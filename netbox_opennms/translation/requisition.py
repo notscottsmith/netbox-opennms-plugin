@@ -59,6 +59,54 @@ def _add_metadata(parent, entries):
         meta.set("value", str(value))
 
 
+def render_node(node, default_location=""):
+    """Render one ``<node>`` element (a ``RequisitionNode``) from a ``NodeSpec``.
+
+    Extracted from ``render_requisition``'s per-node body so issue #35's
+    single-node push (``render_node_document`` → ``client.post_node``) reuses
+    this exact fragment instead of a parallel per-node renderer.
+    """
+    if not node.node_label:
+        raise RenderError(f"node {node.foreign_id!r} has no node-label.")
+    # A node with no interface is a valid inventory-only import (RD-6/h) — the
+    # membership layer marks it with a Warning; it is not a render error.
+    el = etree.Element(f"{{{MODEL_IMPORT_NS}}}node")
+    el.set("node-label", node.node_label)
+    el.set("foreign-id", node.foreign_id)
+
+    location = node.location or default_location
+    if location:
+        el.set("location", location)
+
+    # Primary interface first, then the rest by bare IP for determinism.
+    ordered = sorted(
+        node.interfaces,
+        key=lambda i: (i.role != InterfaceRoleChoices.PRIMARY, i.ip),
+    )
+    for interface in ordered:
+        iface_el = etree.SubElement(el, f"{{{MODEL_IMPORT_NS}}}interface")
+        iface_el.set("ip-addr", interface.ip)
+        iface_el.set("snmp-primary", interface.role)
+        for name in sorted(interface.services):
+            service = etree.SubElement(
+                iface_el, f"{{{MODEL_IMPORT_NS}}}monitored-service"
+            )
+            service.set("service-name", name)
+            # Service-scope metadata applies to every monitored-service (RD-3).
+            _add_metadata(service, node.service_metadata)
+        # Interface-scope metadata applies to every interface (RD-3).
+        _add_metadata(iface_el, node.interface_metadata)
+
+    # Node-scope enrichment, after interfaces per the requisition XSD order:
+    # <interface>* then <asset>* then <meta-data>* (RD-2/RD-3).
+    for name, value in node.assets:
+        asset_el = etree.SubElement(el, f"{{{MODEL_IMPORT_NS}}}asset")
+        asset_el.set("name", name)
+        asset_el.set("value", str(value))
+    _add_metadata(el, node.node_metadata)
+    return el
+
+
 def render_requisition(foreign_source, nodes, date_stamp=None, default_location=""):
     """Render the complete ``model-import`` requisition for one Foreign Source.
 
@@ -74,46 +122,22 @@ def render_requisition(foreign_source, nodes, date_stamp=None, default_location=
         root.set("date-stamp", date_stamp)
 
     for node in nodes:
-        if not node.node_label:
-            raise RenderError(f"node {node.foreign_id!r} has no node-label.")
-        # A node with no interface is a valid inventory-only import (RD-6/h) — the
-        # membership layer marks it with a Warning; it is not a render error.
-        el = etree.SubElement(root, f"{{{MODEL_IMPORT_NS}}}node")
-        el.set("node-label", node.node_label)
-        el.set("foreign-id", node.foreign_id)
-
-        location = node.location or default_location
-        if location:
-            el.set("location", location)
-
-        # Primary interface first, then the rest by bare IP for determinism.
-        ordered = sorted(
-            node.interfaces,
-            key=lambda i: (i.role != InterfaceRoleChoices.PRIMARY, i.ip),
-        )
-        for interface in ordered:
-            iface_el = etree.SubElement(el, f"{{{MODEL_IMPORT_NS}}}interface")
-            iface_el.set("ip-addr", interface.ip)
-            iface_el.set("snmp-primary", interface.role)
-            for name in sorted(interface.services):
-                service = etree.SubElement(
-                    iface_el, f"{{{MODEL_IMPORT_NS}}}monitored-service"
-                )
-                service.set("service-name", name)
-                # Service-scope metadata applies to every monitored-service (RD-3).
-                _add_metadata(service, node.service_metadata)
-            # Interface-scope metadata applies to every interface (RD-3).
-            _add_metadata(iface_el, node.interface_metadata)
-
-        # Node-scope enrichment, after interfaces per the requisition XSD order:
-        # <interface>* then <asset>* then <meta-data>* (RD-2/RD-3).
-        for name, value in node.assets:
-            asset_el = etree.SubElement(el, f"{{{MODEL_IMPORT_NS}}}asset")
-            asset_el.set("name", name)
-            asset_el.set("value", str(value))
-        _add_metadata(el, node.node_metadata)
+        root.append(render_node(node, default_location))
 
     return etree.tostring(root, xml_declaration=True, encoding="UTF-8")
+
+
+def render_node_document(node, default_location=""):
+    """Standalone ``<node>`` document for one node (issue #35).
+
+    The body of the single-node push (``client.post_node`` posts this to
+    ``/rest/requisitions/{foreignSource}/nodes``) — the same fragment
+    ``render_requisition`` appends into a full ``model-import`` document,
+    just serialized on its own. Returns bytes.
+    """
+    return etree.tostring(
+        render_node(node, default_location), xml_declaration=True, encoding="UTF-8"
+    )
 
 
 def render_foreign_source_definition(foreign_source, requisition, date_stamp=None):
