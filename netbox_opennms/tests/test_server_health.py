@@ -209,3 +209,32 @@ class OpenNMSServerTestAjaxViewTest(TestCase):
             {"url": "https://new.example", "username": "svc", "password": "x"},
         )
         self.assertEqual(response.status_code, 403)
+
+    @mock.patch("netbox_opennms.views.OpenNMSClient")
+    def test_locations_fetch_failure_is_reported_as_failure(self, mock_client_cls):
+        # Pins the behavior OpenNMSServerTestView was fixed to match (#33):
+        # this view never swallowed a list_locations() failure, but had no
+        # regression test covering it.
+        client = mock_client_cls.return_value
+        client.__enter__ = mock.Mock(return_value=client)
+        client.__exit__ = mock.Mock(return_value=False)
+        client.test_connection.return_value = True
+        client.list_locations.side_effect = OpenNMSHTTPError("boom", status_code=500)
+
+        response = self.client.post(
+            self._url(),
+            {
+                "url": "https://new.example",
+                "username": "svc",
+                "password": "x",
+                "server_id": self.server.pk,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertFalse(data["ok"])
+        self.assertIn("boom", data["message"])
+        self.server.refresh_from_db()
+        self.assertEqual(self.server.last_check_status, "failed")
+        self.assertEqual(self.server.available_locations, [])
