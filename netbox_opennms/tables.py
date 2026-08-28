@@ -131,9 +131,10 @@ class OpenNMSServerTable(NetBoxTable):
 
 
 class NodeDiffTable(BaseTable):
-    """One row per node in a Requisition dry-run diff (issue #34).
+    """One row per node in a Requisition scan diff (issue #34).
 
-    ``NodeDiff`` (``dryrun.py``) is a plain dataclass, not a Django model, so
+    ``NodeDiff`` (``requisition_scan.py``) is a plain dataclass, not a Django
+    model, so
     this subclasses ``BaseTable`` rather than ``NetBoxTable`` — confirmed
     against NetBox 4.6.8's source (this plugin's pinned NetBox version):
     ``NetBoxTable.__init__`` unconditionally calls
@@ -434,8 +435,8 @@ class RequisitionTable(NetBoxTable):
     # avoids nesting a <form> inside the list view's outer bulk-action form.
     sync_action = _ActionColumn(
         template_code="""
-            <a href="{{ dry_run_url }}" class="btn btn-sm btn-outline-primary">
-              Dry run
+            <a href="{{ scan_url }}" class="btn btn-sm btn-outline-primary">
+              Scan
             </a>
             <button type="submit"
                     formaction="{{ sync_url }}"
@@ -448,8 +449,8 @@ class RequisitionTable(NetBoxTable):
             </button>
         """,
         context_fn=lambda record, table: {
-            "dry_run_url": reverse(
-                "plugins:netbox_opennms:requisition_dry_run", args=[record.pk]
+            "scan_url": reverse(
+                "plugins:netbox_opennms:requisition_scan", args=[record.pk]
             ),
             "sync_url": reverse(
                 "plugins:netbox_opennms:requisition_sync", args=[record.pk]

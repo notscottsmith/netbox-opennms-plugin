@@ -9,12 +9,12 @@ name, scan-interval, and detectors/policies copied verbatim; the filter is
 deliberately left for the admin to define, so an import alone never grows a
 Requisition's membership. The parsing here is pure (given an already-fetched
 ``get_foreign_source()`` JSON document); ``list_unmirrored`` is the only I/O
-wrapper, mirroring ``dryrun.py``'s pure-diff/thin-fetch split.
+wrapper, mirroring ``requisition_scan.py``'s pure-diff/thin-fetch split.
 """
 
 from dataclasses import dataclass, field
 
-from .dryrun import _as_list
+from .requisition_scan import _as_list
 
 
 @dataclass
@@ -40,7 +40,7 @@ def _parameters_from_entry(entry):
 
     UNVERIFIED against a live OpenNMS server (no Docker/live API access while
     building this — see issue #22's implementation notes): by symmetry with how
-    ``detectors``/``policies`` themselves nest (confirmed via ``dryrun.py``'s
+    ``detectors``/``policies`` themselves nest (confirmed via ``requisition_scan.py``'s
     ``_definition_changes``) and how JAXB/Jackson serializes a repeated child
     element, a parameter is assumed to arrive at ``entry["parameter"]`` in the
     same "list, bare dict, or absent" shape ``_as_list`` normalizes, each item a
@@ -59,7 +59,7 @@ def _parameters_from_entry(entry):
 def _rules_from_definition(definition, plural_key, singular_key):
     """Parse a definition's ``detectors``/``policies`` entries into ``RuleImport``s.
 
-    Mirrors ``dryrun._definition_changes``'s own unwrapping of the same JSON
+    Mirrors ``requisition_scan._definition_changes``'s own unwrapping of the same JSON
     (``{"detectors": {"detector": [...]}}``, a lone entry unwrapped to a bare
     dict, or the key absent entirely) via the shared ``_as_list`` helper.
     """
@@ -82,7 +82,7 @@ def build_foreign_source_import(definition):
     """Pure: turn a ``get_foreign_source()`` JSON document into importable pieces.
 
     ``definition`` may be any falsy/non-dict value (defensive, mirrors
-    ``dryrun._definition_changes``) — treated as an empty definition rather
+    ``requisition_scan._definition_changes``) — treated as an empty definition rather
     than raising.
     """
     definition = definition if isinstance(definition, dict) else {}

@@ -21,7 +21,6 @@ from ipam.models import IPAddress
 from utilities.testing import ViewTestCases
 
 from netbox_opennms.client import OpenNMSError
-from netbox_opennms.dryrun import DryRun, NodeDiff
 from netbox_opennms.membership import (
     Conflict,
     InterfaceSpec,
@@ -43,6 +42,7 @@ from netbox_opennms.models import (
     OpenNMSServer,
     Requisition,
 )
+from netbox_opennms.requisition_scan import NodeDiff, RequisitionScanResult
 from netbox_opennms.translation import RenderError
 
 DETECTOR_CLASS = "org.opennms.netmgt.provision.detector.icmp.IcmpDetector"
@@ -628,8 +628,8 @@ class RequisitionNodesViewTest(TestCase):
         self.assertNotIn("One-Time Sync", content)
 
 
-class RequisitionDryRunViewTest(TestCase):
-    """NodeDiffTable rendering for the dry-run view (issue #34)."""
+class RequisitionScanViewTest(TestCase):
+    """NodeDiffTable rendering for the scan view (issue #34)."""
 
     @classmethod
     def setUpTestData(cls):
@@ -661,7 +661,7 @@ class RequisitionDryRunViewTest(TestCase):
 
     def _url(self):
         return reverse(
-            "plugins:netbox_opennms:requisition_dry_run", args=[self.requisition.pk]
+            "plugins:netbox_opennms:requisition_scan", args=[self.requisition.pk]
         )
 
     def test_login_required(self):
@@ -669,25 +669,25 @@ class RequisitionDryRunViewTest(TestCase):
         response = self.client.get(self._url())
         self.assertEqual(response.status_code, 302)
 
-    @mock.patch("netbox_opennms.views.dry_run")
-    def test_error_is_shown_and_no_table_rendered(self, mock_dry_run):
-        mock_dry_run.side_effect = OpenNMSError("unreachable")
+    @mock.patch("netbox_opennms.views.scan_requisition")
+    def test_error_is_shown_and_no_table_rendered(self, mock_scan_requisition):
+        mock_scan_requisition.side_effect = OpenNMSError("unreachable")
         response = self.client.get(self._url())
         self.assertContains(response, "Could not reach OpenNMS")
         self.assertIsNone(response.context["table"])
 
-    @mock.patch("netbox_opennms.views.dry_run")
-    def test_conflicts_freeze_hides_the_table(self, mock_dry_run):
-        mock_dry_run.return_value = DryRun(
+    @mock.patch("netbox_opennms.views.scan_requisition")
+    def test_conflicts_freeze_hides_the_table(self, mock_scan_requisition):
+        mock_scan_requisition.return_value = RequisitionScanResult(
             foreign_source="fs-1", exists=True, conflicts=["c1"]
         )
         response = self.client.get(self._url())
         self.assertContains(response, "Frozen")
         self.assertIsNone(response.context["table"])
 
-    @mock.patch("netbox_opennms.views.dry_run")
-    def test_row_status_drives_the_row_css_class(self, mock_dry_run):
-        mock_dry_run.return_value = DryRun(
+    @mock.patch("netbox_opennms.views.scan_requisition")
+    def test_row_status_drives_the_row_css_class(self, mock_scan_requisition):
+        mock_scan_requisition.return_value = RequisitionScanResult(
             foreign_source="fs-1",
             exists=True,
             target_server=self.server,
@@ -704,9 +704,9 @@ class RequisitionDryRunViewTest(TestCase):
         self.assertIn("table-warning", rows_by_label["rtr-3"].attrs["class"])
         self.assertEqual(rows_by_label["rtr-4"].attrs["class"], "")
 
-    @mock.patch("netbox_opennms.views.dry_run")
-    def test_matched_netbox_object_is_linked(self, mock_dry_run):
-        mock_dry_run.return_value = DryRun(
+    @mock.patch("netbox_opennms.views.scan_requisition")
+    def test_matched_netbox_object_is_linked(self, mock_scan_requisition):
+        mock_scan_requisition.return_value = RequisitionScanResult(
             foreign_source="fs-1",
             exists=True,
             target_server=self.server,
@@ -715,9 +715,9 @@ class RequisitionDryRunViewTest(TestCase):
         response = self.client.get(self._url())
         self.assertContains(response, self.device.get_absolute_url())
 
-    @mock.patch("netbox_opennms.views.dry_run")
-    def test_unmatched_row_shows_no_match(self, mock_dry_run):
-        mock_dry_run.return_value = DryRun(
+    @mock.patch("netbox_opennms.views.scan_requisition")
+    def test_unmatched_row_shows_no_match(self, mock_scan_requisition):
+        mock_scan_requisition.return_value = RequisitionScanResult(
             foreign_source="fs-1",
             exists=True,
             target_server=self.server,
@@ -726,10 +726,12 @@ class RequisitionDryRunViewTest(TestCase):
         response = self.client.get(self._url())
         self.assertContains(response, "No match")
 
-    @mock.patch("netbox_opennms.views.dry_run")
-    def test_added_row_has_no_walk_link_or_opennms_node_link(self, mock_dry_run):
+    @mock.patch("netbox_opennms.views.scan_requisition")
+    def test_added_row_has_no_walk_link_or_opennms_node_link(
+        self, mock_scan_requisition
+    ):
         # Not yet provisioned in OpenNMS — opennms_node_id stays None.
-        mock_dry_run.return_value = DryRun(
+        mock_scan_requisition.return_value = RequisitionScanResult(
             foreign_source="fs-1",
             exists=False,
             target_server=self.server,
@@ -744,11 +746,13 @@ class RequisitionDryRunViewTest(TestCase):
             ),
         )
 
-    @mock.patch("netbox_opennms.views.dry_run")
-    def test_row_with_opennms_node_id_links_to_the_walk_view(self, mock_dry_run):
+    @mock.patch("netbox_opennms.views.scan_requisition")
+    def test_row_with_opennms_node_id_links_to_the_walk_view(
+        self, mock_scan_requisition
+    ):
         node = NodeDiff("device-1", "rtr-1", "unchanged")
         node.opennms_node_id = 42
-        mock_dry_run.return_value = DryRun(
+        mock_scan_requisition.return_value = RequisitionScanResult(
             foreign_source="fs-1",
             exists=True,
             target_server=self.server,
@@ -840,7 +844,7 @@ class RequisitionNodeWalkViewTest(TestCase):
 
 
 class RequisitionSyncNodeViewTest(TestCase):
-    """RequisitionSyncNodeView: single-node push from a dry-run row (issue #35)."""
+    """RequisitionSyncNodeView: single-node push from a scan row (issue #35)."""
 
     @classmethod
     def setUpTestData(cls):
@@ -952,9 +956,10 @@ class RequisitionSyncNodeViewTest(TestCase):
     def test_adopts_the_existing_foreign_id_before_matching_the_row(
         self, mock_resolve, mock_from_server
     ):
-        # The dry-run row's foreign_id is the ADOPTED id (dryrun.dry_run runs
-        # adopt_foreign_ids before building rows) — a freshly-resolved NodeSpec
-        # carries the un-adopted id until this view runs the same adoption pass.
+        # The scan row's foreign_id is the ADOPTED id
+        # (requisition_scan.scan_requisition runs adopt_foreign_ids before
+        # building rows) — a freshly-resolved NodeSpec carries the un-adopted
+        # id until this view runs the same adoption pass.
         mock_resolve.return_value = self._resolution(
             nodes=[self._node(foreign_id="netbox-device-1")]
         )

@@ -83,9 +83,9 @@ urlpatterns = (
         name="requisition_duplicate",
     ),
     path(
-        "requisitions/<int:pk>/dry-run/",
-        views.RequisitionDryRunView.as_view(),
-        name="requisition_dry_run",
+        "requisitions/<int:pk>/scan/",
+        views.RequisitionScanView.as_view(),
+        name="requisition_scan",
     ),
     path(
         "requisitions/<int:pk>/nodes/<int:opennms_node_id>/walk/",

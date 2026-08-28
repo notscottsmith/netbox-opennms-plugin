@@ -27,8 +27,9 @@ from collections import Counter, defaultdict
 
 
 def _as_list(value):
-    """Normalize an OpenNMS JSON collection to a list (see ``dryrun._as_list``:
-    the v1 REST serializer unwraps a single-element collection to a bare dict)."""
+    """Normalize an OpenNMS JSON collection to a list (see
+    ``requisition_scan._as_list``: the v1 REST serializer unwraps a
+    single-element collection to a bare dict)."""
     if value is None:
         return []
     return value if isinstance(value, list) else [value]

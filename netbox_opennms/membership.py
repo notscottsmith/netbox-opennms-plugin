@@ -79,7 +79,7 @@ class NodeSpec:
     # A non-blocking advisory (RD-6/h): set for an interface-less node (no management
     # IP) — the node provisions but is not actively monitored. Empty = healthy.
     warning: str = ""
-    # The NetBox Device/VM this node was resolved from (issue #34's dry-run table
+    # The NetBox Device/VM this node was resolved from (issue #34's scan table
     # needs it for the "Matched NetBox object" column) — set by resolve_node, the
     # only place a NodeSpec is built from a real object.
     netbox_object: object = None
@@ -204,6 +204,7 @@ def filter_errors(requisition):
             f"Filter contains keys not recognized by the selected object types: "
             f"{', '.join(unknown)}."
         )
+
     # An *effective* key is a known key whose value actually constrains — an empty
     # value ({"role": []}) is a no-op the FilterSet treats as "match everything",
     # so it must not satisfy the guard (H1).
@@ -603,7 +604,8 @@ def resolve_target_server(resolution, foreign_source):
     ``resolution.server`` when it cleanly resolves, else the Server this
     Foreign Source was last deployed to — the fallback that matters for a
     Remove/empty resolution, which carries no members to resolve a Server
-    from. Shared by ``jobs._render_and_replace`` and ``dryrun.dry_run``.
+    from. Shared by ``jobs._render_and_replace`` and
+    ``requisition_scan.scan_requisition``.
     """
     server = resolution.server if resolution is not None else None
     if server is None:
@@ -679,9 +681,7 @@ def requisition_conflicts(requisition, warnings=None):
     """
     if filter_errors(requisition):
         return []
-    matched = _matched_objects(
-        requisition, warnings if warnings is not None else []
-    )
+    matched = _matched_objects(requisition, warnings if warnings is not None else [])
     overrides = _overrides_by_object(matched)
     members = {}
     for obj in matched:

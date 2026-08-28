@@ -458,7 +458,7 @@ class OpenNMSClient:
         """The current (deployed) requisition for a Foreign Source as JSON, or None.
 
         ``GET /rest/requisitions/{fs}`` → the ``model-import`` document. A 404 (the
-        Foreign Source is not yet in OpenNMS) returns ``None`` so the dry-run reads
+        Foreign Source is not yet in OpenNMS) returns ``None`` so the scan reads
         it as an all-added diff (R7/M5), rather than raising. Other errors raise the
         typed taxonomy; an unparseable 2xx body raises ``OpenNMSError``.
         """
@@ -470,7 +470,7 @@ class OpenNMSClient:
         """The current foreign-source definition for a Foreign Source as JSON, or None.
 
         ``GET /rest/foreignSources/{fs}`` → detectors/policies/scan-interval. A 404
-        returns ``None`` (no definition yet). Feeds the dry-run's definition diff.
+        returns ``None`` (no definition yet). Feeds the scan's definition diff.
         """
         return self._get_json_or_none(
             f"/rest/foreignSources/{quote(foreign_source, safe='')}"

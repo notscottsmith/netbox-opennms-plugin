@@ -1,6 +1,6 @@
 # Copyright 2026 Ronny Trommer <ronny@no42.org>
 # SPDX-License-Identifier: MIT
-"""Tests for the pure dry-run differ (Requisition redesign, R7)."""
+"""Tests for the pure scan differ (Requisition redesign, R7)."""
 
 from unittest import mock
 
@@ -15,7 +15,6 @@ from dcim.models import (
 from django.test import SimpleTestCase, TestCase
 from ipam.models import IPAddress
 
-from netbox_opennms.dryrun import NodeDiff, _attach_opennms_node_ids, diff, dry_run
 from netbox_opennms.membership import (
     Conflict,
     InterfaceSpec,
@@ -24,6 +23,12 @@ from netbox_opennms.membership import (
     ServerConflict,
 )
 from netbox_opennms.models import DeployedForeignSource, OpenNMSServer, Requisition
+from netbox_opennms.requisition_scan import (
+    NodeDiff,
+    _attach_opennms_node_ids,
+    diff,
+    scan_requisition,
+)
 
 
 class _Rules:
@@ -47,7 +52,9 @@ def _resolution(nodes):
 
 def _node(ip="10.0.0.1", services=("ICMP",), netbox_object=None):
     return NodeSpec(
-        "rtr-1", "device-1", "",
+        "rtr-1",
+        "device-1",
+        "",
         [InterfaceSpec(ip, "P", services=list(services))],
         netbox_object=netbox_object,
     )
@@ -71,7 +78,7 @@ def _current(ip="10.0.0.1", services=("ICMP",)):
     }
 
 
-class DryRunDiffTest(SimpleTestCase):
+class ScanDiffTest(SimpleTestCase):
     def test_empty_diff_on_identical(self):
         result = diff(_resolution([_node()]), _current(), {"scan-interval": "1d"})
         self.assertFalse(result.has_changes)
@@ -87,7 +94,7 @@ class DryRunDiffTest(SimpleTestCase):
         )
 
     def test_added_and_changed_and_unchanged_carry_the_matched_netbox_object(self):
-        # Issue #34: the dry-run table's "Matched NetBox object" column needs a
+        # Issue #34: the scan table's "Matched NetBox object" column needs a
         # reference to the originating Device/VM, not just its foreign_id.
         obj = object()
         result = diff(_resolution([_node(netbox_object=obj)]), None, None)
@@ -128,9 +135,7 @@ class DryRunDiffTest(SimpleTestCase):
             {"scan-interval": "1d"},
         )
         self.assertEqual(len(result.changed), 1)
-        self.assertTrue(
-            any("management IP" in c for c in result.changed[0].changes)
-        )
+        self.assertTrue(any("management IP" in c for c in result.changed[0].changes))
 
     def test_service_change(self):
         result = diff(
@@ -146,12 +151,10 @@ class DryRunDiffTest(SimpleTestCase):
 
     def test_definition_scan_interval_change(self):
         result = diff(_resolution([_node()]), _current(), {"scan-interval": "30m"})
-        self.assertTrue(
-            any("scan-interval" in c for c in result.definition_changes)
-        )
+        self.assertTrue(any("scan-interval" in c for c in result.definition_changes))
 
     def test_conflict_reports_freeze_instead_of_diff(self):
-        # C1: a frozen Requisition's dry-run reports the conflicts, not a node
+        # C1: a frozen Requisition's scan reports the conflicts, not a node
         # diff of a push that is blocked anyway.
         resolution = _resolution([_node()])
         resolution.conflicts = [Conflict("rtr-1", "device-1", ["a", "b"])]
@@ -182,7 +185,9 @@ class DryRunDiffTest(SimpleTestCase):
         current = _current()
         current["node"][0]["location"] = "Default"
         result = diff(
-            _resolution([_node()]), current, {"scan-interval": "1d"},
+            _resolution([_node()]),
+            current,
+            {"scan-interval": "1d"},
             default_location="Default",
         )
         self.assertFalse(result.has_changes)
@@ -211,9 +216,7 @@ class AttachOpenNMSNodeIdsTest(SimpleTestCase):
 
     def test_matching_row_gets_the_live_node_id(self):
         result = diff(_resolution([_node()]), None, None)
-        _attach_opennms_node_ids(
-            result, [{"id": 7, "foreignId": "device-1"}]
-        )
+        _attach_opennms_node_ids(result, [{"id": 7, "foreignId": "device-1"}])
         self.assertEqual(result.added[0].opennms_node_id, 7)
 
     def test_unmatched_row_stays_none(self):
@@ -231,8 +234,8 @@ class AttachOpenNMSNodeIdsTest(SimpleTestCase):
 FS = "netbox.raleigh.router"
 
 
-class DryRunFetchTest(TestCase):
-    """``dry_run()``'s target-Server resolution (ADR 0002), mirroring
+class ScanFetchTest(TestCase):
+    """``scan_requisition()``'s target-Server resolution (ADR 0002), mirroring
     ``jobs._render_and_replace``: a cleanly-resolved Server is used first, else
     the Server this Foreign Source was last deployed to, else there is nothing
     live to compare against.
@@ -250,9 +253,7 @@ class DryRunFetchTest(TestCase):
         cls.device = Device.objects.create(
             name="rtr-1", device_type=cls.dt, role=cls.role, site=cls.site
         )
-        iface = Interface.objects.create(
-            device=cls.device, name="eth0", type="virtual"
-        )
+        iface = Interface.objects.create(device=cls.device, name="eth0", type="virtual")
         address = IPAddress.objects.create(address="10.0.0.1/24", assigned_object=iface)
         cls.device.primary_ip4 = address
         cls.device.save()
@@ -260,32 +261,30 @@ class DryRunFetchTest(TestCase):
             name="Acme", url="https://onms.example/opennms", is_default=True
         )
 
-    @mock.patch("netbox_opennms.dryrun.OpenNMSClient.from_server")
+    @mock.patch("netbox_opennms.requisition_scan.OpenNMSClient.from_server")
     def test_uses_the_resolved_server(self, mock_from_server):
         client = mock_from_server.return_value.__enter__.return_value
         client.get_requisition.return_value = None
         client.get_foreign_source.return_value = None
         client.list_nodes.return_value = []
-        dry_run(FS)
+        scan_requisition(FS)
         mock_from_server.assert_called_once_with(self.server)
 
-    @mock.patch("netbox_opennms.dryrun.OpenNMSClient.from_server")
+    @mock.patch("netbox_opennms.requisition_scan.OpenNMSClient.from_server")
     def test_resolves_opennms_node_ids_via_one_batched_call(self, mock_from_server):
         # Issue #34: one list_nodes() call scoped to this Foreign Source, not a
         # per-row GET, resolves the live OpenNMS node id for the added row.
         client = mock_from_server.return_value.__enter__.return_value
         client.get_requisition.return_value = None
         client.get_foreign_source.return_value = None
-        client.list_nodes.return_value = [
-            {"id": 99, "foreignId": "netbox-device-1"}
-        ]
-        result = dry_run(FS)
+        client.list_nodes.return_value = [{"id": 99, "foreignId": "netbox-device-1"}]
+        result = scan_requisition(FS)
         client.list_nodes.assert_called_once_with(foreign_source=FS)
         self.assertEqual(result.added[0].opennms_node_id, 99)
 
-    @mock.patch("netbox_opennms.dryrun.OpenNMSClient.from_server")
+    @mock.patch("netbox_opennms.requisition_scan.OpenNMSClient.from_server")
     def test_result_carries_the_resolved_server(self, mock_from_server):
-        # Issue #34: the dry-run table's OpenNMS-node-link column needs the
+        # Issue #34: the scan table's OpenNMS-node-link column needs the
         # target Server's URL — carried on the result so the view doesn't have
         # to re-run resolve_target_server() (and its underlying resolve())
         # a second time just to get it.
@@ -293,16 +292,14 @@ class DryRunFetchTest(TestCase):
         client.get_requisition.return_value = None
         client.get_foreign_source.return_value = None
         client.list_nodes.return_value = []
-        result = dry_run(FS)
+        result = scan_requisition(FS)
         self.assertEqual(result.target_server, self.server)
 
-    @mock.patch("netbox_opennms.dryrun.OpenNMSClient.from_server")
+    @mock.patch("netbox_opennms.requisition_scan.OpenNMSClient.from_server")
     def test_falls_back_to_the_previously_deployed_server(self, mock_from_server):
         # Zero members (e.g. the requisition's device was removed) → resolution.
         # server is None; fall back to where this Foreign Source last landed.
-        other = OpenNMSServer.objects.create(
-            name="Other", url="https://other.example"
-        )
+        other = OpenNMSServer.objects.create(name="Other", url="https://other.example")
         DeployedForeignSource.objects.create(name=FS, server=other)
         Requisition.objects.filter(pk=self.requisition.pk).update(
             filter_params={"role": ["nonexistent"]}
@@ -310,23 +307,23 @@ class DryRunFetchTest(TestCase):
         client = mock_from_server.return_value.__enter__.return_value
         client.get_requisition.return_value = None
         client.get_foreign_source.return_value = None
-        dry_run(FS)
+        scan_requisition(FS)
         mock_from_server.assert_called_once_with(other)
 
-    @mock.patch("netbox_opennms.dryrun.OpenNMSClient.from_server")
+    @mock.patch("netbox_opennms.requisition_scan.OpenNMSClient.from_server")
     def test_no_resolvable_or_deployed_server_skips_the_fetch(self, mock_from_server):
         Requisition.objects.filter(pk=self.requisition.pk).update(
             filter_params={"role": ["nonexistent"]}
         )
         OpenNMSServer.objects.all().delete()
-        result = dry_run(FS)
+        result = scan_requisition(FS)
         mock_from_server.assert_not_called()
         self.assertFalse(result.exists)
 
-    @mock.patch("netbox_opennms.dryrun.OpenNMSClient.from_server")
+    @mock.patch("netbox_opennms.requisition_scan.OpenNMSClient.from_server")
     def test_server_conflict_skips_the_fetch(self, mock_from_server):
         # Two members in different Sites, each bound to a different Server →
-        # they disagree — the dry-run reports the freeze without ever calling
+        # they disagree — the scan reports the freeze without ever calling
         # OpenNMS.
         other_site = Site.objects.create(name="Durham", slug="durham")
         other_server = OpenNMSServer.objects.create(
@@ -345,15 +342,13 @@ class DryRunFetchTest(TestCase):
         Requisition.objects.filter(pk=self.requisition.pk).update(
             filter_params={"role": ["router"]}
         )
-        result = dry_run(FS)
+        result = scan_requisition(FS)
         mock_from_server.assert_not_called()
         self.assertTrue(result.server_conflict)
 
-    @mock.patch("netbox_opennms.dryrun.OpenNMSClient.from_server")
-    def test_adopted_node_shown_unchanged_not_added_and_removed(
-        self, mock_from_server
-    ):
-        # Issue #5: dry-run must show the SAME Foreign ID a Sync would actually
+    @mock.patch("netbox_opennms.requisition_scan.OpenNMSClient.from_server")
+    def test_adopted_node_shown_unchanged_not_added_and_removed(self, mock_from_server):
+        # Issue #5: scan must show the SAME Foreign ID a Sync would actually
         # push — an unambiguous label match reuses the existing Foreign ID, so
         # an otherwise-identical node reads as unchanged, not a spurious
         # added+removed pair (two different Foreign IDs for the same node).
@@ -374,21 +369,21 @@ class DryRunFetchTest(TestCase):
             ]
         }
         client.get_foreign_source.return_value = None
-        result = dry_run(FS)
+        result = scan_requisition(FS)
         self.assertEqual(result.added, [])
         self.assertEqual(result.removed, [])
         self.assertEqual(len(result.unchanged), 1)
 
-    @mock.patch("netbox_opennms.dryrun.OpenNMSClient.from_server")
+    @mock.patch("netbox_opennms.requisition_scan.OpenNMSClient.from_server")
     def test_non_adopted_node_shows_freshly_derived_id(self, mock_from_server):
         client = mock_from_server.return_value.__enter__.return_value
         client.get_requisition.return_value = None
         client.get_foreign_source.return_value = None
-        result = dry_run(FS)
+        result = scan_requisition(FS)
         self.assertEqual(len(result.added), 1)
         self.assertTrue(result.added[0].foreign_id.startswith("netbox-device-"))
 
-    @mock.patch("netbox_opennms.dryrun.OpenNMSClient.from_server")
+    @mock.patch("netbox_opennms.requisition_scan.OpenNMSClient.from_server")
     def test_ambiguous_adoption_match_warns(self, mock_from_server):
         client = mock_from_server.return_value.__enter__.return_value
         client.get_requisition.return_value = {
@@ -398,5 +393,5 @@ class DryRunFetchTest(TestCase):
             ]
         }
         client.get_foreign_source.return_value = None
-        result = dry_run(FS)
+        result = scan_requisition(FS)
         self.assertTrue(any("ambiguous" in w for w in result.warnings))

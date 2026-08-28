@@ -1,6 +1,7 @@
 # Copyright 2026 Ronny Trommer <ronny@no42.org>
 # SPDX-License-Identifier: MIT
-"""Dry-run diff of a Requisition against the live OpenNMS state (R7).
+"""Scan a Requisition against the live OpenNMS state (R7, renamed from
+"dry run" for terminology consistency — issue #48).
 
 Before Sync, compare the rendered intent (``membership.resolve`` → nodes, plus the
 Requisition's definition) against what OpenNMS currently holds, per node
@@ -54,7 +55,7 @@ class NodeDiff:
 
 
 @dataclass
-class DryRun:
+class RequisitionScanResult:
     foreign_source: str
     exists: bool  # False = the Foreign Source is not yet in OpenNMS (all-added)
     added: list = field(default_factory=list)
@@ -97,7 +98,7 @@ def _desired_nodes(resolution, default_location=""):
             None,
         )
         # A node may have no Primary (management demoted, none promoted). Fall back
-        # to the lowest interface IP so the dry-run shows a stable management IP
+        # to the lowest interface IP so the scan shows a stable management IP
         # rather than None (OpenNMS elects a primary among the eligible interfaces).
         if primary is None and node.interfaces:
             primary = min(node.interfaces, key=lambda i: i.ip)
@@ -208,13 +209,13 @@ def _definition_changes(requisition, current_def):
 
 
 def diff(resolution, current_requisition, current_definition, default_location=""):
-    """Pure dry-run diff. ``current_*`` are parsed OpenNMS JSON (or ``None``).
+    """Pure scan diff. ``current_*`` are parsed OpenNMS JSON (or ``None``).
 
     ``default_location`` mirrors the renderer so a blank node location compared
     against OpenNMS's default doesn't read as a change.
     """
     foreign_source = resolution.foreign_source if resolution is not None else ""
-    result = DryRun(
+    result = RequisitionScanResult(
         foreign_source=foreign_source, exists=current_requisition is not None
     )
     if resolution is not None:
@@ -290,7 +291,7 @@ def _attach_opennms_node_ids(result, opennms_nodes):
         row.opennms_node_id = node_id_by_foreign_id.get(row.foreign_id)
 
 
-def dry_run(foreign_source):
+def scan_requisition(foreign_source):
     """Fetch OpenNMS state for *foreign_source* and diff the rendered intent (R7).
 
     Resolved FIRST: a frozen Requisition's report needs no remote data, so a
@@ -316,7 +317,7 @@ def dry_run(foreign_source):
     with OpenNMSClient.from_server(server) as client:
         current_requisition = client.get_requisition(foreign_source)
         current_definition = client.get_foreign_source(foreign_source)
-        # Batched once per page render (issue #34) so the dry-run table's
+        # Batched once per page render (issue #34) so the scan table's
         # "OpenNMS node link" / node-walk-link columns don't cost a GET per row.
         opennms_nodes = client.list_nodes(foreign_source=foreign_source)
 

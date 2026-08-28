@@ -9,11 +9,12 @@ join ``scan.py`` uses), pull its SNMP interfaces and discovered neighbor
 links and commit them — interfaces are created/updated on the object, and a
 neighbor link with both endpoints matched becomes a NetBox cable.
 
-Mirrors ``dryrun.py``/``scan.py``'s split: ``plan_reverse_sync`` builds the
-change plan from already-fetched OpenNMS data (no network calls of its own —
-it does read NetBox's current Interface/Cable state directly, since that's a
-local DB read rather than a network hop worth isolating, unlike
-``dryrun.diff``'s stricter no-DB-either purity) and ``run_reverse_sync`` is
+Mirrors ``requisition_scan.py``/``scan.py``'s split: ``plan_reverse_sync``
+builds the change plan from already-fetched OpenNMS data (no network calls of
+its own — it does read NetBox's current Interface/Cable state directly, since
+that's a local DB read rather than a network hop worth isolating, unlike
+``requisition_scan.diff``'s stricter no-DB-either purity) and
+``run_reverse_sync`` is
 the thin I/O wrapper that fetches per node, plans, and applies. #24 (bulk
 One-Time Sync) reuses this same engine across every node on a Requisition's
 Nodes tab.
@@ -160,8 +161,7 @@ def _existing_interfaces(netbox_object, kind):
         else {"virtual_machine": netbox_object}
     )
     return {
-        iface.name: iface
-        for iface in interface_model.objects.filter(**filter_kwargs)
+        iface.name: iface for iface in interface_model.objects.filter(**filter_kwargs)
     }
 
 
@@ -194,9 +194,7 @@ def plan_reverse_sync(node_data, netbox_object):
             continue
         changes = []
         if current.description != description:
-            changes.append(
-                f"description {current.description!r} → {description!r}"
-            )
+            changes.append(f"description {current.description!r} → {description!r}")
         if current.enabled != enabled:
             changes.append(f"enabled {current.enabled} → {enabled}")
         interfaces.append(

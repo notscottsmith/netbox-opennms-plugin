@@ -12,8 +12,8 @@
         Node walk — {{ object|linkify }} <code>{{ object.name }}</code>
         <span class="text-muted">/ OpenNMS node {{ opennms_node_id }}</span>
       </h2>
-      <a href="{% url 'plugins:netbox_opennms:requisition_dry_run' pk=object.pk %}" class="btn btn-sm btn-outline-secondary">
-        Back to dry run
+      <a href="{% url 'plugins:netbox_opennms:requisition_scan' pk=object.pk %}" class="btn btn-sm btn-outline-secondary">
+        Back to scan
       </a>
     </div>
     <div class="card-body">

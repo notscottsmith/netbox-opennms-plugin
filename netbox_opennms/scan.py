@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 """OpenNMS Discovery scan reconciliation (issue #7).
 
-Mirrors ``dryrun.py``'s ``diff()``: a single pure function (``reconcile``)
+Mirrors ``requisition_scan.py``'s ``diff()``: a single pure function (``reconcile``)
 compares already-fetched OpenNMS node inventory against an already-built
 NetBox foreign-id index and returns a green/orange/red match verdict per
 node, with field-level diff detail for orange. No network access inside it —
@@ -161,8 +161,9 @@ def reconcile(opennms_nodes, netbox_index):
 def scan_server(server):
     """Fetch *server*'s live node inventory and reconcile it against NetBox.
 
-    The thin I/O wrapper around ``reconcile`` (mirrors ``dryrun.dry_run``):
-    one client round-trip, then the pure function. Raises ``OpenNMSError`` on
+    The thin I/O wrapper around ``reconcile`` (mirrors
+    ``requisition_scan.scan_requisition``): one client round-trip, then the
+    pure function. Raises ``OpenNMSError`` on
     a client failure — callers degrade per their own convention (AD-16).
     """
     from .client import OpenNMSClient

@@ -43,7 +43,7 @@ The stable per-node identifier the plugin derives for each Requisition member an
 The `foreign_id_prefix` plugin setting (default `netbox`) prepended to every Foreign ID this plugin derives. Configurable per install; changing it is a node-identity change, not a cosmetic one.
 
 **Adoption**:
-Before a Sync renders and pushes a Requisition, matching a desired node's label against OpenNMS's current live state by Foreign Source and reusing the existing node's Foreign ID verbatim, instead of assigning a freshly-derived one — so a pre-existing OpenNMS node (created by hand, by a prior scheme, or by another tool) is kept in place rather than duplicated. Unambiguous by construction: a label matching more than one node on either side is skipped (keeps the freshly-derived id) and raises a non-blocking warning. Applied identically before a real Sync and before a dry-run diff, so the preview always matches what a Sync would actually push.
+Before a Sync renders and pushes a Requisition, matching a desired node's label against OpenNMS's current live state by Foreign Source and reusing the existing node's Foreign ID verbatim, instead of assigning a freshly-derived one — so a pre-existing OpenNMS node (created by hand, by a prior scheme, or by another tool) is kept in place rather than duplicated. Unambiguous by construction: a label matching more than one node on either side is skipped (keeps the freshly-derived id) and raises a non-blocking warning. Applied identically before a real Sync and before a scan diff, so the preview always matches what a Sync would actually push.
 
 ### Discovery
 

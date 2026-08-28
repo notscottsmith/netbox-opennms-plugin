@@ -76,7 +76,7 @@ docker compose --profile opennms up -d
 
 The [`quickstart/`](quickstart/) stack is seeded with example Devices, VMs, and
 Requisitions, so every path is clickable from the first boot. Full walkthrough —
-seeding, dry-run, and Sync — in the
+seeding, scan, and Sync — in the
 **[Quickstart guide](https://no42-org.github.io/netbox-opennms-plugin/#local)**.
 
 ## Installation
@@ -122,7 +122,7 @@ and netbox-docker, not the package.)
    ```dockerfile
    # Dockerfile
    FROM netboxcommunity/netbox:v4.6      # NetBox 4.6.1+; keep in step with the chart appVersion
-   RUN /opt/netbox/venv/bin/pip install netbox-opennms-plugin==0.1.12
+   RUN /opt/netbox/venv/bin/pip install netbox-opennms-plugin==0.1.13
    ```
 
    Pin the plugin version so image builds stay reproducible; for an air-gapped
@@ -289,14 +289,14 @@ Requisition filters must be **disjoint**: an object matched by more than one
 Requisition's filter is a **conflict** — Sync of every involved Requisition is
 blocked (their OpenNMS state stays untouched) until you resolve the overlap, so a
 node always lives in exactly one Foreign Source and nothing ever moves or
-disappears implicitly. A **dry-run** shows, per node, exactly what a Sync would
+disappears implicitly. A **scan** shows, per node, exactly what a Sync would
 add / remove / change against the live OpenNMS state before you commit.
 
 Per-node status is **graded**: a **Critical** (red) — a filter conflict — **blocks
 Sync**; a **Warning** (yellow) is advisory and does **not**. A member with **no
 management IP** is a Warning: rather than silently skipping it, the plugin
 provisions an **inventory-only node with no IP interface** (it will not be actively
-monitored) and surfaces the warning in the Sync preview, the dry-run, and the
+monitored) and surfaces the warning in the Requisitions list, the scan, and the
 Device/VM page — exclude the object if you don't want it in OpenNMS at all.
 
 **Sync** renders the complete OpenNMS *foreign-source definition* + *requisition*
@@ -357,17 +357,17 @@ involved Requisition is blocked (frozen — the OpenNMS state stays exactly as l
 synced) until you resolve it. Resolve by narrowing a filter — typically with a
 negated parameter, e.g. `{"role": ["switch"], "tag__n": ["critical"]}` — or by
 excluding the object (an excluded object never conflicts; it is monitored
-nowhere). Conflicts are shown on the Requisition page, the Sync preview, the
-dry-run, and the affected Device/VM page. The REST API follows the same
+nowhere). Conflicts are shown on the Requisition page, the Requisitions list,
+the scan, and the affected Device/VM page. The REST API follows the same
 save-never-blocks rule but has **no warning channel** — after automated writes,
-check the Sync preview (or the requisition page) for conflicts.
+check the Requisitions list (or the requisition page) for conflicts.
 
 Node identity is the pair *(Foreign Source, type-qualified Foreign ID)* —
 `{foreign_id_prefix}-device-{pk}` / `{foreign_id_prefix}-vm-{pk}` (prefix
 configurable, default `netbox`) — so a re-sync updates a node in place and renaming a
 Device only relabels it (never a duplicate). Moving an object between Requisitions
 (a filter change) changes its Foreign Source, which OpenNMS treats as a new node;
-the per-node **dry-run** surfaces such moves — and every add / remove / change
+the per-node **scan** surfaces such moves — and every add / remove / change
 against the live OpenNMS state — before you Sync.
 
 ### Adopting a pre-existing OpenNMS node
@@ -380,9 +380,8 @@ label unambiguously matches an existing node there, reuses that node's
 existing Foreign ID instead of deriving a fresh one — regardless of what
 scheme produced it. If a label matches more than one node on either side, that
 label is excluded from adoption (falls back to the derived Foreign ID) and a
-warning is surfaced alongside other per-node sync warnings. The Sync preview
-(dry-run) reflects the same adopted Foreign IDs, so it always matches what a
-real Sync would push.
+warning is surfaced alongside other per-node sync warnings. The scan reflects
+the same adopted Foreign IDs, so it always matches what a real Sync would push.
 
 ## Development & contributing
 

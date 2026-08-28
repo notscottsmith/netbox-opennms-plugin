@@ -57,7 +57,7 @@
 │   ├── filtersets.py  derivation.py  validation.py
 │   ├── enrichment.py          #   NetBox attribute → asset/metadata resolver
 │   ├── translation/           #   pure render: requisition + foreign-source XML
-│   ├── jobs.py  dryrun.py  signals.py   # sync/remove jobs, dry-run diff, reconciler
+│   ├── jobs.py  requisition_scan.py  signals.py   # sync/remove jobs, scan diff, reconciler
 │   ├── forms.py  views.py  tables.py  navigation.py  urls.py  api/  templates/
 │   └── tests/                 #   unit suite + live-OpenNMS integration + spike
 ├── compose.yml                # test stack (Postgres + Redis + NetBox test runner)
@@ -181,7 +181,7 @@ make integration-spike</code></pre>
     <div class="sec-head"><span class="idx">07</span><h2>Local test environment</h2></div>
     <p class="sec-intro">
       To click through a real feature — author a Requisition, add detectors/policies,
-      dry-run, and Sync a node into OpenNMS — bring up the seeded quickstart stack:
+      scan, and Sync a node into OpenNMS — bring up the seeded quickstart stack:
       NetBox (UI + worker) <em>and</em> a disposable OpenNMS Horizon 36. It lives in
       <a href="https://github.com/no42-org/netbox-opennms-plugin/tree/main/quickstart">quickstart/</a>.
     </p>
@@ -241,7 +241,7 @@ docker compose --profile opennms up -d</code></pre>
         <code>{"role": ["&lt;role-slug&gt;"]}</code> or <b>Import from Saved
         Filter</b> — and use the panel <b>Add</b> buttons to attach detectors,
         policies, asset mappings, and metadata.</li>
-      <li><b>Dry run</b> to preview, per node, exactly what a Sync would push.</li>
+      <li><b>Scan</b> to preview, per node, exactly what a Sync would push.</li>
       <li><b>Sync to OpenNMS</b> — the <b>OpenNMS Sync Status</b> panel shows
         <code>submitted</code> → <code>succeeded-accepted</code> (the worker runs the
         job); the node appears in OpenNMS under the Requisition's Foreign Source

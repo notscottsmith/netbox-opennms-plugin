@@ -5,8 +5,8 @@
 
 {% block extra_controls %}
   {% if perms.netbox_opennms.change_requisition %}
-    <a href="{% url 'plugins:netbox_opennms:requisition_dry_run' pk=object.pk %}" class="btn btn-sm btn-outline-primary">
-      <i class="mdi mdi-file-compare"></i> Dry run
+    <a href="{% url 'plugins:netbox_opennms:requisition_scan' pk=object.pk %}" class="btn btn-sm btn-outline-primary">
+      <i class="mdi mdi-file-compare"></i> Scan
     </a>
     <form method="post" action="{% url 'plugins:netbox_opennms:requisition_sync' pk=object.pk %}" class="d-inline">
       {% csrf_token %}

@@ -23,7 +23,6 @@ from . import filtersets, forms, import_node, tables
 from .adoption import adopt_foreign_ids, existing_foreign_ids_by_label
 from .client import OpenNMSClient, OpenNMSError, parse_node_links
 from .derivation import foreign_id_for, validate_location_name
-from .dryrun import dry_run
 from .ip_reconcile import (
     ConfirmRejected,
     confirm_ip_interface,
@@ -57,6 +56,7 @@ from .models import (
     Requisition,
 )
 from .requisition_discovery import build_foreign_source_import, list_unmirrored
+from .requisition_scan import scan_requisition
 from .reverse_sync import (
     _cable_endpoints,
     fetch_node_data,
@@ -328,13 +328,14 @@ def _prepare_node_push(request, requisition):
 
 def _find_node_after_adoption(client, requisition_name, resolution, foreign_id):
     """Fetch OpenNMS's live requisition, adopt existing Foreign IDs into
-    ``resolution.nodes``, then look up the node the dry-run row's
+    ``resolution.nodes``, then look up the node the scan row's
     ``foreign_id`` refers to (issues #35/#36).
 
     Without the adoption pass, a node adopted into an existing OpenNMS
     Foreign Source would be looked up under its freshly-derived foreign-id
-    and never match the adopted id the dry-run row actually shows — see
-    ``dryrun.dry_run()``, which runs the identical pass before building rows.
+    and never match the adopted id the scan row actually shows — see
+    ``requisition_scan.scan_requisition()``, which runs the identical pass
+    before building rows.
     Returns ``(node, error_message)``; ``node`` is ``None`` on any failure.
     """
     try:
@@ -350,7 +351,7 @@ def _find_node_after_adoption(client, requisition_name, resolution, foreign_id):
     if node is None:
         return None, (
             f"Node {foreign_id!r} is no longer part of {requisition_name} — "
-            "reload the dry run."
+            "reload the scan."
         )
     return node, None
 
@@ -364,7 +365,7 @@ def _push_node(client, requisition_name, node, default_location, rescan):
 
 
 class RequisitionSyncNodeView(PermissionRequiredMixin, View):
-    """Push one node from the dry-run row to OpenNMS immediately (issue #35).
+    """Push one node from the scan row to OpenNMS immediately (issue #35).
 
     Scopes ``jobs._render_and_replace``'s own machinery to one node instead of
     building a parallel implementation: the same ``validate_resolution`` gate,
@@ -385,7 +386,7 @@ class RequisitionSyncNodeView(PermissionRequiredMixin, View):
 
     def post(self, request, pk, foreign_id):
         requisition = get_object_or_404(Requisition, pk=pk)
-        return_url = reverse("plugins:netbox_opennms:requisition_dry_run", args=[pk])
+        return_url = reverse("plugins:netbox_opennms:requisition_scan", args=[pk])
         prepared = _prepare_node_push(request, requisition)
         if prepared is None:
             return redirect(return_url)
@@ -439,7 +440,7 @@ class RequisitionSyncNodeOverrideView(PermissionRequiredMixin, View):
 
     def post(self, request, pk, foreign_id):
         requisition = get_object_or_404(Requisition, pk=pk)
-        return_url = reverse("plugins:netbox_opennms:requisition_dry_run", args=[pk])
+        return_url = reverse("plugins:netbox_opennms:requisition_scan", args=[pk])
         prepared = _prepare_node_push(request, requisition)
         if prepared is None:
             return redirect(return_url)
@@ -473,7 +474,7 @@ class RequisitionSyncNodeOverrideView(PermissionRequiredMixin, View):
         return redirect(return_url)
 
 
-class RequisitionDryRunView(PermissionRequiredMixin, View):
+class RequisitionScanView(PermissionRequiredMixin, View):
     """Show the per-node diff of a Requisition against the live OpenNMS state (R7).
 
     Permission-gated (not merely login) because it issues live outbound calls to
@@ -486,7 +487,7 @@ class RequisitionDryRunView(PermissionRequiredMixin, View):
     """
 
     permission_required = "netbox_opennms.view_requisition"
-    template_name = "netbox_opennms/dry_run.html"
+    template_name = "netbox_opennms/requisition_scan.html"
 
     def get(self, request, pk):
         requisition = get_object_or_404(Requisition, pk=pk)
@@ -494,7 +495,7 @@ class RequisitionDryRunView(PermissionRequiredMixin, View):
         result = None
         table = None
         try:
-            result = dry_run(requisition.name)
+            result = scan_requisition(requisition.name)
         except OpenNMSError as exc:
             error = str(exc)
         if result is not None and not result.conflicts and not result.server_conflict:
@@ -513,20 +514,20 @@ class RequisitionDryRunView(PermissionRequiredMixin, View):
         return render(
             request,
             self.template_name,
-            {"object": requisition, "dryrun": result, "table": table, "error": error},
+            {"object": requisition, "scan": result, "table": table, "error": error},
         )
 
 
 class RequisitionNodeWalkView(PermissionRequiredMixin, View):
     """Live SNMP interfaces + neighbor links for one OpenNMS node (issue #34).
 
-    A small read-only companion to the dry-run table's node-name link — makes
+    A small read-only companion to the scan table's node-name link — makes
     the same pair of ``OpenNMSClient`` calls the One-Time-Sync preview does
     (``reverse_sync.fetch_node_data``: ``list_snmp_interfaces`` +
     ``get_node_links``), but only to display; nothing here plans or commits
     anything to NetBox. ``fetch_node_data`` itself isn't reusable here since
     it's keyed off a ``DiscoveredNode`` rather than a bare node id. Reachable
-    only for a row the dry-run table has already resolved an
+    only for a row the scan table has already resolved an
     ``opennms_node_id`` for (an "added" row — not yet provisioned in
     OpenNMS — has no such link).
     """
@@ -1267,7 +1268,7 @@ class DiscoveredNodeBulkImportView(GetReturnURLMixin, PermissionRequiredMixin, V
 class UnmirroredRequisitionsView(PermissionRequiredMixin, View):
     """Foreign Sources on a Server with no matching NetBox Requisition (issue #11).
 
-    Read-only — computed live on each request (mirrors ``RequisitionDryRunView``)
+    Read-only — computed live on each request (mirrors ``RequisitionScanView``)
     rather than persisted like ``DiscoveredNode`` (#7), since there's no
     per-row state (verdict, resolution) to track: a name is either mirrored
     or it isn't. Each unmirrored row's Import action is ``RequisitionImportView``

@@ -4,16 +4,16 @@
 {% load helpers %}
 {% load form_helpers %}
 
-{% block title %}Dry run — {{ object.name }}{% endblock %}
+{% block title %}Scan — {{ object.name }}{% endblock %}
 
 {% block content %}
   <div class="card">
     <div class="card-header d-flex justify-content-between align-items-center">
-      <h2 class="m-0">Dry run — {{ object|linkify }} <code>{{ object.name }}</code></h2>
+      <h2 class="m-0">Scan — {{ object|linkify }} <code>{{ object.name }}</code></h2>
       {% if perms.netbox_opennms.change_requisition %}
         <form method="post" action="{% url 'plugins:netbox_opennms:requisition_sync' pk=object.pk %}">
           {% csrf_token %}
-          <button type="submit" class="btn btn-sm btn-primary" {% if dryrun.conflicts %}disabled title="Frozen — resolve the filter conflicts first"{% endif %}>
+          <button type="submit" class="btn btn-sm btn-primary" {% if scan.conflicts %}disabled title="Frozen — resolve the filter conflicts first"{% endif %}>
             <i class="mdi mdi-sync"></i> Sync to OpenNMS
           </button>
         </form>
@@ -24,35 +24,35 @@
         <div class="alert alert-danger" role="alert">
           <i class="mdi mdi-alert"></i> Could not reach OpenNMS: {{ error }}
         </div>
-      {% elif dryrun.conflicts %}
+      {% elif scan.conflicts %}
         <div class="alert alert-danger" role="alert">
           <i class="mdi mdi-alert-octagon"></i>
           <strong>Frozen — nothing can be synced until these conflicts are resolved:</strong>
           <ul class="mb-0">
-            {% for conflict in dryrun.conflicts|slice:":10" %}<li>{{ conflict }}</li>{% endfor %}
-            {% if dryrun.conflicts|length > 10 %}
-              <li>… and {{ dryrun.conflicts|length|add:"-10" }} more conflicted object(s).</li>
+            {% for conflict in scan.conflicts|slice:":10" %}<li>{{ conflict }}</li>{% endfor %}
+            {% if scan.conflicts|length > 10 %}
+              <li>… and {{ scan.conflicts|length|add:"-10" }} more conflicted object(s).</li>
             {% endif %}
           </ul>
           Make the filters disjoint (e.g. a negated filter such as <code>tag__n</code>)
           or exclude the object; the OpenNMS state is untouched while frozen.
         </div>
-        {% for warning in dryrun.warnings %}
+        {% for warning in scan.warnings %}
           <div class="alert alert-warning py-1" role="alert">{{ warning }}</div>
         {% endfor %}
-      {% elif dryrun %}
-        {% if not dryrun.exists %}
+      {% elif scan %}
+        {% if not scan.exists %}
           <div class="alert alert-info" role="alert">
             This Foreign Source does not exist in OpenNMS yet — every node below will be added.
           </div>
         {% endif %}
-        {% for warning in dryrun.warnings %}
+        {% for warning in scan.warnings %}
           <div class="alert alert-warning py-1" role="alert">{{ warning }}</div>
         {% endfor %}
 
-        {% if dryrun.definition_changes %}
+        {% if scan.definition_changes %}
           <h5>Foreign-source definition</h5>
-          <ul>{% for change in dryrun.definition_changes %}<li><code>{{ change }}</code></li>{% endfor %}</ul>
+          <ul>{% for change in scan.definition_changes %}<li><code>{{ change }}</code></li>{% endfor %}</ul>
         {% endif %}
 
         <div class="mb-2 text-end">
@@ -64,7 +64,7 @@
           {% include 'htmx/table.html' %}
         </div>
         {% table_config_form table %}
-        {% if not dryrun.has_changes %}
+        {% if not scan.has_changes %}
           <p class="text-muted">No changes — a sync would be a no-op.</p>
         {% endif %}
       {% endif %}
