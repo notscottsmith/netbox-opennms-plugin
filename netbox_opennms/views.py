@@ -9,6 +9,7 @@ from dcim.models import Cable, Device, Interface, Site
 from django.contrib import messages
 from django.contrib.auth.mixins import PermissionRequiredMixin
 from django.core.exceptions import PermissionDenied, ValidationError
+from django.db.models import Count
 from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -829,7 +830,10 @@ class DiscoveryScanView(generic.ObjectView):
 
 
 class DiscoveryScanListView(generic.ObjectListView):
-    queryset = DiscoveryScan.objects.all()
+    # Annotated with node_count so DiscoveryScanTable's node-count column
+    # (#53) sorts server-side instead of evaluating
+    # ``discovered_nodes.count`` per row.
+    queryset = DiscoveryScan.objects.annotate(node_count=Count("discovered_nodes"))
     table = tables.DiscoveryScanTable
     filterset = filtersets.DiscoveryScanFilterSet
 

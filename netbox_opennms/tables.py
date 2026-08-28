@@ -299,14 +299,44 @@ class DiscoveryScanTable(NetBoxTable):
     server = tables.Column(linkify=True)
     requisition = tables.Column(linkify=True)
     last_triggered = columns.DateTimeColumn()
+    # ``status`` is a model @property (models.py), not a DB column, so it
+    # can't be ordered server-side — matches the badge markup already used
+    # on discoveryscan.html's detail page.
+    status = tables.TemplateColumn(
+        template_code="""
+            {% if record.status == "settled" %}
+              <span class="badge text-bg-green">Settled</span>
+            {% elif record.status == "running" %}
+              <span class="badge text-bg-cyan">Running</span>
+            {% else %}
+              <span class="badge text-bg-secondary">Pending</span>
+            {% endif %}
+        """,
+        orderable=False,
+    )
+    # DiscoveryScanListView annotates its queryset with
+    # ``node_count=Count("discovered_nodes")`` so this sorts server-side.
+    # ``empty_values=()`` plus ``render_node_count`` below fall back to
+    # ``discovered_nodes.count()`` for any other view (e.g. bulk-delete's
+    # confirmation table) that renders this table off an unannotated
+    # queryset.
+    node_count = tables.Column(
+        accessor="node_count", verbose_name="Discovered Nodes", empty_values=()
+    )
     # See OpenNMSServerTable.test_action above (#32) — formaction/formmethod
     # avoids nesting a <form> inside the list view's outer bulk-action form.
+    # Disabled once the scan has left "pending" (#50's guard rejects the POST
+    # anyway; this just keeps the button honest) — mirrors RequisitionTable
+    # .sync_action's "frozen" tooltip pattern above.
     trigger_action = _ActionColumn(
         template_code="""
             <button type="submit"
                     formaction="{{ trigger_url }}"
                     formmethod="post"
-                    class="btn btn-sm btn-outline-secondary">
+                    class="btn btn-sm btn-outline-secondary"
+                    {% if frozen %}
+                      disabled title="Already triggered — create a new scan"
+                    {% endif %}>
               Trigger
             </button>
         """,
@@ -314,6 +344,7 @@ class DiscoveryScanTable(NetBoxTable):
             "trigger_url": reverse(
                 "plugins:netbox_opennms:discoveryscan_trigger", args=[record.pk]
             ),
+            "frozen": record.status != "pending",
         },
         verbose_name="",
         orderable=False,
@@ -328,6 +359,8 @@ class DiscoveryScanTable(NetBoxTable):
             "server",
             "requisition",
             "location",
+            "status",
+            "node_count",
             "ip_range_begin",
             "ip_range_end",
             "retries",
@@ -342,12 +375,16 @@ class DiscoveryScanTable(NetBoxTable):
             "foreign_source",
             "server",
             "requisition",
-            "location",
+            "status",
+            "node_count",
             "ip_range_begin",
             "ip_range_end",
             "last_triggered",
             "trigger_action",
         )
+
+    def render_node_count(self, record, value):
+        return value if value is not None else record.discovered_nodes.count()
 
 
 class DiscoveredNodeTable(NetBoxTable):
