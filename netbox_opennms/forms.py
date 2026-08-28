@@ -684,11 +684,12 @@ class DiscoveryScanForm(NetBoxModelForm):
     Not ``_ScopeForm``: a Discovery Scan targets one Requisition directly
     (for the VRF resolution it supplies via that Requisition's own scope, ADR
     0009) rather than binding across the five-level Scope hierarchy the way
-    ``OpenNMSServer``/``MonitoringExclusion`` do. ``location`` is a plain
-    ``<select>``, populated client-side from the chosen Server's own
-    ``OpenNMSClient.list_locations()`` (``discoveryscan_server_locations.js``)
-    the same way ``OpenNMSServerForm.default_location`` is — there is no
-    NetBox "site" on an OpenNMS discovery request at all.
+    ``OpenNMSServer``/``MonitoringExclusion`` do. There is no "Monitoring
+    Location" field on this form at all — a scan's discovered nodes are
+    imported into ``requisition``, so its Location can't be chosen
+    independently; ``DiscoveryScan.clean()`` always derives it from
+    ``requisition.location`` (falling back to the Server's
+    ``default_location``), overwriting any directly-set value.
     """
 
     server = DynamicModelChoiceField(
@@ -699,31 +700,15 @@ class DiscoveryScanForm(NetBoxModelForm):
         label=_("Requisition"),
         help_text=_(
             "Discovered nodes are imported against this Requisition's scope, "
-            "which is also how their VRF is resolved."
+            "which also supplies the Monitoring Location (and VRF) they use."
         ),
     )
-    location = forms.CharField(
-        label=_("Location"),
-        help_text=_(
-            "The OpenNMS Monitoring Location. Pick the Server first to "
-            "populate this from its known locations."
-        ),
-        widget=forms.Select(choices=(), attrs={"class": "onms-location-pending"}),
-    )
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        current = self.instance.location if self.instance.pk else ""
-        self.fields["location"].widget.choices = (
-            [(current, current)] if current else []
-        )
 
     class Meta:
         model = DiscoveryScan
         fields = (
             "server",
             "requisition",
-            "location",
             "ip_range_begin",
             "ip_range_end",
             "retries",

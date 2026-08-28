@@ -36,9 +36,7 @@ from netbox_opennms.models import (
 )
 
 DETECTOR_CLASS = "org.opennms.netmgt.provision.detector.icmp.IcmpDetector"
-POLICY_CLASS = (
-    "org.opennms.netmgt.provision.persist.policies.NodeCategorySettingPolicy"
-)
+POLICY_CLASS = "org.opennms.netmgt.provision.persist.policies.NodeCategorySettingPolicy"
 FILTER = {"site": ["raleigh"], "role": ["router"]}
 
 
@@ -339,7 +337,7 @@ class DiscoveryScanAPITest(_NoGraphQL, APIViewTestCases.APIViewTestCase):
         server = OpenNMSServer.objects.create(
             name="ds-api", url="https://ds-api.example"
         )
-        requisition = Requisition.objects.create(name="fs-api")
+        requisition = Requisition.objects.create(name="fs-api", location="raleigh")
         for i in range(3):
             DiscoveryScan.objects.create(
                 server=server,
@@ -352,21 +350,18 @@ class DiscoveryScanAPITest(_NoGraphQL, APIViewTestCases.APIViewTestCase):
             {
                 "server": server.pk,
                 "requisition": requisition.pk,
-                "location": "raleigh",
                 "ip_range_begin": "10.1.10.1",
                 "ip_range_end": "10.1.10.254",
             },
             {
                 "server": server.pk,
                 "requisition": requisition.pk,
-                "location": "raleigh",
                 "ip_range_begin": "10.1.11.1",
                 "ip_range_end": "10.1.11.254",
             },
             {
                 "server": server.pk,
                 "requisition": requisition.pk,
-                "location": "raleigh",
                 "ip_range_begin": "10.1.12.1",
                 "ip_range_end": "10.1.12.254",
             },
@@ -374,13 +369,15 @@ class DiscoveryScanAPITest(_NoGraphQL, APIViewTestCases.APIViewTestCase):
 
 
 class DiscoveryScanSerializerValidationTest(TestCase):
-    """ADR 0009: mirrors DiscoveryScanForm's identical check (test_forms.py)."""
+    """Mirrors DiscoveryScanForm's identical checks (test_forms.py)."""
 
     @classmethod
     def setUpTestData(cls):
         cls.server = OpenNMSServer.objects.create(
             name="Acme", url="https://onms.example"
         )
+        # No location and no default_location: the "nothing to derive from"
+        # case for test_location_required below.
         cls.requisition = Requisition.objects.create(name="fs-1")
 
     def _data(self, **overrides):
@@ -393,7 +390,7 @@ class DiscoveryScanSerializerValidationTest(TestCase):
         return data
 
     def test_requisition_required(self):
-        serializer = DiscoveryScanSerializer(data=self._data(location="raleigh"))
+        serializer = DiscoveryScanSerializer(data=self._data())
         self.assertFalse(serializer.is_valid())
 
     def test_location_required(self):
@@ -402,9 +399,18 @@ class DiscoveryScanSerializerValidationTest(TestCase):
         )
         self.assertFalse(serializer.is_valid())
 
-    def test_with_requisition_and_location_is_accepted(self):
+    def test_location_is_read_only(self):
+        requisition = Requisition.objects.create(name="fs-2", location="raleigh")
         serializer = DiscoveryScanSerializer(
-            data=self._data(requisition=self.requisition.pk, location="raleigh")
+            data=self._data(requisition=requisition.pk, location="somewhere-else")
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertNotIn("location", serializer.validated_data)
+
+    def test_location_derived_from_requisition_is_accepted(self):
+        requisition = Requisition.objects.create(name="fs-3", location="raleigh")
+        serializer = DiscoveryScanSerializer(
+            data=self._data(requisition=requisition.pk)
         )
         self.assertTrue(serializer.is_valid(), serializer.errors)
 
@@ -457,14 +463,32 @@ class MetadataEntryAPITest(_NoGraphQL, APIViewTestCases.APIViewTestCase):
         )
         for key in ["k1", "k2", "k3"]:
             MetadataEntry.objects.create(
-                requisition=req, scope="node", context="requisition",
-                key=key, literal_value="v",
+                requisition=req,
+                scope="node",
+                context="requisition",
+                key=key,
+                literal_value="v",
             )
         cls.create_data = [
-            {"requisition": req.pk, "scope": "node", "context": "requisition",
-             "key": "a", "literal_value": "1"},
-            {"requisition": req.pk, "scope": "node", "context": "requisition",
-             "key": "b", "literal_value": "2"},
-            {"requisition": req.pk, "scope": "service", "context": "X-netbox",
-             "key": "c", "value_source": "name"},
+            {
+                "requisition": req.pk,
+                "scope": "node",
+                "context": "requisition",
+                "key": "a",
+                "literal_value": "1",
+            },
+            {
+                "requisition": req.pk,
+                "scope": "node",
+                "context": "requisition",
+                "key": "b",
+                "literal_value": "2",
+            },
+            {
+                "requisition": req.pk,
+                "scope": "service",
+                "context": "X-netbox",
+                "key": "c",
+                "value_source": "name",
+            },
         ]

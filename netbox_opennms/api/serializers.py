@@ -300,7 +300,9 @@ class OpenNMSServerSerializer(NetBoxModelSerializer):
 
     def validate_server_url(self, value):
         if not value.startswith(("http://", "https://")):
-            raise serializers.ValidationError("URL must start with http:// or https://.")
+            raise serializers.ValidationError(
+                "URL must start with http:// or https://."
+            )
         return value
 
     def validate_default_location(self, value):
@@ -391,23 +393,13 @@ class DiscoveryScanSerializer(NetBoxModelSerializer):
             "last_updated",
         )
         brief_fields = ("id", "url", "display", "foreign_source")
+        # Not independently settable (issue report) — DiscoveryScan.clean()
+        # always derives it from requisition.location / server.default_location.
+        read_only_fields = ("location",)
 
-    def validate_location(self, value):
-        return _validate_location(value)
-
-    def validate(self, data):
-        data = super().validate(data)
-        requisition = data.get("requisition", getattr(self.instance, "requisition", None))
-        if not requisition:
-            raise serializers.ValidationError(
-                {"requisition": "A Discovery Scan requires a Requisition."}
-            )
-        location = data.get("location", getattr(self.instance, "location", ""))
-        if not location:
-            raise serializers.ValidationError(
-                {"location": "A Discovery Scan requires an OpenNMS Monitoring Location."}
-            )
-        return data
+    # Requisition/location derivation and validation both happen in
+    # DiscoveryScan.clean(), invoked by NetBoxModelSerializer.validate()
+    # via instance.full_clean() — no serializer-level override needed.
 
 
 class DiscoveredNodeSerializer(NetBoxModelSerializer):

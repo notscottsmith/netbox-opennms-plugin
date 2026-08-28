@@ -52,7 +52,9 @@ class RequisitionAndRuleTest(TestCase):
 
     def test_detector_user_params_win_over_preset_defaults(self):
         detector = MonitoringDetector(
-            requisition=self.req, name="ICMP", preset="icmp",
+            requisition=self.req,
+            name="ICMP",
+            preset="icmp",
             parameters={"timeout": "9000"},
         )
         detector.clean()
@@ -73,7 +75,9 @@ class RequisitionAndRuleTest(TestCase):
 
     def test_policy_preset_fills_class(self):
         policy = MonitoringPolicy(
-            requisition=self.req, name="cat", preset="set-node-category",
+            requisition=self.req,
+            name="cat",
+            preset="set-node-category",
             parameters={"category": "Routers"},
         )
         policy.clean()
@@ -83,7 +87,9 @@ class RequisitionAndRuleTest(TestCase):
         # A preset always (re)derives the class — a user-supplied rule_class can't
         # override it (hard association).
         detector = MonitoringDetector(
-            requisition=self.req, name="ICMP", preset="icmp",
+            requisition=self.req,
+            name="ICMP",
+            preset="icmp",
             rule_class="org.example.NotThis",
         )
         detector.clean()
@@ -93,7 +99,9 @@ class RequisitionAndRuleTest(TestCase):
         # An admin-extended preset with no registry entry must not wipe the class
         # (review #1) — an existing freeform class is preserved.
         detector = MonitoringDetector(
-            requisition=self.req, name="x", preset="not-a-registered-preset",
+            requisition=self.req,
+            name="x",
+            preset="not-a-registered-preset",
             rule_class="org.example.Custom",
         )
         detector.clean()
@@ -127,7 +135,9 @@ class RequisitionAndRuleTest(TestCase):
         with self.assertRaises(ValidationError):
             bad.clean()
         ok = MonitoringDetector(
-            requisition=self.req, name="tcp2", preset="tcp",
+            requisition=self.req,
+            name="tcp2",
+            preset="tcp",
             parameters={"port": "8080"},
         )
         ok.clean()
@@ -290,8 +300,10 @@ class OpenNMSServerTest(TestCase):
 
     def test_record_check_result_ok_clears_message(self):
         server = OpenNMSServer.objects.create(
-            name="Acme", url="https://onms.example",
-            last_check_status="failed", last_check_message="boom",
+            name="Acme",
+            url="https://onms.example",
+            last_check_status="failed",
+            last_check_message="boom",
         )
         server.record_check_result(True)
         self.assertEqual(server.last_check_status, "ok")
@@ -353,12 +365,11 @@ class DiscoveryScanTest(TestCase):
         cls.server = OpenNMSServer.objects.create(
             name="Acme", url="https://onms.example"
         )
-        cls.requisition = Requisition.objects.create(name="fs-1")
+        cls.requisition = Requisition.objects.create(name="fs-1", location="raleigh")
 
     def test_requires_requisition(self):
         scan = DiscoveryScan(
             server=self.server,
-            location="raleigh",
             ip_range_begin="10.0.0.1",
             ip_range_end="10.0.0.10",
         )
@@ -366,20 +377,58 @@ class DiscoveryScanTest(TestCase):
             scan.clean()
 
     def test_requires_location(self):
+        # Neither the Requisition nor the Server has a Monitoring Location.
+        requisition = Requisition.objects.create(name="fs-no-location")
         scan = DiscoveryScan(
             server=self.server,
-            requisition=self.requisition,
+            requisition=requisition,
             ip_range_begin="10.0.0.1",
             ip_range_end="10.0.0.10",
         )
         with self.assertRaises(ValidationError):
             scan.clean()
 
+    def test_location_derived_from_requisition(self):
+        scan = DiscoveryScan(
+            server=self.server,
+            requisition=self.requisition,
+            ip_range_begin="10.0.0.1",
+            ip_range_end="10.0.0.10",
+        )
+        scan.clean()
+        self.assertEqual(scan.location, "raleigh")
+
+    def test_location_falls_back_to_server_default(self):
+        requisition = Requisition.objects.create(name="fs-no-location-2")
+        server = OpenNMSServer.objects.create(
+            name="Acme2", url="https://onms2.example", default_location="durham"
+        )
+        scan = DiscoveryScan(
+            server=server,
+            requisition=requisition,
+            ip_range_begin="10.0.0.1",
+            ip_range_end="10.0.0.10",
+        )
+        scan.clean()
+        self.assertEqual(scan.location, "durham")
+
+    def test_directly_set_location_is_overwritten(self):
+        # Not independently choosable (issue report): clean() always
+        # re-derives it, even if something set it directly beforehand.
+        scan = DiscoveryScan(
+            server=self.server,
+            requisition=self.requisition,
+            location="some-other-location",
+            ip_range_begin="10.0.0.1",
+            ip_range_end="10.0.0.10",
+        )
+        scan.clean()
+        self.assertEqual(scan.location, "raleigh")
+
     def test_ip_range_end_before_begin_raises(self):
         scan = DiscoveryScan(
             server=self.server,
             requisition=self.requisition,
-            location="raleigh",
             ip_range_begin="10.0.0.10",
             ip_range_end="10.0.0.1",
         )
@@ -390,7 +439,6 @@ class DiscoveryScanTest(TestCase):
         scan = DiscoveryScan(
             server=self.server,
             requisition=self.requisition,
-            location="raleigh",
             ip_range_begin="10.0.0.1",
             ip_range_end="::1",
         )

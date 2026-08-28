@@ -25,27 +25,47 @@ from .models import (
 def _crud(prefix, name, view_prefix, model, *, bulk_delete=True):
     """The standard list/add/<pk>/edit/delete/changelog routes for a model."""
     routes = [
-        path(f"{prefix}/", getattr(views, f"{view_prefix}ListView").as_view(),
-             name=f"{name}_list"),
-        path(f"{prefix}/add/", getattr(views, f"{view_prefix}EditView").as_view(),
-             name=f"{name}_add"),
+        path(
+            f"{prefix}/",
+            getattr(views, f"{view_prefix}ListView").as_view(),
+            name=f"{name}_list",
+        ),
+        path(
+            f"{prefix}/add/",
+            getattr(views, f"{view_prefix}EditView").as_view(),
+            name=f"{name}_add",
+        ),
     ]
     if bulk_delete:
         routes.append(
-            path(f"{prefix}/delete/",
-                 getattr(views, f"{view_prefix}BulkDeleteView").as_view(),
-                 name=f"{name}_bulk_delete")
+            path(
+                f"{prefix}/delete/",
+                getattr(views, f"{view_prefix}BulkDeleteView").as_view(),
+                name=f"{name}_bulk_delete",
+            )
         )
     routes += [
-        path(f"{prefix}/<int:pk>/", getattr(views, f"{view_prefix}View").as_view(),
-             name=name),
-        path(f"{prefix}/<int:pk>/edit/",
-             getattr(views, f"{view_prefix}EditView").as_view(), name=f"{name}_edit"),
-        path(f"{prefix}/<int:pk>/delete/",
-             getattr(views, f"{view_prefix}DeleteView").as_view(),
-             name=f"{name}_delete"),
-        path(f"{prefix}/<int:pk>/changelog/", ObjectChangeLogView.as_view(),
-             name=f"{name}_changelog", kwargs={"model": model}),
+        path(
+            f"{prefix}/<int:pk>/",
+            getattr(views, f"{view_prefix}View").as_view(),
+            name=name,
+        ),
+        path(
+            f"{prefix}/<int:pk>/edit/",
+            getattr(views, f"{view_prefix}EditView").as_view(),
+            name=f"{name}_edit",
+        ),
+        path(
+            f"{prefix}/<int:pk>/delete/",
+            getattr(views, f"{view_prefix}DeleteView").as_view(),
+            name=f"{name}_delete",
+        ),
+        path(
+            f"{prefix}/<int:pk>/changelog/",
+            ObjectChangeLogView.as_view(),
+            name=f"{name}_changelog",
+            kwargs={"model": model},
+        ),
     ]
     return routes
 
@@ -82,16 +102,30 @@ urlpatterns = (
         views.RequisitionSyncNodeOverrideView.as_view(),
         name="requisition_sync_node_override",
     ),
-    *_crud("monitoring-detectors", "monitoringdetector", "MonitoringDetector",
-           MonitoringDetector),
-    *_crud("monitoring-policies", "monitoringpolicy", "MonitoringPolicy",
-           MonitoringPolicy),
-    *_crud("monitoring-overrides", "monitoringoverride", "MonitoringOverride",
-           MonitoringOverride),
-    *_crud("monitored-services", "monitoredservice", "MonitoredService",
-           MonitoredService),
-    *_crud("monitored-interfaces", "monitoredinterface", "MonitoredInterface",
-           MonitoredInterface),
+    *_crud(
+        "monitoring-detectors",
+        "monitoringdetector",
+        "MonitoringDetector",
+        MonitoringDetector,
+    ),
+    *_crud(
+        "monitoring-policies", "monitoringpolicy", "MonitoringPolicy", MonitoringPolicy
+    ),
+    *_crud(
+        "monitoring-overrides",
+        "monitoringoverride",
+        "MonitoringOverride",
+        MonitoringOverride,
+    ),
+    *_crud(
+        "monitored-services", "monitoredservice", "MonitoredService", MonitoredService
+    ),
+    *_crud(
+        "monitored-interfaces",
+        "monitoredinterface",
+        "MonitoredInterface",
+        MonitoredInterface,
+    ),
     *_crud("asset-mappings", "assetmapping", "AssetMapping", AssetMapping),
     *_crud("metadata-entries", "metadataentry", "MetadataEntry", MetadataEntry),
     *_crud("opennms-servers", "opennmsserver", "OpenNMSServer", OpenNMSServer),
@@ -120,18 +154,17 @@ urlpatterns = (
         views.RequisitionImportView.as_view(),
         name="opennmsserver_import_requisition",
     ),
-    *_crud("monitoring-exclusions", "monitoringexclusion", "MonitoringExclusion",
-           MonitoringExclusion),
+    *_crud(
+        "monitoring-exclusions",
+        "monitoringexclusion",
+        "MonitoringExclusion",
+        MonitoringExclusion,
+    ),
     *_crud("discovery-scans", "discoveryscan", "DiscoveryScan", DiscoveryScan),
     path(
         "discovery-scans/<int:pk>/trigger/",
         views.DiscoveryScanTriggerView.as_view(),
         name="discoveryscan_trigger",
-    ),
-    path(
-        "discovery-scans/server-locations-ajax/",
-        views.DiscoveryScanServerLocationsAjaxView.as_view(),
-        name="discoveryscan_server_locations_ajax",
     ),
     path(
         "discovered-nodes/",

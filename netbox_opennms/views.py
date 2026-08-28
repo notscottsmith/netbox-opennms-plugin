@@ -364,9 +364,7 @@ class RequisitionSyncNodeView(PermissionRequiredMixin, View):
 
     def post(self, request, pk, foreign_id):
         requisition = get_object_or_404(Requisition, pk=pk)
-        return_url = reverse(
-            "plugins:netbox_opennms:requisition_dry_run", args=[pk]
-        )
+        return_url = reverse("plugins:netbox_opennms:requisition_dry_run", args=[pk])
         prepared = _prepare_node_push(request, requisition)
         if prepared is None:
             return redirect(return_url)
@@ -420,9 +418,7 @@ class RequisitionSyncNodeOverrideView(PermissionRequiredMixin, View):
 
     def post(self, request, pk, foreign_id):
         requisition = get_object_or_404(Requisition, pk=pk)
-        return_url = reverse(
-            "plugins:netbox_opennms:requisition_dry_run", args=[pk]
-        )
+        return_url = reverse("plugins:netbox_opennms:requisition_dry_run", args=[pk])
         prepared = _prepare_node_push(request, requisition)
         if prepared is None:
             return redirect(return_url)
@@ -850,29 +846,6 @@ class DiscoveryScanTriggerView(GetReturnURLMixin, PermissionRequiredMixin, View)
         return redirect(return_url)
 
 
-class DiscoveryScanServerLocationsAjaxView(PermissionRequiredMixin, View):
-    """JSON location list for the add/edit Discovery Scan form
-    (``discoveryscan_server_locations.js``).
-
-    Unlike ``OpenNMSServerTestAjaxView``, this targets an already-saved
-    Server (picked from the Discovery Scan form's own Server field) rather
-    than posted, not-yet-saved credentials — so it's a plain GET keyed by
-    ``server_id``.
-    """
-
-    permission_required = "netbox_opennms.add_discoveryscan"
-
-    def get(self, request):
-        server_id = request.GET.get("server_id")
-        server = get_object_or_404(OpenNMSServer, pk=server_id)
-        try:
-            with OpenNMSClient.from_server(server) as client:
-                locations = sorted(client.list_locations())
-        except OpenNMSError as exc:
-            return JsonResponse({"ok": False, "message": str(exc)})
-        return JsonResponse({"ok": True, "locations": locations})
-
-
 # --- Discovery (issue #7) ----------------------------------------------------
 
 
@@ -914,9 +887,7 @@ class DiscoveredNodeView(generic.ObjectView):
         )
         service_names_by_ip = {}
         for service in parsed_services:
-            service_names_by_ip.setdefault(service.ip_address, []).append(
-                service.name
-            )
+            service_names_by_ip.setdefault(service.ip_address, []).append(service.name)
         live_interface_rows = [
             {
                 "interface": iface,
@@ -1245,10 +1216,8 @@ class DiscoveredNodeBulkImportView(GetReturnURLMixin, PermissionRequiredMixin, V
             row_data["name"] = node.label
             try:
                 with OpenNMSClient.from_server(node.server) as client:
-                    ip_interfaces, services_by_ip = (
-                        _fetch_ip_interfaces_and_services(
-                            client, node.opennms_node_id
-                        )
+                    ip_interfaces, services_by_ip = _fetch_ip_interfaces_and_services(
+                        client, node.opennms_node_id
                     )
             except OpenNMSError as exc:
                 errors.append(f"{node.label}: could not reach OpenNMS ({exc}).")
@@ -1444,9 +1413,7 @@ class MonitoringSyncAllView(PermissionRequiredMixin, View):
                 "location) — open their pages to resolve.",
             )
         if submitted:
-            messages.success(
-                request, f"Submitted {submitted} Foreign Source sync(s)."
-            )
+            messages.success(request, f"Submitted {submitted} Foreign Source sync(s).")
         else:
             messages.info(request, "Nothing to sync.")
         return redirect("plugins:netbox_opennms:sync_preview")

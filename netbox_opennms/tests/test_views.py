@@ -46,9 +46,7 @@ from netbox_opennms.models import (
 from netbox_opennms.translation import RenderError
 
 DETECTOR_CLASS = "org.opennms.netmgt.provision.detector.icmp.IcmpDetector"
-POLICY_CLASS = (
-    "org.opennms.netmgt.provision.persist.policies.NodeCategorySettingPolicy"
-)
+POLICY_CLASS = "org.opennms.netmgt.provision.persist.policies.NodeCategorySettingPolicy"
 FILTER = {"site": ["site-1"], "role": ["router"]}
 
 
@@ -350,10 +348,8 @@ class DiscoveryScanViewTest(
 
     @classmethod
     def setUpTestData(cls):
-        server = OpenNMSServer.objects.create(
-            name="Acme", url="https://onms.example"
-        )
-        requisition = Requisition.objects.create(name="fs-1")
+        server = OpenNMSServer.objects.create(name="Acme", url="https://onms.example")
+        requisition = Requisition.objects.create(name="fs-1", location="raleigh")
         for i in range(3):
             DiscoveryScan.objects.create(
                 server=server,
@@ -365,7 +361,6 @@ class DiscoveryScanViewTest(
         cls.form_data = {
             "server": server.pk,
             "requisition": requisition.pk,
-            "location": "raleigh",
             "ip_range_begin": "10.0.9.1",
             "ip_range_end": "10.0.9.254",
             "retries": 1,
@@ -458,9 +453,7 @@ class DiscoveredNodeViewTest(
 
     @classmethod
     def setUpTestData(cls):
-        server = OpenNMSServer.objects.create(
-            name="Acme", url="https://onms.example"
-        )
+        server = OpenNMSServer.objects.create(name="Acme", url="https://onms.example")
         for i, verdict in enumerate(("green", "orange", "red")):
             DiscoveredNode.objects.create(
                 server=server, opennms_node_id=i, label=f"node-{i}", verdict=verdict
@@ -593,16 +586,12 @@ class RequisitionNodesViewTest(TestCase):
         self.assertContains(response, "No NetBox match")
 
     @mock.patch("netbox_opennms.views.target_server_for")
-    def test_scan_now_shown_when_target_server_resolves(
-        self, mock_target_server_for
-    ):
+    def test_scan_now_shown_when_target_server_resolves(self, mock_target_server_for):
         mock_target_server_for.return_value = self.server
         response = self.client.get(self._url())
         self.assertContains(
             response,
-            reverse(
-                "plugins:netbox_opennms:opennmsserver_scan", args=[self.server.pk]
-            ),
+            reverse("plugins:netbox_opennms:opennmsserver_scan", args=[self.server.pk]),
         )
 
     @mock.patch("netbox_opennms.views.target_server_for")
@@ -654,17 +643,11 @@ class RequisitionDryRunViewTest(TestCase):
         cls.device = Device.objects.create(
             name="rtr-1", device_type=dt, role=cls.role, site=cls.site
         )
-        iface = Interface.objects.create(
-            device=cls.device, name="eth0", type="virtual"
-        )
-        address = IPAddress.objects.create(
-            address="10.0.0.1/24", assigned_object=iface
-        )
+        iface = Interface.objects.create(device=cls.device, name="eth0", type="virtual")
+        address = IPAddress.objects.create(address="10.0.0.1/24", assigned_object=iface)
         cls.device.primary_ip4 = address
         cls.device.save()
-        cls.requisition = Requisition.objects.create(
-            name="fs-1", filter_params=FILTER
-        )
+        cls.requisition = Requisition.objects.create(name="fs-1", filter_params=FILTER)
 
     def setUp(self):
         self.user = User.objects.create_user(username="tester")
@@ -727,11 +710,7 @@ class RequisitionDryRunViewTest(TestCase):
             foreign_source="fs-1",
             exists=True,
             target_server=self.server,
-            added=[
-                NodeDiff(
-                    "device-1", "rtr-1", "added", netbox_object=self.device
-                )
-            ],
+            added=[NodeDiff("device-1", "rtr-1", "added", netbox_object=self.device)],
         )
         response = self.client.get(self._url())
         self.assertContains(response, self.device.get_absolute_url())
@@ -793,9 +772,7 @@ class RequisitionNodeWalkViewTest(TestCase):
         cls.server = OpenNMSServer.objects.create(
             name="Acme", url="https://onms.example/opennms"
         )
-        cls.requisition = Requisition.objects.create(
-            name="fs-1", filter_params=FILTER
-        )
+        cls.requisition = Requisition.objects.create(name="fs-1", filter_params=FILTER)
 
     def setUp(self):
         self.user = User.objects.create_user(username="tester")
@@ -841,8 +818,13 @@ class RequisitionNodeWalkViewTest(TestCase):
         mock_target_server_for.return_value = self.server
         client = mock_from_server.return_value.__enter__.return_value
         client.list_snmp_interfaces.return_value = [
-            {"ifIndex": 1, "ifName": "eth0", "ifDescr": "eth0", "ifAlias": "wan",
-             "ifAdminStatus": 1}
+            {
+                "ifIndex": 1,
+                "ifName": "eth0",
+                "ifDescr": "eth0",
+                "ifAlias": "wan",
+                "ifAdminStatus": 1,
+            }
         ]
         client.get_node_links.return_value = {
             "lldpLinkNodes": {
@@ -865,9 +847,7 @@ class RequisitionSyncNodeViewTest(TestCase):
         cls.server = OpenNMSServer.objects.create(
             name="Acme", url="https://onms.example/opennms"
         )
-        cls.requisition = Requisition.objects.create(
-            name="fs-1", filter_params=FILTER
-        )
+        cls.requisition = Requisition.objects.create(name="fs-1", filter_params=FILTER)
 
     def setUp(self):
         self.user = User.objects.create_user(username="tester")
@@ -1046,9 +1026,7 @@ class RequisitionSyncNodeOverrideViewTest(TestCase):
         cls.server = OpenNMSServer.objects.create(
             name="Acme", url="https://onms.example/opennms"
         )
-        cls.requisition = Requisition.objects.create(
-            name="fs-1", filter_params=FILTER
-        )
+        cls.requisition = Requisition.objects.create(name="fs-1", filter_params=FILTER)
         cls.device = _devices(1)[0]
 
     def setUp(self):
@@ -1202,8 +1180,11 @@ class MetadataEntryViewTest(
         )
         for scope, key in [("node", "k1"), ("node", "k2"), ("interface", "k3")]:
             MetadataEntry.objects.create(
-                requisition=req, scope=scope, context="requisition",
-                key=key, literal_value="v",
+                requisition=req,
+                scope=scope,
+                context="requisition",
+                key=key,
+                literal_value="v",
             )
         cls.form_data = {
             "requisition": req.pk,

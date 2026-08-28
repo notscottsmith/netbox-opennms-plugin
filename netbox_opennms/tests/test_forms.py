@@ -258,9 +258,7 @@ class RequisitionScopePickerTest(TestCase):
         # cache doesn't (yet) know about must still validate and save.
         form = RequisitionForm(data=self._data(location="edge-9-not-in-choices"))
         self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual(
-            form.cleaned_data["location"], "edge-9-not-in-choices"
-        )
+        self.assertEqual(form.cleaned_data["location"], "edge-9-not-in-choices")
 
 
 class RequisitionAutoNamingTest(TestCase):
@@ -293,9 +291,7 @@ class RequisitionAutoNamingTest(TestCase):
     def test_blank_name_without_scope_picker_still_rejected(self):
         # A raw/freeform filter with no Scope-picker fields set is unchanged:
         # a name is still required, enforced by Requisition.clean().
-        form = RequisitionForm(
-            data=self._data(filter_params='{"role": ["router"]}')
-        )
+        form = RequisitionForm(data=self._data(filter_params='{"role": ["router"]}'))
         self.assertFalse(form.is_valid())
         self.assertIn("A Requisition name is required.", str(form.errors))
 
@@ -319,9 +315,7 @@ class MonitoredInterfaceValidationTest(TestCase):
         )
         cls.device.primary_ip4 = cls.mgmt
         cls.device.save()
-        other = Device.objects.create(
-            name="sw-2", device_type=dt, role=role, site=site
-        )
+        other = Device.objects.create(name="sw-2", device_type=dt, role=role, site=site)
         oface = Interface.objects.create(device=other, name="eth0", type="virtual")
         cls.foreign = IPAddress.objects.create(
             address="10.1.0.9/24", assigned_object=oface
@@ -369,9 +363,7 @@ class OpenNMSServerFormTest(TestCase):
         return data
 
     def test_default_server_cannot_carry_scope_bindings(self):
-        form = OpenNMSServerForm(
-            data=self._data(is_default="on", sites=[self.site.pk])
-        )
+        form = OpenNMSServerForm(data=self._data(is_default="on", sites=[self.site.pk]))
         self.assertFalse(form.is_valid())
         self.assertIn("is_default", form.errors)
 
@@ -399,7 +391,8 @@ class OpenNMSServerFormTest(TestCase):
 
     def test_default_location_choices_seeded_from_current_value(self):
         server = OpenNMSServer.objects.create(
-            name="Existing", url="https://existing.example",
+            name="Existing",
+            url="https://existing.example",
             default_location="edge-1",
         )
         form = OpenNMSServerForm(instance=server)
@@ -418,9 +411,7 @@ class OpenNMSServerFormTest(TestCase):
             data=self._data(default_location="edge-9-not-in-choices")
         )
         self.assertTrue(form.is_valid(), form.errors)
-        self.assertEqual(
-            form.cleaned_data["default_location"], "edge-9-not-in-choices"
-        )
+        self.assertEqual(form.cleaned_data["default_location"], "edge-9-not-in-choices")
 
     def test_default_location_choices_seeded_from_available_locations(self):
         # The persisted list_locations() cache (populated by "Test connection")
@@ -454,20 +445,21 @@ class OpenNMSServerFormTest(TestCase):
 
 
 class DiscoveryScanFormTest(TestCase):
-    """ADR 0009: a Requisition and an OpenNMS Monitoring Location are required."""
+    """A Requisition is required, and Location is derived from it, not entered."""
 
     @classmethod
     def setUpTestData(cls):
         cls.server = OpenNMSServer.objects.create(
             name="Acme", url="https://onms.example"
         )
+        # No location and no default_location: the "nothing to derive from"
+        # case for test_location_required below.
         cls.requisition = Requisition.objects.create(name="fs-1")
 
     def _data(self, **overrides):
         data = {
             "server": self.server.pk,
             "requisition": self.requisition.pk,
-            "location": "raleigh",
             "ip_range_begin": "10.0.0.1",
             "ip_range_end": "10.0.0.254",
             "retries": 1,
@@ -481,16 +473,24 @@ class DiscoveryScanFormTest(TestCase):
         self.assertFalse(form.is_valid())
 
     def test_location_required(self):
-        form = DiscoveryScanForm(data=self._data(location=""))
+        form = DiscoveryScanForm(data=self._data())
         self.assertFalse(form.is_valid())
 
-    def test_with_requisition_and_location_is_accepted(self):
-        form = DiscoveryScanForm(data=self._data())
+    def test_location_field_is_not_on_the_form(self):
+        form = DiscoveryScanForm()
+        self.assertNotIn("location", form.fields)
+
+    def test_location_derived_from_requisition_is_accepted(self):
+        requisition = Requisition.objects.create(name="fs-2", location="raleigh")
+        form = DiscoveryScanForm(data=self._data(requisition=requisition.pk))
         self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.instance.location, "raleigh")
 
     def test_end_before_begin_is_rejected(self):
+        requisition = Requisition.objects.create(name="fs-3", location="raleigh")
         form = DiscoveryScanForm(
             data=self._data(
+                requisition=requisition.pk,
                 ip_range_begin="10.0.0.254",
                 ip_range_end="10.0.0.1",
             )

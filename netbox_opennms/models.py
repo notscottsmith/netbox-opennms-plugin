@@ -397,9 +397,7 @@ class MonitoredService(NetBoxModel):
             and self.ip_address_id
             and self.ip_address_id not in override_ip_pks(self.override)
         ):
-            raise ValidationError(
-                {"ip_address": "Must be one of the override's IPs."}
-            )
+            raise ValidationError({"ip_address": "Must be one of the override's IPs."})
 
 
 class MonitoredInterface(NetBoxModel):
@@ -474,8 +472,10 @@ class MonitoredInterface(NetBoxModel):
             )
             if others.exists():
                 raise ValidationError(
-                    {"role": "Another interface is already Primary; at most one "
-                     "Primary interface per node."}
+                    {
+                        "role": "Another interface is already Primary; at most one "
+                        "Primary interface per node."
+                    }
                 )
 
 
@@ -564,13 +564,13 @@ class MetadataEntry(NetBoxModel):
         super().clean()
         if self.context != "requisition" and not self.context.startswith("X-"):
             raise ValidationError(
-                {"context": "A custom context must be prefixed 'X-' (or use "
-                 "'requisition')."}
+                {
+                    "context": "A custom context must be prefixed 'X-' (or use "
+                    "'requisition')."
+                }
             )
         if not self.value_source and not self.literal_value:
-            raise ValidationError(
-                "Set a value source or a literal value."
-            )
+            raise ValidationError("Set a value source or a literal value.")
         if self.value_source and self.literal_value:
             raise ValidationError(
                 "Set either a value source or a literal value, not both."
@@ -736,14 +736,22 @@ class DiscoveryScan(NetBoxModel):
     polls for those nodes to infer completion; this model only covers the
     trigger itself.
 
-    ``location`` is OpenNMS's own Monitoring Location (AD-9) — a live value
-    from the bound Server's ``monitoringLocations`` endpoint, not a NetBox
-    object; there is no NetBox "site" on an OpenNMS discovery request at all.
     ``requisition`` is the Requisition this scan's discovered nodes are
     imported against — its scope (site/location/tenant/…) is what
     ``scope.resolve_vrf`` uses to resolve a VRF for the addresses this scan
     finds (ADR 0009), via NetBox's own ``ipam.Prefix`` scope+vrf rather than a
     bespoke binding table.
+
+    ``location`` is OpenNMS's own Monitoring Location (AD-9) — not a NetBox
+    object. It is not independently user-settable: discovered nodes are
+    imported into ``requisition``, so the scan must target the same Location
+    that Requisition's other members already report to. ``clean()`` derives
+    it from ``requisition.location``, falling back to ``server.default_location``
+    — the same chain ``membership.resolve_node``/``translation.render_node``
+    use for a per-node location override — and overwrites any directly-set
+    value every time, so the two can never drift apart (issue report: the
+    field used to be an independent dropdown populated from the bound
+    Server's live locations, which had nothing to do with the Requisition).
     """
 
     server = models.ForeignKey(
@@ -761,7 +769,9 @@ class DiscoveryScan(NetBoxModel):
     location = models.CharField(
         max_length=100,
         blank=True,
-        help_text="The OpenNMS Monitoring Location (not a NetBox Location).",
+        verbose_name="Monitoring Location",
+        help_text="The OpenNMS Monitoring Location (not a NetBox Location). "
+        "Derived from the Requisition — not independently editable.",
     )
     # Derived once in save() — never user-editable (excluded from forms via
     # editable=False, mirroring DeployedForeignSource's ownership model).
@@ -830,15 +840,25 @@ class DiscoveryScan(NetBoxModel):
             raise ValidationError(
                 {"requisition": "A Discovery Scan requires a Requisition."}
             )
+        # Not independently choosable (issue report) — always re-derived,
+        # overwriting any directly-set value, so it can never drift from the
+        # Requisition it feeds.
+        self.location = self.requisition.location or (
+            self.server.default_location if self.server_id else ""
+        )
         if not self.location:
             raise ValidationError(
-                {"location": "A Discovery Scan requires an OpenNMS Monitoring "
-                "Location."}
+                {
+                    "requisition": "This Requisition has no Monitoring "
+                    "Location, and the selected Server has no default "
+                    "location either — set one on the Requisition or "
+                    "Server before running a Discovery Scan."
+                }
             )
         try:
             validate_location_name(self.location)
         except ValueError as exc:
-            raise ValidationError({"location": str(exc)}) from exc
+            raise ValidationError({"requisition": str(exc)}) from exc
         if self.ip_range_begin and self.ip_range_end:
             try:
                 begin = ipaddress.ip_address(self.ip_range_begin)
@@ -847,10 +867,7 @@ class DiscoveryScan(NetBoxModel):
                 return  # field validators already flag an unparseable address
             if begin.version != end.version:
                 raise ValidationError(
-                    {
-                        "ip_range_end": "Must be the same IP version as the "
-                        "range start."
-                    }
+                    {"ip_range_end": "Must be the same IP version as the range start."}
                 )
             if end < begin:
                 raise ValidationError(
