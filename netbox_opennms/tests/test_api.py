@@ -24,6 +24,7 @@ from netbox_opennms.models import (
     AssetMapping,
     DiscoveredNode,
     DiscoveryScan,
+    MetadataContext,
     MetadataEntry,
     MonitoredInterface,
     MonitoredService,
@@ -492,3 +493,36 @@ class MetadataEntryAPITest(_NoGraphQL, APIViewTestCases.APIViewTestCase):
                 "value_source": "name",
             },
         ]
+
+
+class MetadataContextAPITest(_NoGraphQL, APIViewTestCases.APIViewTestCase):
+    """MetadataContext mixes migration-seeded built-in rows (undeletable,
+    unrenamable — see MetadataContext.clean()/delete()) with user-created
+    custom rows in one table. The generic Update/Delete/BulkUpdate/
+    BulkDelete tests pick their target(s) via ``self._get_queryset().first()``
+    /ordering, and under ``Meta.ordering = ("name",)`` whether a built-in or
+    a custom row sorts first is database-collation-dependent (case-sensitive
+    vs. case-insensitive collations disagree on where an "X-..." name lands
+    relative to lowercase built-in names like "interface"). Landing on a
+    built-in row would make those generic tests flake. ``_get_queryset()`` is
+    overridden below to scope every generic test to the non-builtin rows
+    created in setUpTestData, sidestepping the ambiguity entirely; built-in
+    protection itself is covered by MetadataContextTest in test_models.py.
+    """
+
+    model = MetadataContext
+    view_namespace = "plugins-api:netbox_opennms"
+    brief_fields = ["display", "id", "name", "url"]
+
+    @classmethod
+    def setUpTestData(cls):
+        for name in ["X-api-1", "X-api-2", "X-api-3"]:
+            MetadataContext.objects.create(name=name)
+        cls.create_data = [
+            {"name": "X-api-4", "description": "created via API"},
+            {"name": "X-api-5", "description": "created via API"},
+            {"name": "X-api-6", "description": "created via API"},
+        ]
+
+    def _get_queryset(self):
+        return MetadataContext.objects.filter(is_builtin=False)

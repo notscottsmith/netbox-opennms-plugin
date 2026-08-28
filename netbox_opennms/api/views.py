@@ -8,6 +8,7 @@ from ..filtersets import (
     AssetMappingFilterSet,
     DiscoveredNodeFilterSet,
     DiscoveryScanFilterSet,
+    MetadataContextFilterSet,
     MetadataEntryFilterSet,
     MonitoredInterfaceFilterSet,
     MonitoredServiceFilterSet,
@@ -22,6 +23,7 @@ from ..models import (
     AssetMapping,
     DiscoveredNode,
     DiscoveryScan,
+    MetadataContext,
     MetadataEntry,
     MonitoredInterface,
     MonitoredService,
@@ -36,6 +38,7 @@ from .serializers import (
     AssetMappingSerializer,
     DiscoveredNodeSerializer,
     DiscoveryScanSerializer,
+    MetadataContextSerializer,
     MetadataEntrySerializer,
     MonitoredInterfaceSerializer,
     MonitoredServiceSerializer,
@@ -90,6 +93,16 @@ class AssetMappingViewSet(NetBoxModelViewSet):
     queryset = AssetMapping.objects.select_related("requisition")
     serializer_class = AssetMappingSerializer
     filterset_class = AssetMappingFilterSet
+
+
+class MetadataContextViewSet(NetBoxModelViewSet):
+    # No further destroy()/perform_destroy() override needed: a built-in
+    # row's MetadataContext.delete() raises ProtectedError, which NetBox's
+    # DRF exception handler already turns into a 409 (the same path as any
+    # on_delete=PROTECT FK elsewhere in NetBox core).
+    queryset = MetadataContext.objects.all()
+    serializer_class = MetadataContextSerializer
+    filterset_class = MetadataContextFilterSet
 
 
 class MetadataEntryViewSet(NetBoxModelViewSet):

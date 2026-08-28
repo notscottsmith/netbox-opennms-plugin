@@ -12,6 +12,7 @@ from .models import (
     AssetMapping,
     DiscoveredNode,
     DiscoveryScan,
+    MetadataContext,
     MetadataEntry,
     MonitoredInterface,
     MonitoredService,
@@ -680,6 +681,25 @@ class AssetMappingTable(NetBoxTable):
             "actions",
         )
         default_columns = ("requisition", "netbox_source", "asset_field")
+
+
+class MetadataContextTable(NetBoxTable):
+    name = tables.Column(linkify=True)
+    is_builtin = columns.BooleanColumn(verbose_name="Built-in")
+
+    class Meta(NetBoxTable.Meta):
+        model = MetadataContext
+        fields = (
+            "pk",
+            "id",
+            "name",
+            "is_builtin",
+            "description",
+            "created",
+            "last_updated",
+            "actions",
+        )
+        default_columns = ("name", "is_builtin", "description")
 
 
 class MetadataEntryTable(NetBoxTable):

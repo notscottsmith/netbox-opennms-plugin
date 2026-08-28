@@ -9,6 +9,7 @@ from .models import (
     AssetMapping,
     DiscoveredNode,
     DiscoveryScan,
+    MetadataContext,
     MetadataEntry,
     MonitoredInterface,
     MonitoredService,
@@ -152,6 +153,17 @@ class DiscoveryScanFilterSet(NetBoxModelFilterSet):
     def search(self, queryset, name, value):
         if value:
             return queryset.filter(foreign_source__icontains=value)
+        return queryset
+
+
+class MetadataContextFilterSet(NetBoxModelFilterSet):
+    class Meta:
+        model = MetadataContext
+        fields = ("id", "name", "is_builtin")
+
+    def search(self, queryset, name, value):
+        if value:
+            return queryset.filter(name__icontains=value)
         return queryset
 
 
