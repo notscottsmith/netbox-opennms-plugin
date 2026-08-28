@@ -946,6 +946,46 @@ class RequisitionScanViewTest(TestCase):
             ),
         )
 
+    @mock.patch("netbox_opennms.views.scan_requisition")
+    def test_opennms_node_column_shows_the_live_label_and_opens_in_a_new_tab(
+        self, mock_scan_requisition
+    ):
+        # Issue #38: the "OpenNMS node" column links to the live OpenNMS node
+        # but must show its live OpenNMS *label*, not the raw numeric id, and
+        # must open the link in a new tab rather than navigating away.
+        node = NodeDiff("device-1", "rtr-1-desired", "unchanged")
+        node.opennms_node_id = 42
+        node.opennms_node_label = "rtr-1-live"
+        mock_scan_requisition.return_value = RequisitionScanResult(
+            foreign_source="fs-1",
+            exists=True,
+            target_server=self.server,
+            unchanged=[node],
+        )
+        response = self.client.get(self._url())
+        content = response.content.decode()
+        self.assertIn("rtr-1-live", content)
+        self.assertNotIn(">42<", content)
+        self.assertIn('target="_blank"', content)
+        self.assertIn('rel="noopener"', content)
+
+    @mock.patch("netbox_opennms.views.scan_requisition")
+    def test_opennms_node_column_falls_back_to_id_without_a_live_label(
+        self, mock_scan_requisition
+    ):
+        # A defensive fallback for the unlikely case OpenNMS didn't report a
+        # label for this node — better to show the id than nothing at all.
+        node = NodeDiff("device-1", "rtr-1-desired", "unchanged")
+        node.opennms_node_id = 42
+        mock_scan_requisition.return_value = RequisitionScanResult(
+            foreign_source="fs-1",
+            exists=True,
+            target_server=self.server,
+            unchanged=[node],
+        )
+        response = self.client.get(self._url())
+        self.assertContains(response, ">42<")
+
 
 class RequisitionNodeWalkViewTest(TestCase):
     """RequisitionNodeWalkView's live SNMP/neighbor-link rendering (issue #34)."""
