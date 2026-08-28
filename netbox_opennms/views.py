@@ -9,6 +9,7 @@ from dcim.models import Cable, Device, Interface, Site
 from django.contrib import messages
 from django.contrib.auth.mixins import PermissionRequiredMixin
 from django.core.exceptions import PermissionDenied, ValidationError
+from django.db.models import Count
 from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
@@ -814,9 +815,25 @@ class MonitoringExclusionBulkDeleteView(generic.BulkDeleteView):
 class DiscoveryScanView(generic.ObjectView):
     queryset = DiscoveryScan.objects.all()
 
+    def get_extra_context(self, request, instance):
+        """Attach a ``DiscoveredNodeTable`` over this scan's nodes (issue #54).
+
+        Reuses the standalone Discovered Nodes list's table (verdict/
+        resolution/completeness badges, sorting, pagination, column
+        picker) instead of the hand-rolled inline ``<table>`` the template
+        used to render — see ``NodeDiffTable`` for the unrelated concept
+        (Requisition pre-sync diff) this is deliberately *not* reusing.
+        """
+        table = tables.DiscoveredNodeTable(instance.discovered_nodes.all())
+        table.configure(request)
+        return {"discovered_nodes_table": table}
+
 
 class DiscoveryScanListView(generic.ObjectListView):
-    queryset = DiscoveryScan.objects.all()
+    # Annotated with node_count so DiscoveryScanTable's node-count column
+    # (#53) sorts server-side instead of evaluating
+    # ``discovered_nodes.count`` per row.
+    queryset = DiscoveryScan.objects.annotate(node_count=Count("discovered_nodes"))
     table = tables.DiscoveryScanTable
     filterset = filtersets.DiscoveryScanFilterSet
 
@@ -850,6 +867,13 @@ class DiscoveryScanTriggerView(GetReturnURLMixin, PermissionRequiredMixin, View)
     def post(self, request, pk):
         scan = get_object_or_404(DiscoveryScan, pk=pk)
         return_url = request.META.get("HTTP_REFERER") or scan.get_absolute_url()
+        if scan.status != "pending":
+            messages.error(
+                request,
+                f"Discovery scan {scan} has already been triggered; create a "
+                "new Discovery Scan to scan again.",
+            )
+            return redirect(return_url)
         try:
             with OpenNMSClient.from_server(scan.server) as client:
                 client.run_discovery(

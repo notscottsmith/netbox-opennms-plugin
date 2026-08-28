@@ -43,6 +43,7 @@ from netbox_opennms.models import (
     Requisition,
 )
 from netbox_opennms.requisition_scan import NodeDiff, RequisitionScanResult
+from netbox_opennms.tables import DiscoveredNodeTable
 from netbox_opennms.translation import RenderError
 
 DETECTOR_CLASS = "org.opennms.netmgt.provision.detector.icmp.IcmpDetector"
@@ -435,6 +436,184 @@ class DiscoveryScanTriggerViewTest(TestCase):
         self.user.user_permissions.clear()
         response = self.client.post(self._url())
         self.assertEqual(response.status_code, 403)
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_rejects_retrigger_of_running_scan(self, mock_from_server):
+        self.scan.mark_triggered()
+        response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 302)
+        mock_from_server.assert_not_called()
+        messages = list(get_messages(response.wsgi_request))
+        self.assertTrue(any("already been triggered" in str(m) for m in messages))
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_rejects_retrigger_of_settled_scan(self, mock_from_server):
+        self.scan.mark_triggered()
+        DiscoveryScan.objects.filter(pk=self.scan.pk).update(settled_at=timezone.now())
+        response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 302)
+        mock_from_server.assert_not_called()
+        messages = list(get_messages(response.wsgi_request))
+        self.assertTrue(any("already been triggered" in str(m) for m in messages))
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_rejects_retrigger_of_cleaned_up_scan(self, mock_from_server):
+        self.scan.mark_triggered()
+        DiscoveryScan.objects.filter(pk=self.scan.pk).update(
+            settled_at=timezone.now(), cleaned_up_at=timezone.now()
+        )
+        response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 302)
+        mock_from_server.assert_not_called()
+        messages = list(get_messages(response.wsgi_request))
+        self.assertTrue(any("already been triggered" in str(m) for m in messages))
+
+
+class DiscoveryScanDiscoveredNodesTableTest(TestCase):
+    """The scan detail page reuses ``DiscoveredNodeTable`` (issue #54).
+
+    Replaces the old hand-rolled inline ``<table>`` (Node/Verdict/
+    Resolution/NetBox object/Completeness) with the same ``NetBoxTable``
+    the standalone Discovered Nodes list uses -- verdict badges, sorting,
+    pagination, and column configuration all included.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.server = OpenNMSServer.objects.create(
+            name="Acme", url="https://onms.example"
+        )
+        cls.requisition = Requisition.objects.create(name="fs-1", location="raleigh")
+        cls.scan = DiscoveryScan.objects.create(
+            server=cls.server,
+            requisition=cls.requisition,
+            location="raleigh",
+            ip_range_begin="10.0.0.1",
+            ip_range_end="10.0.0.254",
+        )
+        cls.node = DiscoveredNode.objects.create(
+            server=cls.server,
+            discovery_scan=cls.scan,
+            opennms_node_id=1,
+            label="node-1",
+            verdict="red",
+        )
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="tester")
+        self.user.user_permissions.add(
+            Permission.objects.get(
+                codename="view_discoveryscan",
+                content_type__app_label="netbox_opennms",
+            )
+        )
+        self.client.force_login(self.user)
+
+    def _url(self):
+        return reverse("plugins:netbox_opennms:discoveryscan", args=[self.scan.pk])
+
+    def test_context_attaches_discovered_node_table(self):
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        table = response.context["discovered_nodes_table"]
+        self.assertIsInstance(table, DiscoveredNodeTable)
+        self.assertIn(self.node, list(table.data))
+
+    def test_page_shows_verdict_badge_from_shared_table(self):
+        response = self.client.get(self._url())
+        self.assertContains(response, "Missing from NetBox")
+        self.assertContains(response, "node-1")
+
+    def test_empty_scan_shows_placeholder_not_table(self):
+        empty_scan = DiscoveryScan.objects.create(
+            server=self.server,
+            requisition=self.requisition,
+            location="raleigh",
+            ip_range_begin="10.0.1.1",
+            ip_range_end="10.0.1.254",
+        )
+        response = self.client.get(
+            reverse("plugins:netbox_opennms:discoveryscan", args=[empty_scan.pk])
+        )
+        self.assertContains(response, "No nodes have been discovered by this scan yet.")
+
+
+class DiscoveryScanDetailTriggerGatingTest(TestCase):
+    """The Discovery Scan detail page's Trigger button gets the same
+    disabled+tooltip gating as DiscoveryScanTable's trigger_action column
+    once the scan leaves "pending" (issue #53), mirroring #50's server-side
+    guard in DiscoveryScanTriggerView.post().
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        server = OpenNMSServer.objects.create(name="Acme", url="https://onms.example")
+        requisition = Requisition.objects.create(name="fs-1", location="raleigh")
+        cls.pending = DiscoveryScan.objects.create(
+            server=server,
+            requisition=requisition,
+            location="raleigh",
+            ip_range_begin="10.0.0.1",
+            ip_range_end="10.0.0.254",
+        )
+        cls.running = DiscoveryScan.objects.create(
+            server=server,
+            requisition=requisition,
+            location="raleigh",
+            ip_range_begin="10.0.1.1",
+            ip_range_end="10.0.1.254",
+        )
+        cls.running.mark_triggered()
+        cls.settled = DiscoveryScan.objects.create(
+            server=server,
+            requisition=requisition,
+            location="raleigh",
+            ip_range_begin="10.0.2.1",
+            ip_range_end="10.0.2.254",
+        )
+        cls.settled.mark_triggered()
+        DiscoveryScan.objects.filter(pk=cls.settled.pk).update(
+            settled_at=timezone.now()
+        )
+        cls.settled.refresh_from_db()
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="tester")
+        self.user.user_permissions.add(
+            *Permission.objects.filter(
+                codename__in=["view_discoveryscan", "change_discoveryscan"],
+                content_type__app_label="netbox_opennms",
+            )
+        )
+        self.client.force_login(self.user)
+
+    def _get(self, scan):
+        return self.client.get(
+            reverse("plugins:netbox_opennms:discoveryscan", args=[scan.pk])
+        )
+
+    def test_pending_scan_shows_enabled_trigger_button(self):
+        response = self._get(self.pending)
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        self.assertIn("Pending", content)
+        self.assertNotIn("Already triggered", content)
+
+    def test_running_scan_shows_disabled_trigger_button_and_status(self):
+        response = self._get(self.running)
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        self.assertIn("Running", content)
+        self.assertIn("disabled", content)
+        self.assertIn("Already triggered", content)
+
+    def test_settled_scan_shows_disabled_trigger_button_and_status(self):
+        response = self._get(self.settled)
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        self.assertIn("Settled", content)
+        self.assertIn("disabled", content)
+        self.assertIn("Already triggered", content)
 
 
 class DiscoveredNodeViewTest(

@@ -7,7 +7,7 @@ from netbox.plugins import PluginConfig
 # Single source of truth for the version: pyproject reads this via
 # [tool.setuptools.dynamic] (a top-level literal, AST-read at build time without
 # importing NetBox). PluginConfig.version also derives from it.
-__version__ = "0.1.14"
+__version__ = "0.1.17"
 
 
 class NetBoxOpenNMSConfig(PluginConfig):
@@ -59,6 +59,12 @@ class NetBoxOpenNMSConfig(PluginConfig):
         # before PollDiscoveryScansJob infers it has settled (issue #27,
         # ADR 0006 — OpenNMS gives no job-status endpoint to ask directly).
         "discovery_settle_idle_minutes": "5",
+        # How often (minutes) PollDiscoveryScansJob polls each unsettled
+        # Discovery Scan (issue #52). Default 1 — short enough that an
+        # operator watching a scan progress in the OpenNMS UI sees NetBox's
+        # DiscoveredNode rows update in near-real-time rather than reading as
+        # "not updating".
+        "discovery_poll_interval_minutes": "1",
         # How long (minutes) after a Discovery Scan settles before
         # CleanupDiscoveryScansJob deletes its OpenNMS-side throwaway
         # requisition (issue #29, ADR 0006). Default 1440 (24h) — long enough
