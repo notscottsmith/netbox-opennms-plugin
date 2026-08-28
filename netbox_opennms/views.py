@@ -520,17 +520,23 @@ class RequisitionScanView(PermissionRequiredMixin, View):
 
 
 class RequisitionNodeWalkView(PermissionRequiredMixin, View):
-    """Live SNMP interfaces + neighbor links for one OpenNMS node (issue #34).
+    """Live OpenNMS data for one node (issues #34, #39).
 
-    A small read-only companion to the scan table's node-name link — makes
-    the same pair of ``OpenNMSClient`` calls the One-Time-Sync preview does
-    (``reverse_sync.fetch_node_data``: ``list_snmp_interfaces`` +
-    ``get_node_links``), but only to display; nothing here plans or commits
-    anything to NetBox. ``fetch_node_data`` itself isn't reusable here since
-    it's keyed off a ``DiscoveredNode`` rather than a bare node id. Reachable
-    only for a row the scan table has already resolved an
-    ``opennms_node_id`` for (an "added" row — not yet provisioned in
-    OpenNMS — has no such link).
+    A read-only companion to the scan table's node-name link — a superset of
+    the One-Time-Sync preview's fetch (``reverse_sync.fetch_node_data``:
+    ``list_snmp_interfaces`` + ``get_node_links``), plus everything else
+    ``OpenNMSClient`` already exposes per-node: ``get_node`` (categories,
+    asset record, SNMP agent metadata such as ``sysObjectId``/``sysLocation``
+    in one call) and IP interfaces/monitored services via the same
+    ``_fetch_ip_interfaces_and_services`` helper the Discovery Scan review
+    page (``DiscoveredNodeView``) uses. Nothing here plans or commits
+    anything to NetBox — it's display only, and (unlike ``DiscoveredNode``'s
+    walk) nothing is persisted; every visit is a fresh live fetch.
+    ``fetch_node_data``/``DiscoveredNodeView.get_extra_context`` themselves
+    aren't reusable here since they're keyed off a ``DiscoveredNode`` rather
+    than a bare node id. Reachable only for a row the scan table has already
+    resolved an ``opennms_node_id`` for (an "added" row — not yet
+    provisioned in OpenNMS — has no such link).
     """
 
     permission_required = "netbox_opennms.view_requisition"
@@ -542,6 +548,13 @@ class RequisitionNodeWalkView(PermissionRequiredMixin, View):
         error = None
         snmp_interfaces = []
         links = []
+        node_detail = {}
+        categories = []
+        asset_rows = []
+        live_interface_rows = []
+        mapped_asset_fields = set(
+            requisition.asset_mappings.values_list("asset_field", flat=True)
+        )
         if target_server is None:
             error = "This Requisition's target OpenNMS Server could not be resolved."
         else:
@@ -549,8 +562,44 @@ class RequisitionNodeWalkView(PermissionRequiredMixin, View):
                 with OpenNMSClient.from_server(target_server) as client:
                     snmp_interfaces = client.list_snmp_interfaces(opennms_node_id)
                     links = parse_node_links(client.get_node_links(opennms_node_id))
+                    node_detail = client.get_node(opennms_node_id) or {}
+                    ip_interfaces, services_by_ip = _fetch_ip_interfaces_and_services(
+                        client, opennms_node_id
+                    )
             except OpenNMSError as exc:
                 error = str(exc)
+            else:
+                categories = import_node.parse_categories(node_detail)
+                asset_record = node_detail.get("assetRecord") or {}
+                asset_rows = [
+                    {
+                        "field": field,
+                        "value": value,
+                        "mapped": field in mapped_asset_fields,
+                    }
+                    for field, value in asset_record.items()
+                    if value
+                ]
+                parsed_interfaces, parsed_services = (
+                    import_node.parse_discovery_payload(ip_interfaces, services_by_ip)
+                )
+                service_names_by_ip = {}
+                for service in parsed_services:
+                    service_names_by_ip.setdefault(service.ip_address, []).append(
+                        service.name
+                    )
+                live_interface_rows = [
+                    {
+                        "interface": iface,
+                        "services": service_names_by_ip.get(iface.ip_address, []),
+                    }
+                    for iface in parsed_interfaces
+                ]
+        snmp_metadata = {
+            key: value
+            for key, value in node_detail.items()
+            if key not in ("categories", "category", "assetRecord") and value
+        }
         return render(
             request,
             self.template_name,
@@ -559,6 +608,10 @@ class RequisitionNodeWalkView(PermissionRequiredMixin, View):
                 "opennms_node_id": opennms_node_id,
                 "snmp_interfaces": snmp_interfaces,
                 "links": links,
+                "categories": categories,
+                "asset_rows": asset_rows,
+                "snmp_metadata": snmp_metadata,
+                "live_interface_rows": live_interface_rows,
                 "error": error,
             },
         )

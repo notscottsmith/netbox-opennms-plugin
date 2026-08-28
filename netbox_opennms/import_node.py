@@ -145,7 +145,13 @@ def _propose_field(source, asset_record, overrides, site_model):
     return FieldProposal(value=matched, detected=raw, guessed=matched is not None)
 
 
-def _parse_categories(node_detail):
+def parse_categories(node_detail):
+    """Category names from a ``client.get_node()`` payload, dict-or-list tolerant.
+
+    Shared by ``build_proposal`` (red-row import) and
+    ``RequisitionNodeWalkView`` (issue #39) — both read the same
+    ``categories``/``category`` shape OpenNMS's node detail can return.
+    """
     raw = node_detail.get("categories", node_detail.get("category", []))
     if isinstance(raw, dict):
         raw = raw.get("category", [])
@@ -237,7 +243,7 @@ def build_proposal(
     (both passed in so this stays a pure function of its arguments).
     """
     asset_record = (node_detail or {}).get("assetRecord") or {}
-    categories = _parse_categories(node_detail or {})
+    categories = parse_categories(node_detail or {})
     interfaces, services = parse_discovery_payload(ip_interfaces, services_by_ip)
 
     return ImportProposal(
