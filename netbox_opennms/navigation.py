@@ -16,7 +16,6 @@ menu = PluginMenu(
                     link="plugins:netbox_opennms:opennmsserver_list",
                     buttons=(
                         PluginMenuButton(
-                            link_text="Servers",
                             link="plugins:netbox_opennms:opennmsserver_add",
                             title="Add",
                             icon_class="mdi mdi-plus-thick",
