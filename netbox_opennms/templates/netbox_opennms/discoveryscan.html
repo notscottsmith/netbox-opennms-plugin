@@ -37,7 +37,12 @@
               <td>
                 <form method="post" action="{% url 'plugins:netbox_opennms:discoveryscan_trigger' object.pk %}">
                   {% csrf_token %}
-                  <button type="submit" class="btn btn-sm btn-outline-secondary">Trigger scan</button>
+                  <button type="submit" class="btn btn-sm btn-outline-secondary"
+                          {% if object.status != "pending" %}
+                            disabled title="Already triggered — create a new scan"
+                          {% endif %}>
+                    Trigger scan
+                  </button>
                 </form>
               </td>
             </tr>

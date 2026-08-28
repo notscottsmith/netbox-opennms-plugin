@@ -468,6 +468,84 @@ class DiscoveryScanTriggerViewTest(TestCase):
         self.assertTrue(any("already been triggered" in str(m) for m in messages))
 
 
+class DiscoveryScanDetailTriggerGatingTest(TestCase):
+    """The Discovery Scan detail page's Trigger button gets the same
+    disabled+tooltip gating as DiscoveryScanTable's trigger_action column
+    once the scan leaves "pending" (issue #53), mirroring #50's server-side
+    guard in DiscoveryScanTriggerView.post().
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        server = OpenNMSServer.objects.create(name="Acme", url="https://onms.example")
+        requisition = Requisition.objects.create(name="fs-1", location="raleigh")
+        cls.pending = DiscoveryScan.objects.create(
+            server=server,
+            requisition=requisition,
+            location="raleigh",
+            ip_range_begin="10.0.0.1",
+            ip_range_end="10.0.0.254",
+        )
+        cls.running = DiscoveryScan.objects.create(
+            server=server,
+            requisition=requisition,
+            location="raleigh",
+            ip_range_begin="10.0.1.1",
+            ip_range_end="10.0.1.254",
+        )
+        cls.running.mark_triggered()
+        cls.settled = DiscoveryScan.objects.create(
+            server=server,
+            requisition=requisition,
+            location="raleigh",
+            ip_range_begin="10.0.2.1",
+            ip_range_end="10.0.2.254",
+        )
+        cls.settled.mark_triggered()
+        DiscoveryScan.objects.filter(pk=cls.settled.pk).update(
+            settled_at=timezone.now()
+        )
+        cls.settled.refresh_from_db()
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="tester")
+        self.user.user_permissions.add(
+            *Permission.objects.filter(
+                codename__in=["view_discoveryscan", "change_discoveryscan"],
+                content_type__app_label="netbox_opennms",
+            )
+        )
+        self.client.force_login(self.user)
+
+    def _get(self, scan):
+        return self.client.get(
+            reverse("plugins:netbox_opennms:discoveryscan", args=[scan.pk])
+        )
+
+    def test_pending_scan_shows_enabled_trigger_button(self):
+        response = self._get(self.pending)
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        self.assertIn("Pending", content)
+        self.assertNotIn("Already triggered", content)
+
+    def test_running_scan_shows_disabled_trigger_button_and_status(self):
+        response = self._get(self.running)
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        self.assertIn("Running", content)
+        self.assertIn("disabled", content)
+        self.assertIn("Already triggered", content)
+
+    def test_settled_scan_shows_disabled_trigger_button_and_status(self):
+        response = self._get(self.settled)
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        self.assertIn("Settled", content)
+        self.assertIn("disabled", content)
+        self.assertIn("Already triggered", content)
+
+
 class DiscoveredNodeViewTest(
     ViewTestCases.GetObjectViewTestCase,
     ViewTestCases.GetObjectChangelogViewTestCase,

@@ -10,10 +10,17 @@ formaction/formmethod fix is in place instead of a nested <form>.
 """
 
 from django.contrib.auth.models import User
+from django.db.models import Count
 from django.test import TestCase
 from django.urls import reverse
+from django.utils import timezone
 
-from netbox_opennms.models import DiscoveryScan, OpenNMSServer, Requisition
+from netbox_opennms.models import (
+    DiscoveredNode,
+    DiscoveryScan,
+    OpenNMSServer,
+    Requisition,
+)
 from netbox_opennms.tables import DiscoveryScanTable, OpenNMSServerTable
 
 FILTER = {"site": ["raleigh"]}
@@ -103,3 +110,95 @@ class DiscoveryScanTableActionsTest(TestCase):
         tbody = _tbody(response)
         self.assertNotIn("<form", tbody)
         self.assertIn(f'formaction="{trigger_url}"', tbody)
+
+
+class DiscoveryScanTableStatusAndNodeCountTest(TestCase):
+    """Issue #53: DiscoveryScanTable's status/node-count columns and the
+    Trigger button's disabled+tooltip gating once a scan leaves "pending" —
+    the table-side counterpart of #50's DiscoveryScanTriggerView guard.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        server = OpenNMSServer.objects.create(name="Acme", url="https://onms.example")
+        requisition = Requisition.objects.create(name="fs-1", filter_params=FILTER)
+        cls.pending = DiscoveryScan.objects.create(
+            server=server,
+            requisition=requisition,
+            location="raleigh",
+            ip_range_begin="10.0.0.1",
+            ip_range_end="10.0.0.254",
+        )
+        cls.running = DiscoveryScan.objects.create(
+            server=server,
+            requisition=requisition,
+            location="raleigh",
+            ip_range_begin="10.0.1.1",
+            ip_range_end="10.0.1.254",
+        )
+        cls.running.mark_triggered()
+        cls.settled = DiscoveryScan.objects.create(
+            server=server,
+            requisition=requisition,
+            location="raleigh",
+            ip_range_begin="10.0.2.1",
+            ip_range_end="10.0.2.254",
+        )
+        cls.settled.mark_triggered()
+        DiscoveryScan.objects.filter(pk=cls.settled.pk).update(
+            settled_at=timezone.now()
+        )
+        cls.settled.refresh_from_db()
+
+        for i in range(2):
+            DiscoveredNode.objects.create(
+                server=server,
+                discovery_scan=cls.pending,
+                opennms_node_id=i,
+                label=f"node-{i}",
+                verdict="green",
+            )
+
+    def _row(self, scan, *, annotated=True):
+        queryset = DiscoveryScan.objects.filter(pk=scan.pk)
+        if annotated:
+            queryset = queryset.annotate(node_count=Count("discovered_nodes"))
+        table = DiscoveryScanTable(queryset)
+        return table.rows[0]
+
+    def test_status_column_shows_pending(self):
+        html = self._row(self.pending).get_cell("status")
+        self.assertIn("Pending", html)
+
+    def test_status_column_shows_running(self):
+        html = self._row(self.running).get_cell("status")
+        self.assertIn("Running", html)
+
+    def test_status_column_shows_settled(self):
+        html = self._row(self.settled).get_cell("status")
+        self.assertIn("Settled", html)
+
+    def test_node_count_column_reflects_discovered_nodes_count(self):
+        self.assertEqual(self._row(self.pending).get_cell("node_count"), 2)
+        self.assertEqual(self._row(self.running).get_cell("node_count"), 0)
+
+    def test_node_count_falls_back_without_annotation(self):
+        # DiscoveryScanBulkDeleteView (and this table's other pre-existing
+        # test above) render this table off an unannotated queryset —
+        # render_node_count must still reflect discovered_nodes.count().
+        row = self._row(self.pending, annotated=False)
+        self.assertEqual(row.get_cell("node_count"), 2)
+
+    def test_trigger_action_enabled_when_pending(self):
+        html = self._row(self.pending).get_cell("trigger_action")
+        self.assertNotIn("disabled", html)
+
+    def test_trigger_action_disabled_when_running(self):
+        html = self._row(self.running).get_cell("trigger_action")
+        self.assertIn("disabled", html)
+        self.assertIn("title=", html)
+
+    def test_trigger_action_disabled_when_settled(self):
+        html = self._row(self.settled).get_cell("trigger_action")
+        self.assertIn("disabled", html)
+        self.assertIn("title=", html)
