@@ -22,7 +22,7 @@ from virtualization.models import VirtualMachine
 from . import filtersets, forms, import_node, tables
 from .adoption import adopt_foreign_ids, existing_foreign_ids_by_label
 from .client import OpenNMSClient, OpenNMSError, parse_node_links
-from .derivation import validate_location_name
+from .derivation import foreign_id_for, validate_location_name
 from .dryrun import dry_run
 from .ip_reconcile import (
     ConfirmRejected,
@@ -247,20 +247,113 @@ class RequisitionSyncView(PermissionRequiredMixin, View):
         return redirect(requisition.get_absolute_url())
 
 
+def _prepare_node_push(request, requisition):
+    """Resolve+validate a Requisition for a single-node push (issues #35/#36).
+
+    Shared preamble for ``RequisitionSyncNodeView`` and
+    ``RequisitionSyncNodeOverrideView`` — both scope
+    ``jobs._render_and_replace``'s own gates (``validate_resolution``, Server
+    health, ``default_location``, ``import_mode``) to a single node instead of
+    building a parallel implementation. Returns ``(resolution, server,
+    default_location, rescan)`` on success, or ``None`` having already sent
+    the request's error message (the caller redirects).
+    """
+    resolution = resolve(requisition.name)
+
+    validation = validate_resolution(resolution)
+    if validation.errors:
+        messages.error(request, "; ".join(validation.errors))
+        return None
+
+    if resolution is None or not resolution.nodes:
+        messages.error(request, f"{requisition.name} has no resolvable membership.")
+        return None
+
+    # A clean (non-blocking) resolution with at least one node is guaranteed
+    # to have already resolved to exactly one Server
+    # (``membership._resolve_server``) — no deployed-Server fallback needed
+    # here, unlike a Remove/empty resolution.
+    server = resolution.server
+    if not server.is_healthy:
+        messages.error(
+            request,
+            f"Server {server.name!r} is marked unhealthy "
+            f"({server.last_check_message or 'no detail'}) — refusing to "
+            "sync until the connection is restored.",
+        )
+        return None
+
+    default_location = server.default_location
+    if default_location:
+        try:
+            validate_location_name(default_location)
+        except ValueError as exc:
+            messages.error(
+                request,
+                f"Server {server.name!r} default_location is invalid: {exc}",
+            )
+            return None
+
+    rescan = str(get_plugin_config(PLUGIN_NAME, "import_mode")).strip().lower()
+    if rescan not in ("true", "false", "dbonly"):
+        messages.error(
+            request,
+            f"Invalid import_mode {rescan!r} (expected true/false/dbonly).",
+        )
+        return None
+
+    return resolution, server, default_location, rescan
+
+
+def _find_node_after_adoption(client, requisition_name, resolution, foreign_id):
+    """Fetch OpenNMS's live requisition, adopt existing Foreign IDs into
+    ``resolution.nodes``, then look up the node the dry-run row's
+    ``foreign_id`` refers to (issues #35/#36).
+
+    Without the adoption pass, a node adopted into an existing OpenNMS
+    Foreign Source would be looked up under its freshly-derived foreign-id
+    and never match the adopted id the dry-run row actually shows — see
+    ``dryrun.dry_run()``, which runs the identical pass before building rows.
+    Returns ``(node, error_message)``; ``node`` is ``None`` on any failure.
+    """
+    try:
+        current_requisition = client.get_requisition(requisition_name)
+    except OpenNMSError as exc:
+        return None, (
+            f"Cannot check existing OpenNMS state for {requisition_name}: {exc}"
+        )
+    adopt_foreign_ids(
+        resolution.nodes, existing_foreign_ids_by_label(current_requisition)
+    )
+    node = next((n for n in resolution.nodes if n.foreign_id == foreign_id), None)
+    if node is None:
+        return None, (
+            f"Node {foreign_id!r} is no longer part of {requisition_name} — "
+            "reload the dry run."
+        )
+    return node, None
+
+
+def _push_node(client, requisition_name, node, default_location, rescan):
+    """Render and push one ``NodeSpec`` (issues #35/#36) — the shared tail of
+    both views' ``post()``, after the node to push has been decided."""
+    node_xml = render_node_document(node, default_location=default_location)
+    client.post_node(requisition_name, node_xml)
+    client.import_requisition(requisition_name, rescan_existing=rescan)
+
+
 class RequisitionSyncNodeView(PermissionRequiredMixin, View):
     """Push one node from the dry-run row to OpenNMS immediately (issue #35).
 
     Scopes ``jobs._render_and_replace``'s own machinery to one node instead of
     building a parallel implementation: the same ``validate_resolution`` gate,
-    the same adoption pass (``adopt_foreign_ids`` / ``existing_foreign_ids_by_
-    label`` — without it, a node adopted into an existing OpenNMS Foreign
-    Source would be looked up under its freshly-derived foreign-id and never
-    match the adopted id the dry-run row actually shows), the same
-    ``import_mode`` validation, and the same ``translation.render_node_
-    document`` (the per-node fragment ``render_requisition`` uses internally)
-    → ``client.post_node`` + ``client.import_requisition`` pair the full push
-    uses, just scoped to one node via ``post_node`` rather than
-    ``post_requisition``.
+    the same adoption pass, the same ``import_mode`` validation (all in
+    ``_prepare_node_push``/``_find_node_after_adoption``, shared with
+    ``RequisitionSyncNodeOverrideView``, issue #36), and the same
+    ``translation.render_node_document`` (the per-node fragment
+    ``render_requisition`` uses internally) → ``client.post_node`` +
+    ``client.import_requisition`` pair the full push uses, just scoped to one
+    node via ``post_node`` rather than ``post_requisition``.
 
     Runs synchronously in the request (unlike ``RequisitionSyncView``'s
     background Job) so this node's success/failure is known and reported
@@ -274,85 +367,21 @@ class RequisitionSyncNodeView(PermissionRequiredMixin, View):
         return_url = reverse(
             "plugins:netbox_opennms:requisition_dry_run", args=[pk]
         )
-        resolution = resolve(requisition.name)
-
-        validation = validate_resolution(resolution)
-        if validation.errors:
-            messages.error(request, "; ".join(validation.errors))
+        prepared = _prepare_node_push(request, requisition)
+        if prepared is None:
             return redirect(return_url)
-
-        if resolution is None or not resolution.nodes:
-            messages.error(
-                request, f"{requisition.name} has no resolvable membership."
-            )
-            return redirect(return_url)
-
-        # A clean (non-blocking) resolution with at least one node is
-        # guaranteed to have already resolved to exactly one Server
-        # (``membership._resolve_server``) — no deployed-Server fallback
-        # needed here, unlike a Remove/empty resolution.
-        server = resolution.server
-        if not server.is_healthy:
-            messages.error(
-                request,
-                f"Server {server.name!r} is marked unhealthy "
-                f"({server.last_check_message or 'no detail'}) — refusing to "
-                "sync until the connection is restored.",
-            )
-            return redirect(return_url)
-
-        default_location = server.default_location
-        if default_location:
-            try:
-                validate_location_name(default_location)
-            except ValueError as exc:
-                messages.error(
-                    request,
-                    f"Server {server.name!r} default_location is invalid: {exc}",
-                )
-                return redirect(return_url)
-
-        rescan = str(get_plugin_config(PLUGIN_NAME, "import_mode")).strip().lower()
-        if rescan not in ("true", "false", "dbonly"):
-            messages.error(
-                request,
-                f"Invalid import_mode {rescan!r} (expected true/false/dbonly).",
-            )
-            return redirect(return_url)
+        resolution, server, default_location, rescan = prepared
 
         try:
             with OpenNMSClient.from_server(server) as client:
-                try:
-                    current_requisition = client.get_requisition(requisition.name)
-                except OpenNMSError as exc:
-                    messages.error(
-                        request,
-                        "Cannot check existing OpenNMS state for "
-                        f"{requisition.name}: {exc}",
-                    )
-                    return redirect(return_url)
-                adopt_foreign_ids(
-                    resolution.nodes,
-                    existing_foreign_ids_by_label(current_requisition),
+                node, error = _find_node_after_adoption(
+                    client, requisition.name, resolution, foreign_id
                 )
-
-                node = next(
-                    (n for n in resolution.nodes if n.foreign_id == foreign_id),
-                    None,
-                )
-                if node is None:
-                    messages.error(
-                        request,
-                        f"Node {foreign_id!r} is no longer part of "
-                        f"{requisition.name} — reload the dry run.",
-                    )
+                if error:
+                    messages.error(request, error)
                     return redirect(return_url)
 
-                node_xml = render_node_document(
-                    node, default_location=default_location
-                )
-                client.post_node(requisition.name, node_xml)
-                client.import_requisition(requisition.name, rescan_existing=rescan)
+                _push_node(client, requisition.name, node, default_location, rescan)
         except (RenderError, OpenNMSError) as exc:
             messages.error(request, f"Sync of node {foreign_id!r} failed: {exc}")
         else:
@@ -360,6 +389,69 @@ class RequisitionSyncNodeView(PermissionRequiredMixin, View):
                 request,
                 f"Node {node.node_label!r} pushed to OpenNMS (accepted for "
                 "import — AD-12).",
+            )
+        return redirect(return_url)
+
+
+class RequisitionSyncNodeOverrideView(PermissionRequiredMixin, View):
+    """Push one node under the plugin's default Foreign ID, overriding
+    whatever Foreign ID it currently carries in OpenNMS (issue #36).
+
+    OpenNMS treats ``ForeignSource:ForeignID`` as a node's identity for
+    provisioning purposes, so this does not rename the existing node in
+    place — it provisions a brand-new node under
+    ``derivation.foreign_id_for(node.netbox_object)`` (the same format every
+    never-adopted node already gets). The dropdown's confirmation dialog
+    (``tables.NodeDiffTable``) says as much before this endpoint is ever
+    called.
+
+    Grilled and decided for issue #36: the old node under the previous
+    Foreign ID is deliberately left alone in OpenNMS — no delete, no flag.
+    Neither ``DeployedForeignSource`` (keyed by Foreign Source name, not
+    per-node — unaffected by construction) nor ``DiscoveredNode`` (populated
+    only by Discovery scans, not by a Requisition sync) tracks per-node
+    identity, so neither needs updating here; a stale ``DiscoveredNode`` row
+    for the old node, if one exists, is left for its next scan to refresh.
+    The override is scoped to exactly this one node — no other node in the
+    Requisition, nor the Foreign Source shell itself, is touched.
+    """
+
+    permission_required = SYNC_PERM
+
+    def post(self, request, pk, foreign_id):
+        requisition = get_object_or_404(Requisition, pk=pk)
+        return_url = reverse(
+            "plugins:netbox_opennms:requisition_dry_run", args=[pk]
+        )
+        prepared = _prepare_node_push(request, requisition)
+        if prepared is None:
+            return redirect(return_url)
+        resolution, server, default_location, rescan = prepared
+
+        try:
+            with OpenNMSClient.from_server(server) as client:
+                node, error = _find_node_after_adoption(
+                    client, requisition.name, resolution, foreign_id
+                )
+                if error:
+                    messages.error(request, error)
+                    return redirect(return_url)
+
+                new_foreign_id = foreign_id_for(node.netbox_object)
+                node.foreign_id = new_foreign_id
+
+                _push_node(client, requisition.name, node, default_location, rescan)
+        except (RenderError, OpenNMSError) as exc:
+            messages.error(
+                request, f"Foreign ID override of node {foreign_id!r} failed: {exc}"
+            )
+        else:
+            messages.success(
+                request,
+                f"Node {node.node_label!r} pushed to OpenNMS under Foreign ID "
+                f"{new_foreign_id!r} (was {foreign_id!r}; accepted for import "
+                "— AD-12). The old node under the previous Foreign ID was "
+                "left untouched in OpenNMS.",
             )
         return redirect(return_url)
 

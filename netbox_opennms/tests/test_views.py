@@ -1031,6 +1031,156 @@ class RequisitionSyncNodeViewTest(TestCase):
         self.assertTrue(any("failed" in str(m) for m in messages))
 
 
+class RequisitionSyncNodeOverrideViewTest(TestCase):
+    """RequisitionSyncNodeOverrideView: Foreign ID override push (issue #36).
+
+    Shares ``_prepare_node_push``/``_find_node_after_adoption`` with
+    ``RequisitionSyncNodeView`` (see ``RequisitionSyncNodeViewTest`` for full
+    coverage of those shared gates) — this class covers what's specific to the
+    override: deriving the new Foreign ID, pushing under it, and leaving the
+    old node alone (grilled decisions for #36).
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.server = OpenNMSServer.objects.create(
+            name="Acme", url="https://onms.example/opennms"
+        )
+        cls.requisition = Requisition.objects.create(
+            name="fs-1", filter_params=FILTER
+        )
+        cls.device = _devices(1)[0]
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="tester")
+        self.user.user_permissions.add(
+            Permission.objects.get(
+                codename="change_requisition",
+                content_type__app_label="netbox_opennms",
+            )
+        )
+        self.client.force_login(self.user)
+
+    def _url(self, foreign_id="legacy-42"):
+        return reverse(
+            "plugins:netbox_opennms:requisition_sync_node_override",
+            args=[self.requisition.pk, foreign_id],
+        )
+
+    def _node(self, foreign_id="legacy-42"):
+        return NodeSpec(
+            node_label="rtr-1",
+            foreign_id=foreign_id,
+            location="",
+            interfaces=[InterfaceSpec("10.0.0.1", "P", services=["ICMP"])],
+            netbox_object=self.device,
+        )
+
+    def _resolution(self, **kw):
+        kw.setdefault("nodes", [self._node()])
+        kw.setdefault("server", self.server)
+        return Resolution(foreign_source="fs-1", requisition=self.requisition, **kw)
+
+    def test_login_required(self):
+        self.client.logout()
+        response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/login/", response.url)
+
+    def test_requires_change_permission(self):
+        self.user.user_permissions.clear()
+        response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 403)
+
+    @mock.patch("netbox_opennms.views.resolve")
+    def test_conflicts_block_the_push(self, mock_resolve):
+        mock_resolve.return_value = self._resolution(
+            conflicts=[Conflict("dup", "legacy-42", ["fs-1", "fs-2"])]
+        )
+        response = self.client.post(self._url())
+        messages = list(get_messages(response.wsgi_request))
+        self.assertTrue(any("matched by" in str(m) for m in messages))
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    @mock.patch("netbox_opennms.views.resolve")
+    def test_missing_node_shows_error(self, mock_resolve, mock_from_server):
+        mock_resolve.return_value = self._resolution(nodes=[self._node("other-id")])
+        client = mock_from_server.return_value.__enter__.return_value
+        client.get_requisition.return_value = None
+        response = self.client.post(self._url(foreign_id="legacy-42"))
+        messages = list(get_messages(response.wsgi_request))
+        self.assertTrue(any("no longer part of" in str(m) for m in messages))
+        client.post_node.assert_not_called()
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    @mock.patch("netbox_opennms.views.resolve")
+    def test_success_pushes_node_under_the_derived_foreign_id(
+        self, mock_resolve, mock_from_server
+    ):
+        mock_resolve.return_value = self._resolution()
+        client = mock_from_server.return_value.__enter__.return_value
+        client.get_requisition.return_value = None
+        response = self.client.post(self._url(foreign_id="legacy-42"))
+        self.assertEqual(response.status_code, 302)
+
+        expected_id = f"netbox-device-{self.device.pk}"
+        client.post_node.assert_called_once()
+        args, _ = client.post_node.call_args
+        self.assertEqual(args[0], "fs-1")
+        self.assertIn(expected_id.encode(), args[1])
+        client.import_requisition.assert_called_once()
+
+        messages = [str(m) for m in get_messages(response.wsgi_request)]
+        self.assertTrue(
+            any(
+                expected_id in m and "legacy-42" in m and "left untouched" in m
+                for m in messages
+            )
+        )
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    @mock.patch("netbox_opennms.views.resolve")
+    def test_old_node_and_foreign_source_are_left_untouched(
+        self, mock_resolve, mock_from_server
+    ):
+        # #36's grilled decision: the old node stays in OpenNMS, and this
+        # scopes to the one node — the Foreign Source shell isn't touched.
+        mock_resolve.return_value = self._resolution()
+        client = mock_from_server.return_value.__enter__.return_value
+        client.get_requisition.return_value = None
+        self.client.post(self._url(foreign_id="legacy-42"))
+        client.delete_requisition.assert_not_called()
+        client.delete_foreign_source.assert_not_called()
+        client.post_requisition.assert_not_called()
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    @mock.patch("netbox_opennms.views.resolve")
+    def test_client_failure_is_reported_per_node(self, mock_resolve, mock_from_server):
+        mock_resolve.return_value = self._resolution()
+        client = mock_from_server.return_value.__enter__.return_value
+        client.get_requisition.return_value = None
+        client.post_node.side_effect = OpenNMSError("unreachable")
+        response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 302)
+        messages = list(get_messages(response.wsgi_request))
+        self.assertTrue(any("unreachable" in str(m) for m in messages))
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    @mock.patch("netbox_opennms.views.resolve")
+    def test_render_error_is_reported_per_node(self, mock_resolve, mock_from_server):
+        mock_resolve.return_value = self._resolution()
+        client = mock_from_server.return_value.__enter__.return_value
+        client.get_requisition.return_value = None
+        with mock.patch(
+            "netbox_opennms.views.render_node_document",
+            side_effect=RenderError("no node-label"),
+        ):
+            response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 302)
+        messages = list(get_messages(response.wsgi_request))
+        self.assertTrue(any("failed" in str(m) for m in messages))
+
+
 class MetadataEntryViewTest(
     ViewTestCases.GetObjectViewTestCase,
     ViewTestCases.GetObjectChangelogViewTestCase,

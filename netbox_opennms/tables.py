@@ -124,22 +124,54 @@ class NodeDiffTable(BaseTable):
         accessor="opennms_node_id", verbose_name="OpenNMS node", orderable=False
     )
     changes = tables.Column(orderable=False)
-    # A plain per-row <form> is safe here (unlike OpenNMSServerTable's
+    # Plain per-row <form>s are safe here (unlike OpenNMSServerTable's
     # formaction/formmethod workaround, #32): this page's table is included
     # via NetBox's bare htmx/table.html, not rendered inside an
     # ObjectListView bulk-action <form> (confirmed against the pinned
-    # NetBox 4.6.8 template source — no outer <form> wraps it).
+    # NetBox 4.6.8 template source — no outer <form> wraps it). The override
+    # option's confirm() (issue #36) is inline JS, not a modal: this table has
+    # no other client-side dependency, and the dialog's whole job is to state,
+    # once, that the action creates a new OpenNMS node before anything sends.
     sync_action = tables.TemplateColumn(
         template_code="""
             {% if record.status == "added" or record.status == "changed" %}
-              <form method="post"
-                    action="{% url 'plugins:netbox_opennms:requisition_sync_node'
-                                    table.requisition_pk record.foreign_id %}">
-                {% csrf_token %}
-                <button type="submit" class="btn btn-sm btn-outline-primary">
+              <div class="dropdown">
+                <button type="button"
+                        class="btn btn-sm btn-outline-primary dropdown-toggle"
+                        data-bs-toggle="dropdown" aria-expanded="false">
                   Sync to OpenNMS
                 </button>
-              </form>
+                <ul class="dropdown-menu dropdown-menu-end">
+                  <li>
+                    <form method="post"
+                          action="{% url 'plugins:netbox_opennms:requisition_sync_node'
+                                          table.requisition_pk record.foreign_id %}">
+                      {% csrf_token %}
+                      <button type="submit" class="dropdown-item">
+                        Sync to OpenNMS
+                      </button>
+                    </form>
+                  </li>
+                  <li>
+                    <form method="post"
+                          action="{% url
+                            'plugins:netbox_opennms:requisition_sync_node_override'
+                            table.requisition_pk record.foreign_id %}"
+                          onsubmit="return confirm(
+                            'This pushes the node to OpenNMS under the plugin '
+                            + 'default Foreign ID. If that differs from its '
+                            + 'current Foreign ID, OpenNMS treats it as a brand '
+                            + 'new node, and the existing one is left untouched. '
+                            + 'Continue?'
+                          );">
+                      {% csrf_token %}
+                      <button type="submit" class="dropdown-item">
+                        Override Foreign ID &amp; Sync
+                      </button>
+                    </form>
+                  </li>
+                </ul>
+              </div>
             {% endif %}
         """,
         verbose_name="",

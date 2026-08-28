@@ -77,6 +77,11 @@ urlpatterns = (
         views.RequisitionSyncNodeView.as_view(),
         name="requisition_sync_node",
     ),
+    path(
+        "requisitions/<int:pk>/nodes/<str:foreign_id>/sync/override/",
+        views.RequisitionSyncNodeOverrideView.as_view(),
+        name="requisition_sync_node_override",
+    ),
     *_crud("monitoring-detectors", "monitoringdetector", "MonitoringDetector",
            MonitoringDetector),
     *_crud("monitoring-policies", "monitoringpolicy", "MonitoringPolicy",
