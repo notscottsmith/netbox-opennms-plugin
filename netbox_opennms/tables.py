@@ -31,7 +31,8 @@ class OpenNMSServerTable(NetBoxTable):
             {% if record.last_check_status == "ok" %}
               <span class="badge text-bg-green">OK</span>
             {% elif record.last_check_status == "failed" %}
-              <span class="badge text-bg-red" title="{{ record.last_check_message }}">Failed</span>
+              <span class="badge text-bg-red"
+                    title="{{ record.last_check_message }}">Failed</span>
             {% else %}
               <span class="badge text-bg-secondary">Untested</span>
             {% endif %}
@@ -42,29 +43,40 @@ class OpenNMSServerTable(NetBoxTable):
     # nested per-row <form> here is invalid HTML that browsers silently hoist
     # out, breaking the click into a 405 (#32). formaction/formmethod submit
     # this row's action through the outer form instead, without nesting one.
+    # The URL is resolved in extra_context, not a {% url %} tag: Django's tag
+    # lexer (django/template/base.py's tag_re) has no re.DOTALL, so a tag can
+    # never span multiple lines, and these names are too long to fit one.
     test_action = tables.TemplateColumn(
         template_code="""
             <button type="submit"
-                    formaction="{% url 'plugins:netbox_opennms:opennmsserver_test'
-                                        record.pk %}"
+                    formaction="{{ test_url }}"
                     formmethod="post"
                     class="btn btn-sm btn-outline-primary">
               Test
             </button>
         """,
+        extra_context=lambda record: {
+            "test_url": reverse(
+                "plugins:netbox_opennms:opennmsserver_test", args=[record.pk]
+            ),
+        },
         verbose_name="",
         orderable=False,
     )
     scan_action = tables.TemplateColumn(
         template_code="""
             <button type="submit"
-                    formaction="{% url 'plugins:netbox_opennms:opennmsserver_scan'
-                                        record.pk %}"
+                    formaction="{{ scan_url }}"
                     formmethod="post"
                     class="btn btn-sm btn-outline-secondary">
               Scan
             </button>
         """,
+        extra_context=lambda record: {
+            "scan_url": reverse(
+                "plugins:netbox_opennms:opennmsserver_scan", args=[record.pk]
+            ),
+        },
         verbose_name="",
         orderable=False,
     )
@@ -143,9 +155,7 @@ class NodeDiffTable(BaseTable):
                 </button>
                 <ul class="dropdown-menu dropdown-menu-end">
                   <li>
-                    <form method="post"
-                          action="{% url 'plugins:netbox_opennms:requisition_sync_node'
-                                          table.requisition_pk record.foreign_id %}">
+                    <form method="post" action="{{ sync_url }}">
                       {% csrf_token %}
                       <button type="submit" class="dropdown-item">
                         Sync to OpenNMS
@@ -154,9 +164,7 @@ class NodeDiffTable(BaseTable):
                   </li>
                   <li>
                     <form method="post"
-                          action="{% url
-                            'plugins:netbox_opennms:requisition_sync_node_override'
-                            table.requisition_pk record.foreign_id %}"
+                          action="{{ override_url }}"
                           onsubmit="return confirm(
                             'This pushes the node to OpenNMS under the plugin '
                             + 'default Foreign ID. If that differs from its '
@@ -174,6 +182,16 @@ class NodeDiffTable(BaseTable):
               </div>
             {% endif %}
         """,
+        extra_context=lambda record, table: {
+            "sync_url": reverse(
+                "plugins:netbox_opennms:requisition_sync_node",
+                args=[table.requisition_pk, record.foreign_id],
+            ),
+            "override_url": reverse(
+                "plugins:netbox_opennms:requisition_sync_node_override",
+                args=[table.requisition_pk, record.foreign_id],
+            ),
+        },
         verbose_name="",
         orderable=False,
     )
@@ -263,13 +281,17 @@ class DiscoveryScanTable(NetBoxTable):
     trigger_action = tables.TemplateColumn(
         template_code="""
             <button type="submit"
-                    formaction="{% url 'plugins:netbox_opennms:discoveryscan_trigger'
-                                        record.pk %}"
+                    formaction="{{ trigger_url }}"
                     formmethod="post"
                     class="btn btn-sm btn-outline-secondary">
               Trigger
             </button>
         """,
+        extra_context=lambda record: {
+            "trigger_url": reverse(
+                "plugins:netbox_opennms:discoveryscan_trigger", args=[record.pk]
+            ),
+        },
         verbose_name="",
         orderable=False,
     )
