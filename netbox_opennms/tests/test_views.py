@@ -43,6 +43,7 @@ from netbox_opennms.models import (
     Requisition,
 )
 from netbox_opennms.requisition_scan import NodeDiff, RequisitionScanResult
+from netbox_opennms.tables import DiscoveredNodeTable
 from netbox_opennms.translation import RenderError
 
 DETECTOR_CLASS = "org.opennms.netmgt.provision.detector.icmp.IcmpDetector"
@@ -435,6 +436,75 @@ class DiscoveryScanTriggerViewTest(TestCase):
         self.user.user_permissions.clear()
         response = self.client.post(self._url())
         self.assertEqual(response.status_code, 403)
+
+
+class DiscoveryScanDiscoveredNodesTableTest(TestCase):
+    """The scan detail page reuses ``DiscoveredNodeTable`` (issue #54).
+
+    Replaces the old hand-rolled inline ``<table>`` (Node/Verdict/
+    Resolution/NetBox object/Completeness) with the same ``NetBoxTable``
+    the standalone Discovered Nodes list uses -- verdict badges, sorting,
+    pagination, and column configuration all included.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.server = OpenNMSServer.objects.create(
+            name="Acme", url="https://onms.example"
+        )
+        cls.requisition = Requisition.objects.create(name="fs-1", location="raleigh")
+        cls.scan = DiscoveryScan.objects.create(
+            server=cls.server,
+            requisition=cls.requisition,
+            location="raleigh",
+            ip_range_begin="10.0.0.1",
+            ip_range_end="10.0.0.254",
+        )
+        cls.node = DiscoveredNode.objects.create(
+            server=cls.server,
+            discovery_scan=cls.scan,
+            opennms_node_id=1,
+            label="node-1",
+            verdict="red",
+        )
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="tester")
+        self.user.user_permissions.add(
+            Permission.objects.get(
+                codename="view_discoveryscan",
+                content_type__app_label="netbox_opennms",
+            )
+        )
+        self.client.force_login(self.user)
+
+    def _url(self):
+        return reverse("plugins:netbox_opennms:discoveryscan", args=[self.scan.pk])
+
+    def test_context_attaches_discovered_node_table(self):
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        table = response.context["discovered_nodes_table"]
+        self.assertIsInstance(table, DiscoveredNodeTable)
+        self.assertIn(self.node, list(table.data))
+
+    def test_page_shows_verdict_badge_from_shared_table(self):
+        response = self.client.get(self._url())
+        self.assertContains(response, "Missing from NetBox")
+        self.assertContains(response, "node-1")
+
+    def test_empty_scan_shows_placeholder_not_table(self):
+        empty_scan = DiscoveryScan.objects.create(
+            server=self.server,
+            requisition=self.requisition,
+            location="raleigh",
+            ip_range_begin="10.0.1.1",
+            ip_range_end="10.0.1.254",
+        )
+        response = self.client.get(
+            reverse("plugins:netbox_opennms:discoveryscan", args=[empty_scan.pk])
+        )
+        self.assertContains(response, "No nodes have been discovered by this scan yet.")
 
 
 class DiscoveredNodeViewTest(
