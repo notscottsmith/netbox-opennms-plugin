@@ -6,6 +6,13 @@ otherwise patch. The version is single-sourced in
 `netbox_opennms/__init__.py` (`__version__`); `pyproject.toml` reads it
 dynamically.
 
+A pre-commit hook (`scripts/bump_patch_version.py`) auto-increments the
+patch component of `__version__` (and the README install pin) on every
+commit — this is *not* a release, just a running indicator that the code has
+moved since the last one. It backs off when `__init__.py` is already
+staged, so it never fights a deliberate minor/major `chore(release)` bump.
+Run `pre-commit install` once per clone to activate it.
+
 ## Cutting a release
 
 1. Ensure CI on `main` is green.

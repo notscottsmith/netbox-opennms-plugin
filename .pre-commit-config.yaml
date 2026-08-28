@@ -7,3 +7,15 @@ repos:
       - id: ruff
         args: [--fix]
       - id: ruff-format
+  - repo: local
+    hooks:
+      - id: bump-patch-version
+        name: Bump patch version
+        description: >-
+          Increments __version__'s patch component on every commit (see
+          RELEASING.md) — skipped when netbox_opennms/__init__.py is already
+          staged, i.e. a manual release bump is in progress.
+        entry: python scripts/bump_patch_version.py
+        language: system
+        pass_filenames: false
+        always_run: true

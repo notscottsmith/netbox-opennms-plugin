@@ -20,6 +20,13 @@ idempotent render-and-replace.
 
 - Version is single-sourced in `netbox_opennms/__init__.py` (`__version__`);
   `pyproject.toml` reads it via AST — never bump it anywhere else.
+- A pre-commit hook (`scripts/bump_patch_version.py`, wired via
+  `.pre-commit-config.yaml`) auto-bumps the patch component of `__version__`
+  (and the README install pin) on every commit — it's not a release, just a
+  running counter (see RELEASING.md). It backs off whenever
+  `netbox_opennms/__init__.py` is already staged, so a manual
+  `chore(release)` bump is never clobbered. Run `pre-commit install` once
+  per clone to activate it.
 - `.github/workflows/release.yml` and the `pypi` environment are bound to PyPI
   Trusted Publishing — renaming either breaks OIDC (see RELEASING.md).
 - Query-count regression tests compare against
