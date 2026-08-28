@@ -39,11 +39,13 @@ class PluginConfigTestCase(SimpleTestCase):
         self.assertEqual(
             get_plugin_config("netbox_opennms", "foreign_id_prefix"), "netbox"
         )
+        self.assertEqual(
+            get_plugin_config("netbox_opennms", "discovery_poll_interval_minutes"),
+            "1",
+        )
 
     def test_secret_key_is_required(self):
-        self.assertEqual(
-            NetBoxOpenNMSConfig.required_settings, ["opennms_secret_key"]
-        )
+        self.assertEqual(NetBoxOpenNMSConfig.required_settings, ["opennms_secret_key"])
 
     def test_models_module_present(self):
         from netbox_opennms.models import Requisition

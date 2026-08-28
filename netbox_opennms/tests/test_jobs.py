@@ -155,9 +155,7 @@ class SyncForeignSourceJobTest(TestCase):
     def test_conflict_freezes_sync(self, mock_from_server, _lock):
         # C1: an overlap blocks Sync of the involved Requisition — JobFailed with
         # the conflict error, and NOTHING is pushed to OpenNMS.
-        Requisition.objects.create(
-            name="overlap", filter_params={"site": ["raleigh"]}
-        )
+        Requisition.objects.create(name="overlap", filter_params={"site": ["raleigh"]})
         with self.assertRaises(JobFailed):
             self._runner().run(foreign_source=FS)
         mock_from_server.assert_not_called()
@@ -167,9 +165,7 @@ class SyncForeignSourceJobTest(TestCase):
         # C5: a frozen (conflicted) Requisition counts as monitored — the drift
         # reconciler must never tear down the state the freeze protects.
         DeployedForeignSource.objects.create(name=FS, server=self.server)
-        Requisition.objects.create(
-            name="overlap", filter_params={"site": ["raleigh"]}
-        )
+        Requisition.objects.create(name="overlap", filter_params={"site": ["raleigh"]})
         client = mock_from_server.return_value.__enter__.return_value
         client.list_requisition_names.return_value = {FS}
         with mock.patch.object(SyncForeignSourceJob, "enqueue_sync") as enqueue:
@@ -324,9 +320,7 @@ class SyncForeignSourceJobTest(TestCase):
         # Ownership is tracked by DeployedForeignSource, not a name prefix — so a
         # USER-named orphan (no netbox. prefix) is detected (review #4).
         DeployedForeignSource.objects.create(name=FS, server=self.server)
-        DeployedForeignSource.objects.create(
-            name="core-switches", server=self.server
-        )
+        DeployedForeignSource.objects.create(name="core-switches", server=self.server)
         client = mock_from_server.return_value.__enter__.return_value
         client.list_requisition_names.return_value = {
             FS,  # managed + monitored (requisition + member) → kept
@@ -374,9 +368,7 @@ class SyncForeignSourceJobTest(TestCase):
 
     @mock.patch("netbox_opennms.jobs.advisory_lock")
     @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
-    def test_remove_with_members_pushes_full_requisition(
-        self, mock_from_server, _lock
-    ):
+    def test_remove_with_members_pushes_full_requisition(self, mock_from_server, _lock):
         # A Remove of a still-populated FS pushes the FULL requisition (the
         # membership is intact) and must NOT tear down the shell (review #6).
         client = mock_from_server.return_value.__enter__.return_value
@@ -448,7 +440,6 @@ class SyncForeignSourceJobTest(TestCase):
         self._runner().run(foreign_source=FS)
         client.import_requisition.assert_called_once()
 
-
     @mock.patch("netbox_opennms.jobs.advisory_lock")
     @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
     def test_adoption_reuses_existing_foreign_id(self, mock_from_server, _lock):
@@ -464,9 +455,7 @@ class SyncForeignSourceJobTest(TestCase):
         client.get_requisition.assert_called_once_with(FS)
         requisition_xml = client.post_requisition.call_args.args[0]
         self.assertIn(b'foreign-id="legacy-42"', requisition_xml)
-        self.assertNotIn(
-            f"netbox-device-{self.device.pk}".encode(), requisition_xml
-        )
+        self.assertNotIn(f"netbox-device-{self.device.pk}".encode(), requisition_xml)
 
     @mock.patch("netbox_opennms.jobs.advisory_lock")
     @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
@@ -639,14 +628,10 @@ class PollDiscoveryScansJobTest(TestCase):
 
         rows = DiscoveredNode.objects.filter(server=self.server, discovery_scan=scan)
         self.assertEqual(rows.count(), 2)
-        client.list_nodes.assert_called_once_with(
-            foreign_source=scan.foreign_source
-        )
+        client.list_nodes.assert_called_once_with(foreign_source=scan.foreign_source)
 
     @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
-    def test_repolling_unchanged_state_refreshes_not_duplicates(
-        self, mock_from_server
-    ):
+    def test_repolling_unchanged_state_refreshes_not_duplicates(self, mock_from_server):
         scan = self._scan()
         client = mock_from_server.return_value.__enter__.return_value
         client.get_node.return_value = {}
@@ -804,9 +789,7 @@ class PollDiscoveryScansJobTest(TestCase):
         self.assertIsNotNone(node2.walked_at)
 
     @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
-    def test_server_wide_walk_error_skips_batch_without_raising(
-        self, mock_from_server
-    ):
+    def test_server_wide_walk_error_skips_batch_without_raising(self, mock_from_server):
         scan = self._scan()
         good_client = mock.MagicMock()
         good_client.__enter__.return_value.list_nodes.return_value = [_onms_node(1)]
@@ -828,6 +811,19 @@ class PollDiscoveryScansJobTest(TestCase):
             registry["system_jobs"][PollDiscoveryScansJob]["interval"],
             DISCOVERY_POLL_INTERVAL_MINUTES,
         )
+
+    def test_poll_interval_sourced_from_plugin_config(self):
+        # issue #52: the interval is read from discovery_poll_interval_minutes
+        # (default "1") at import time, not hardcoded.
+        from netbox.plugins import get_plugin_config
+
+        from netbox_opennms.jobs import DISCOVERY_POLL_INTERVAL_MINUTES
+
+        configured = int(
+            get_plugin_config("netbox_opennms", "discovery_poll_interval_minutes")
+        )
+        self.assertEqual(DISCOVERY_POLL_INTERVAL_MINUTES, configured)
+        self.assertEqual(DISCOVERY_POLL_INTERVAL_MINUTES, 1)
 
 
 class CleanupDiscoveryScansJobTest(TestCase):
@@ -940,10 +936,10 @@ class CleanupDiscoveryScansJobTest(TestCase):
     def test_registered_as_recurring_system_job(self):
         from netbox.registry import registry
 
-        from netbox_opennms.jobs import DISCOVERY_POLL_INTERVAL_MINUTES
+        from netbox_opennms.jobs import DISCOVERY_CLEANUP_INTERVAL_MINUTES
 
         self.assertIn(CleanupDiscoveryScansJob, registry["system_jobs"])
         self.assertEqual(
             registry["system_jobs"][CleanupDiscoveryScansJob]["interval"],
-            DISCOVERY_POLL_INTERVAL_MINUTES,
+            DISCOVERY_CLEANUP_INTERVAL_MINUTES,
         )
