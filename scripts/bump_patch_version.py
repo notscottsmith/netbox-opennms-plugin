@@ -31,7 +31,7 @@ def staged_files() -> set[str]:
 
 
 def main() -> int:
-    if str(INIT_PATH) in staged_files():
+    if INIT_PATH.as_posix() in staged_files():
         return 0
 
     text = INIT_PATH.read_text()
