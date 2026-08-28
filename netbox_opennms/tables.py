@@ -36,26 +36,32 @@ class OpenNMSServerTable(NetBoxTable):
         """,
         verbose_name="Status",
     )
+    # NetBox's list view wraps the whole table in one bulk-action <form>; a
+    # nested per-row <form> here is invalid HTML that browsers silently hoist
+    # out, breaking the click into a 405 (#32). formaction/formmethod submit
+    # this row's action through the outer form instead, without nesting one.
     test_action = tables.TemplateColumn(
         template_code="""
-            <form method="post" action="{% url 'plugins:netbox_opennms:opennmsserver_test' record.pk %}">
-              {% csrf_token %}
-              <button type="submit" class="btn btn-sm btn-outline-primary">Test</button>
-            </form>
+            <button type="submit"
+                    formaction="{% url 'plugins:netbox_opennms:opennmsserver_test'
+                                        record.pk %}"
+                    formmethod="post"
+                    class="btn btn-sm btn-outline-primary">
+              Test
+            </button>
         """,
         verbose_name="",
         orderable=False,
     )
     scan_action = tables.TemplateColumn(
         template_code="""
-            <form method="post"
-                  action="{% url 'plugins:netbox_opennms:opennmsserver_scan'
-                                  record.pk %}">
-              {% csrf_token %}
-              <button type="submit" class="btn btn-sm btn-outline-secondary">
-                Scan
-              </button>
-            </form>
+            <button type="submit"
+                    formaction="{% url 'plugins:netbox_opennms:opennmsserver_scan'
+                                        record.pk %}"
+                    formmethod="post"
+                    class="btn btn-sm btn-outline-secondary">
+              Scan
+            </button>
         """,
         verbose_name="",
         orderable=False,
@@ -109,16 +115,17 @@ class DiscoveryScanTable(NetBoxTable):
     server = tables.Column(linkify=True)
     requisition = tables.Column(linkify=True)
     last_triggered = columns.DateTimeColumn()
+    # See OpenNMSServerTable.test_action above (#32) — formaction/formmethod
+    # avoids nesting a <form> inside the list view's outer bulk-action form.
     trigger_action = tables.TemplateColumn(
         template_code="""
-            <form method="post"
-                  action="{% url 'plugins:netbox_opennms:discoveryscan_trigger'
-                                  record.pk %}">
-              {% csrf_token %}
-              <button type="submit" class="btn btn-sm btn-outline-secondary">
-                Trigger
-              </button>
-            </form>
+            <button type="submit"
+                    formaction="{% url 'plugins:netbox_opennms:discoveryscan_trigger'
+                                        record.pk %}"
+                    formmethod="post"
+                    class="btn btn-sm btn-outline-secondary">
+              Trigger
+            </button>
         """,
         verbose_name="",
         orderable=False,
