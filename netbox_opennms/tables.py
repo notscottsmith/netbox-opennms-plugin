@@ -445,6 +445,7 @@ class DiscoveredNodeTable(NetBoxTable):
             "server",
             "label",
             "verdict",
+            "resolution",
             "foreign_id",
             "matched_object",
             "completeness_gaps",
