@@ -71,6 +71,22 @@ class OpenNMSServerTestViewTest(TestCase):
         response = self.client.post(self._url())
         self.assertEqual(response.status_code, 403)
 
+    @mock.patch("netbox_opennms.views.OpenNMSClient.from_server")
+    def test_locations_fetch_failure_is_not_reported_as_success(
+        self, mock_from_server
+    ):
+        client = mock_from_server.return_value.__enter__.return_value
+        client.test_connection.return_value = True
+        client.list_locations.side_effect = OpenNMSHTTPError("boom", status_code=500)
+
+        response = self.client.post(self._url())
+
+        self.assertEqual(response.status_code, 302)
+        self.server.refresh_from_db()
+        self.assertEqual(self.server.last_check_status, "failed")
+        self.assertIn("boom", self.server.last_check_message)
+        self.assertEqual(self.server.available_locations, [])
+
 
 class OpenNMSServerTestAjaxViewTest(TestCase):
     @classmethod

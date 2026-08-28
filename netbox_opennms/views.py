@@ -1214,6 +1214,11 @@ class OpenNMSServerTestView(PermissionRequiredMixin, View):
     visible as a badge everywhere and feeds ``SyncForeignSourceJob``'s health
     guard — unlike the old standalone "Connect OpenNMS" page, this result is
     not a one-shot flash message.
+
+    A test only counts as ``ok`` if both ``test_connection()`` and
+    ``list_locations()`` succeed (#33) — matching ``OpenNMSServerTestAjaxView``.
+    Swallowing a ``list_locations()`` failure here previously reported "OK"
+    while leaving ``available_locations`` stuck empty with no visible warning.
     """
 
     permission_required = "netbox_opennms.change_opennmsserver"
@@ -1223,10 +1228,7 @@ class OpenNMSServerTestView(PermissionRequiredMixin, View):
         try:
             with OpenNMSClient.from_server(server) as client:
                 client.test_connection()
-                try:
-                    locations = sorted(client.list_locations())
-                except OpenNMSError:
-                    locations = None
+                locations = sorted(client.list_locations())
         except OpenNMSError as exc:
             server.record_check_result(ok=False, message=str(exc))
             messages.error(
