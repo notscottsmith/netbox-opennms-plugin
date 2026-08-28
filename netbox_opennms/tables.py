@@ -23,6 +23,27 @@ from .models import (
 )
 
 
+class _ActionColumn(tables.TemplateColumn):
+    """A ``TemplateColumn`` whose button/link URLs need ``record``/``table``.
+
+    django-tables2 2.8.0 (the version NetBox 4.6.9 pins) requires
+    ``extra_context`` to be a plain ``dict``: its own
+    ``additional_context.update(self.extra_context)`` raises ``TypeError:
+    'function' object is not iterable`` if handed a callable, since
+    ``extra_context``-as-callable support wasn't added until a later
+    django-tables2 release. This resolves ``context_fn`` ourselves, per
+    row, and always hands the base class a plain dict.
+    """
+
+    def __init__(self, *, context_fn, **kwargs):
+        super().__init__(**kwargs)
+        self._context_fn = context_fn
+
+    def render(self, record, table, **kwargs):
+        self.extra_context = self._context_fn(record, table)
+        return super().render(record=record, table=table, **kwargs)
+
+
 class OpenNMSServerTable(NetBoxTable):
     name = tables.Column(linkify=True)
     is_default = columns.BooleanColumn()
@@ -46,7 +67,7 @@ class OpenNMSServerTable(NetBoxTable):
     # The URL is resolved in extra_context, not a {% url %} tag: Django's tag
     # lexer (django/template/base.py's tag_re) has no re.DOTALL, so a tag can
     # never span multiple lines, and these names are too long to fit one.
-    test_action = tables.TemplateColumn(
+    test_action = _ActionColumn(
         template_code="""
             <button type="submit"
                     formaction="{{ test_url }}"
@@ -55,7 +76,7 @@ class OpenNMSServerTable(NetBoxTable):
               Test
             </button>
         """,
-        extra_context=lambda record: {
+        context_fn=lambda record, table: {
             "test_url": reverse(
                 "plugins:netbox_opennms:opennmsserver_test", args=[record.pk]
             ),
@@ -63,7 +84,7 @@ class OpenNMSServerTable(NetBoxTable):
         verbose_name="",
         orderable=False,
     )
-    scan_action = tables.TemplateColumn(
+    scan_action = _ActionColumn(
         template_code="""
             <button type="submit"
                     formaction="{{ scan_url }}"
@@ -72,7 +93,7 @@ class OpenNMSServerTable(NetBoxTable):
               Scan
             </button>
         """,
-        extra_context=lambda record: {
+        context_fn=lambda record, table: {
             "scan_url": reverse(
                 "plugins:netbox_opennms:opennmsserver_scan", args=[record.pk]
             ),
@@ -144,7 +165,7 @@ class NodeDiffTable(BaseTable):
     # option's confirm() (issue #36) is inline JS, not a modal: this table has
     # no other client-side dependency, and the dialog's whole job is to state,
     # once, that the action creates a new OpenNMS node before anything sends.
-    sync_action = tables.TemplateColumn(
+    sync_action = _ActionColumn(
         template_code="""
             {% if record.status == "added" or record.status == "changed" %}
               <div class="dropdown">
@@ -182,7 +203,7 @@ class NodeDiffTable(BaseTable):
               </div>
             {% endif %}
         """,
-        extra_context=lambda record, table: {
+        context_fn=lambda record, table: {
             "sync_url": reverse(
                 "plugins:netbox_opennms:requisition_sync_node",
                 args=[table.requisition_pk, record.foreign_id],
@@ -278,7 +299,7 @@ class DiscoveryScanTable(NetBoxTable):
     last_triggered = columns.DateTimeColumn()
     # See OpenNMSServerTable.test_action above (#32) — formaction/formmethod
     # avoids nesting a <form> inside the list view's outer bulk-action form.
-    trigger_action = tables.TemplateColumn(
+    trigger_action = _ActionColumn(
         template_code="""
             <button type="submit"
                     formaction="{{ trigger_url }}"
@@ -287,7 +308,7 @@ class DiscoveryScanTable(NetBoxTable):
               Trigger
             </button>
         """,
-        extra_context=lambda record: {
+        context_fn=lambda record, table: {
             "trigger_url": reverse(
                 "plugins:netbox_opennms:discoveryscan_trigger", args=[record.pk]
             ),
