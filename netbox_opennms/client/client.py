@@ -139,9 +139,7 @@ class OpenNMSClient:
                 if not isinstance(entry, dict):
                     continue
                 name = (
-                    entry.get("location-name")
-                    or entry.get("id")
-                    or entry.get("name")
+                    entry.get("location-name") or entry.get("id") or entry.get("name")
                 )
                 if name:
                     names.add(name)
@@ -190,9 +188,7 @@ class OpenNMSClient:
 
     def _list_plugins(self, path):
         """GET a ``foreignSourcesConfig`` plugin list; typed taxonomy on a bad body."""
-        response = self._request(
-            "GET", path, headers={"Accept": "application/json"}
-        )
+        response = self._request("GET", path, headers={"Accept": "application/json"})
         try:
             return parse_plugins(response.json())
         except (ValueError, AttributeError, TypeError) as exc:
@@ -224,9 +220,7 @@ class OpenNMSClient:
         )
         try:
             payload = response.json()
-            entries = (
-                payload if isinstance(payload, list) else payload.get("node", [])
-            )
+            entries = payload if isinstance(payload, list) else payload.get("node", [])
             return [n for n in entries if isinstance(n, dict)]
         except (ValueError, AttributeError, TypeError) as exc:
             raise OpenNMSError(
@@ -268,9 +262,7 @@ class OpenNMSClient:
         try:
             payload = response.json()
             entries = (
-                payload
-                if isinstance(payload, list)
-                else payload.get("ipInterface", [])
+                payload if isinstance(payload, list) else payload.get("ipInterface", [])
             )
             return [i for i in entries if isinstance(i, dict)]
         except (ValueError, AttributeError, TypeError) as exc:
@@ -397,11 +389,28 @@ class OpenNMSClient:
         resulting ``newSuspect`` event into a live ``OnmsNode`` under that
         throwaway name.
 
-        The request-body field names below (``foreignSource``/``location``/
-        ``retries``/``timeout``/``includeRanges``) reflect Horizon 36 source
-        inspection, not a live-server capture — confirm against a real server
-        via ``make integration`` before relying on this in production.
+        Confirmed against ``DiscoveryRestService.DiscoveryConfigurationDTO``
+        (Horizon 36 source): ``foreignSource``/``location``/``retries``/
+        ``timeout`` exist BOTH at the top level (applied to the overall
+        ``DiscoveryConfiguration``) AND per-entry on each ``includeRanges``
+        item (``IncludeRangeDTO``) — and it's the per-entry ones that
+        ``getDiscoveryConfig()`` actually reads onto each ``IncludeRange``
+        it hands to the task executor; the top-level ones are not
+        propagated down. ``IncludeRangeDTO.foreignSource`` has no default
+        (stays ``null`` if omitted), so a range sent without its own
+        ``foreignSource`` discovers nodes into no foreign source at all —
+        invisible to ``PollDiscoveryScansJob``'s
+        ``foreignSource==<name>`` search forever. Both levels are set here
+        so the request is correct however a given server reads it.
         """
+        range_entry = {
+            "begin": ip_range_begin,
+            "end": ip_range_end,
+            "foreignSource": foreign_source,
+            "location": location,
+            "retries": retries,
+            "timeout": timeout,
+        }
         return self._request(
             "POST",
             "/api/v2/discovery",
@@ -410,7 +419,7 @@ class OpenNMSClient:
                 "location": location,
                 "retries": retries,
                 "timeout": timeout,
-                "includeRanges": [{"begin": ip_range_begin, "end": ip_range_end}],
+                "includeRanges": [range_entry],
             },
         )
 

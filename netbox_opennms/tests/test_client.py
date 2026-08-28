@@ -131,7 +131,16 @@ class OpenNMSClientTest(SimpleTestCase):
                 "location": "raleigh",
                 "retries": 1,
                 "timeout": 2000,
-                "includeRanges": [{"begin": "10.0.0.1", "end": "10.0.0.254"}],
+                "includeRanges": [
+                    {
+                        "begin": "10.0.0.1",
+                        "end": "10.0.0.254",
+                        "foreignSource": "netbox-discovery-20260101000000",
+                        "location": "raleigh",
+                        "retries": 1,
+                        "timeout": 2000,
+                    }
+                ],
             },
         )
 
@@ -177,14 +186,10 @@ class OpenNMSClientTest(SimpleTestCase):
                 }
             ),
         )
-        self.assertEqual(
-            _client().list_locations(), {"Default", "edge-1", "edge-2"}
-        )
+        self.assertEqual(_client().list_locations(), {"Default", "edge-1", "edge-2"})
         method, url = mock_request.call_args.args
         self.assertEqual(method, "GET")
-        self.assertEqual(
-            url, "https://onms.example/opennms/api/v2/monitoringLocations"
-        )
+        self.assertEqual(url, "https://onms.example/opennms/api/v2/monitoringLocations")
         self.assertEqual(mock_request.call_args.kwargs["params"], {"limit": 0})
 
     @mock.patch.object(requests.Session, "request")
@@ -383,9 +388,7 @@ class OpenNMSClientTest(SimpleTestCase):
                 return_value={"count": 2, "element": ["serialNumber", "assetNumber"]}
             ),
         )
-        self.assertEqual(
-            _client().list_assets(), {"serialNumber", "assetNumber"}
-        )
+        self.assertEqual(_client().list_assets(), {"serialNumber", "assetNumber"})
         _, url = mock_request.call_args.args
         self.assertTrue(url.endswith("/rest/foreignSourcesConfig/assets"))
 
@@ -414,8 +417,10 @@ class OpenNMSClientTest(SimpleTestCase):
 
     def test_from_server_warns_on_http_url(self):
         server = OpenNMSServer(
-            name="Acme", url="http://onms.example/opennms/",
-            username="svc", password="secret",
+            name="Acme",
+            url="http://onms.example/opennms/",
+            username="svc",
+            password="secret",
         )
         with self.assertLogs("netbox_opennms", level="WARNING"):
             OpenNMSClient.from_server(server)
@@ -441,7 +446,8 @@ class OpenNMSClientTest(SimpleTestCase):
     @mock.patch.object(requests.Session, "request")
     def test_list_nodes_parses_bare_list(self, mock_request):
         mock_request.return_value = mock.Mock(
-            status_code=200, ok=True,
+            status_code=200,
+            ok=True,
             json=mock.Mock(return_value=[{"id": 1, "label": "rtr-1"}]),
         )
         self.assertEqual(_client().list_nodes(), [{"id": 1, "label": "rtr-1"}])
@@ -449,7 +455,9 @@ class OpenNMSClientTest(SimpleTestCase):
     @mock.patch.object(requests.Session, "request")
     def test_list_nodes_filters_by_foreign_source(self, mock_request):
         mock_request.return_value = mock.Mock(
-            status_code=200, ok=True, json=mock.Mock(return_value=[]),
+            status_code=200,
+            ok=True,
+            json=mock.Mock(return_value=[]),
         )
         _client().list_nodes(foreign_source="netbox-discovery-1")
         self.assertEqual(
