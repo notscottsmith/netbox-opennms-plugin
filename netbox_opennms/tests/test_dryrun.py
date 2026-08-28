@@ -15,7 +15,7 @@ from dcim.models import (
 from django.test import SimpleTestCase, TestCase
 from ipam.models import IPAddress
 
-from netbox_opennms.dryrun import NodeDiff, diff, dry_run
+from netbox_opennms.dryrun import NodeDiff, _attach_opennms_node_ids, diff, dry_run
 from netbox_opennms.membership import (
     Conflict,
     InterfaceSpec,
@@ -45,10 +45,11 @@ def _resolution(nodes):
     return Resolution("fs", _Req(), nodes=nodes, warnings=[])
 
 
-def _node(ip="10.0.0.1", services=("ICMP",)):
+def _node(ip="10.0.0.1", services=("ICMP",), netbox_object=None):
     return NodeSpec(
         "rtr-1", "device-1", "",
         [InterfaceSpec(ip, "P", services=list(services))],
+        netbox_object=netbox_object,
     )
 
 
@@ -81,8 +82,38 @@ class DryRunDiffTest(SimpleTestCase):
         # not folded into a count.
         result = diff(_resolution([_node()]), _current(), {"scan-interval": "1d"})
         self.assertEqual(
-            result.unchanged, [NodeDiff("device-1", "rtr-1", "unchanged")]
+            result.unchanged,
+            [NodeDiff("device-1", "rtr-1", "unchanged", management_ip="10.0.0.1")],
         )
+
+    def test_added_and_changed_and_unchanged_carry_the_matched_netbox_object(self):
+        # Issue #34: the dry-run table's "Matched NetBox object" column needs a
+        # reference to the originating Device/VM, not just its foreign_id.
+        obj = object()
+        result = diff(_resolution([_node(netbox_object=obj)]), None, None)
+        self.assertIs(result.added[0].netbox_object, obj)
+
+    def test_removed_carries_no_netbox_object(self):
+        # An OpenNMS-only node (about to be removed) has no NetBox counterpart.
+        result = diff(_resolution([]), _current(), {"scan-interval": "1d"})
+        self.assertIsNone(result.removed[0].netbox_object)
+
+    def test_removed_carries_management_ip_and_location(self):
+        current = _current()
+        current["node"][0]["location"] = "edge-1"
+        result = diff(_resolution([]), current, {"scan-interval": "1d"})
+        self.assertEqual(result.removed[0].management_ip, "10.0.0.1")
+        self.assertEqual(result.removed[0].location, "edge-1")
+
+    def test_changed_carries_the_desired_management_ip_and_netbox_object(self):
+        obj = object()
+        result = diff(
+            _resolution([_node(ip="10.0.0.9", netbox_object=obj)]),
+            _current(ip="10.0.0.1"),
+            {"scan-interval": "1d"},
+        )
+        self.assertEqual(result.changed[0].management_ip, "10.0.0.9")
+        self.assertIs(result.changed[0].netbox_object, obj)
 
     def test_never_synced_is_all_added(self):
         result = diff(_resolution([_node()]), None, None)
@@ -175,6 +206,28 @@ class DryRunDiffTest(SimpleTestCase):
         self.assertEqual(len(result.unchanged), 1)
 
 
+class AttachOpenNMSNodeIdsTest(SimpleTestCase):
+    """Issue #34: the batched list_nodes() -> NodeDiff.opennms_node_id join."""
+
+    def test_matching_row_gets_the_live_node_id(self):
+        result = diff(_resolution([_node()]), None, None)
+        _attach_opennms_node_ids(
+            result, [{"id": 7, "foreignId": "device-1"}]
+        )
+        self.assertEqual(result.added[0].opennms_node_id, 7)
+
+    def test_unmatched_row_stays_none(self):
+        # An "added" row isn't provisioned in OpenNMS yet — nothing to match.
+        result = diff(_resolution([_node()]), None, None)
+        _attach_opennms_node_ids(result, [])
+        self.assertIsNone(result.added[0].opennms_node_id)
+
+    def test_ignores_malformed_entries(self):
+        result = diff(_resolution([_node()]), None, None)
+        _attach_opennms_node_ids(result, [{}, "not-a-dict", None])
+        self.assertIsNone(result.added[0].opennms_node_id)
+
+
 FS = "netbox.raleigh.router"
 
 
@@ -194,13 +247,15 @@ class DryRunFetchTest(TestCase):
         cls.requisition = Requisition.objects.create(
             name=FS, filter_params={"site": ["raleigh"], "role": ["router"]}
         )
-        device = Device.objects.create(
+        cls.device = Device.objects.create(
             name="rtr-1", device_type=cls.dt, role=cls.role, site=cls.site
         )
-        iface = Interface.objects.create(device=device, name="eth0", type="virtual")
+        iface = Interface.objects.create(
+            device=cls.device, name="eth0", type="virtual"
+        )
         address = IPAddress.objects.create(address="10.0.0.1/24", assigned_object=iface)
-        device.primary_ip4 = address
-        device.save()
+        cls.device.primary_ip4 = address
+        cls.device.save()
         cls.server = OpenNMSServer.objects.create(
             name="Acme", url="https://onms.example/opennms", is_default=True
         )
@@ -210,8 +265,36 @@ class DryRunFetchTest(TestCase):
         client = mock_from_server.return_value.__enter__.return_value
         client.get_requisition.return_value = None
         client.get_foreign_source.return_value = None
+        client.list_nodes.return_value = []
         dry_run(FS)
         mock_from_server.assert_called_once_with(self.server)
+
+    @mock.patch("netbox_opennms.dryrun.OpenNMSClient.from_server")
+    def test_resolves_opennms_node_ids_via_one_batched_call(self, mock_from_server):
+        # Issue #34: one list_nodes() call scoped to this Foreign Source, not a
+        # per-row GET, resolves the live OpenNMS node id for the added row.
+        client = mock_from_server.return_value.__enter__.return_value
+        client.get_requisition.return_value = None
+        client.get_foreign_source.return_value = None
+        client.list_nodes.return_value = [
+            {"id": 99, "foreignId": "netbox-device-1"}
+        ]
+        result = dry_run(FS)
+        client.list_nodes.assert_called_once_with(foreign_source=FS)
+        self.assertEqual(result.added[0].opennms_node_id, 99)
+
+    @mock.patch("netbox_opennms.dryrun.OpenNMSClient.from_server")
+    def test_result_carries_the_resolved_server(self, mock_from_server):
+        # Issue #34: the dry-run table's OpenNMS-node-link column needs the
+        # target Server's URL — carried on the result so the view doesn't have
+        # to re-run resolve_target_server() (and its underlying resolve())
+        # a second time just to get it.
+        client = mock_from_server.return_value.__enter__.return_value
+        client.get_requisition.return_value = None
+        client.get_foreign_source.return_value = None
+        client.list_nodes.return_value = []
+        result = dry_run(FS)
+        self.assertEqual(result.target_server, self.server)
 
     @mock.patch("netbox_opennms.dryrun.OpenNMSClient.from_server")
     def test_falls_back_to_the_previously_deployed_server(self, mock_from_server):

@@ -79,6 +79,10 @@ class NodeSpec:
     # A non-blocking advisory (RD-6/h): set for an interface-less node (no management
     # IP) — the node provisions but is not actively monitored. Empty = healthy.
     warning: str = ""
+    # The NetBox Device/VM this node was resolved from (issue #34's dry-run table
+    # needs it for the "Matched NetBox object" column) — set by resolve_node, the
+    # only place a NodeSpec is built from a real object.
+    netbox_object: object = None
 
 
 @dataclass
@@ -403,6 +407,7 @@ def resolve_node(obj, requisition, override):
             assets=assets,
             node_metadata=node_md,
             warning=warning,
+            netbox_object=obj,
         )
         return node, warning
 
@@ -455,6 +460,7 @@ def resolve_node(obj, requisition, override):
         node_metadata=node_md,
         interface_metadata=iface_md,
         service_metadata=svc_md,
+        netbox_object=obj,
     )
     return node, None
 

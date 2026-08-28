@@ -43,6 +43,14 @@ class NodeDiff:
     label: str
     status: str  # "added" | "removed" | "changed" | "unchanged"
     changes: list = field(default_factory=list)
+    management_ip: str | None = None
+    location: str = ""
+    # The NetBox Device/VM this node resolves to — unset for "removed" (an
+    # OpenNMS-only node has no NetBox counterpart) (issue #34).
+    netbox_object: object = None
+    # The live OpenNMS node id, resolved separately (a batched list_nodes()
+    # lookup, not part of the pure diff) — None until attached (issue #34).
+    opennms_node_id: int | None = None
 
 
 @dataclass
@@ -61,6 +69,10 @@ class DryRun:
     # Set = the Requisition's members don't agree on one OpenNMS Server (ADR
     # 0002): reported instead of a node diff, for the same reason as conflicts.
     server_conflict: str = ""
+    # The Server this was actually diffed against (issue #34's OpenNMS-node-link
+    # column needs its base URL) — set only on a successful live fetch, so the
+    # view doesn't re-run resolve_target_server() itself.
+    target_server: object = None
 
     @property
     def has_changes(self):
@@ -94,6 +106,7 @@ def _desired_nodes(resolution, default_location=""):
             "management_ip": primary.ip if primary else None,
             "location": node.location or default_location or "",
             "interfaces": {i.ip: sorted(i.services) for i in node.interfaces},
+            "netbox_object": node.netbox_object,
         }
     return result
 
@@ -220,24 +233,61 @@ def diff(resolution, current_requisition, current_definition, default_location="
     desired = _desired_nodes(resolution, default_location)
     current = _current_nodes(current_requisition)
 
+    def _from_desired(fid, status, changes=None):
+        node = desired[fid]
+        return NodeDiff(
+            fid,
+            node["label"],
+            status,
+            changes or [],
+            management_ip=node["management_ip"],
+            location=node["location"],
+            netbox_object=node["netbox_object"],
+        )
+
+    def _from_current(fid, status):
+        node = current[fid]
+        return NodeDiff(
+            fid,
+            node["label"],
+            status,
+            management_ip=node["management_ip"],
+            location=node["location"],
+        )
+
     for fid in sorted(set(desired) - set(current)):
-        result.added.append(NodeDiff(fid, desired[fid]["label"], "added"))
+        result.added.append(_from_desired(fid, "added"))
     for fid in sorted(set(current) - set(desired)):
-        result.removed.append(NodeDiff(fid, current[fid]["label"], "removed"))
+        result.removed.append(_from_current(fid, "removed"))
     for fid in sorted(set(desired) & set(current)):
         changes = _node_changes(desired[fid], current[fid])
         if changes:
-            result.changed.append(
-                NodeDiff(fid, desired[fid]["label"], "changed", changes)
-            )
+            result.changed.append(_from_desired(fid, "changed", changes))
         else:
-            result.unchanged.append(NodeDiff(fid, desired[fid]["label"], "unchanged"))
+            result.unchanged.append(_from_desired(fid, "unchanged"))
 
     if resolution is not None:
         result.definition_changes = _definition_changes(
             resolution.requisition, current_definition
         )
     return result
+
+
+def _attach_opennms_node_ids(result, opennms_nodes):
+    """Set ``NodeDiff.opennms_node_id`` from a batched ``list_nodes()`` fetch.
+
+    Pure given the already-fetched node list (issue #34's "OpenNMS node link" /
+    node-walk-link columns): one ``foreignId`` -> ``id`` lookup built once,
+    instead of a per-row GET. A row with no match (e.g. "added" — not yet
+    provisioned in OpenNMS) simply keeps ``opennms_node_id=None``.
+    """
+    node_id_by_foreign_id = {
+        node.get("foreignId"): node.get("id")
+        for node in opennms_nodes
+        if isinstance(node, dict) and node.get("foreignId")
+    }
+    for row in (*result.added, *result.removed, *result.changed, *result.unchanged):
+        row.opennms_node_id = node_id_by_foreign_id.get(row.foreign_id)
 
 
 def dry_run(foreign_source):
@@ -266,6 +316,9 @@ def dry_run(foreign_source):
     with OpenNMSClient.from_server(server) as client:
         current_requisition = client.get_requisition(foreign_source)
         current_definition = client.get_foreign_source(foreign_source)
+        # Batched once per page render (issue #34) so the dry-run table's
+        # "OpenNMS node link" / node-walk-link columns don't cost a GET per row.
+        opennms_nodes = client.list_nodes(foreign_source=foreign_source)
 
     # Adoption parity (issue #5): show the SAME Foreign ID a Sync would actually
     # push — an unambiguous node-label match against the live state reuses the
@@ -276,4 +329,7 @@ def dry_run(foreign_source):
         )
         resolution.warnings.extend(adoption_warnings)
 
-    return diff(resolution, current_requisition, current_definition, default_location)
+    result = diff(resolution, current_requisition, current_definition, default_location)
+    _attach_opennms_node_ids(result, opennms_nodes)
+    result.target_server = server
+    return result

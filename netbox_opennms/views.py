@@ -247,6 +247,11 @@ class RequisitionDryRunView(PermissionRequiredMixin, View):
 
     Permission-gated (not merely login) because it issues live outbound calls to
     OpenNMS and returns the node/interface/service topology (review #7).
+
+    Rendered as one ``NodeDiffTable`` (issue #34) — the four added/removed/
+    changed/unchanged lists are merged into a single row set with a ``status``
+    field driving row color, and column visibility is the same per-user
+    "Configure Table" picker every other list in this plugin uses.
     """
 
     permission_required = "netbox_opennms.view_requisition"
@@ -256,14 +261,73 @@ class RequisitionDryRunView(PermissionRequiredMixin, View):
         requisition = get_object_or_404(Requisition, pk=pk)
         error = None
         result = None
+        table = None
         try:
             result = dry_run(requisition.name)
         except OpenNMSError as exc:
             error = str(exc)
+        if result is not None and not result.conflicts and not result.server_conflict:
+            rows = [
+                *result.added,
+                *result.removed,
+                *result.changed,
+                *result.unchanged,
+            ]
+            table = tables.NodeDiffTable(
+                rows,
+                requisition_pk=requisition.pk,
+                server_url=result.target_server.url if result.target_server else "",
+            )
+            table.configure(request)
         return render(
             request,
             self.template_name,
-            {"object": requisition, "dryrun": result, "error": error},
+            {"object": requisition, "dryrun": result, "table": table, "error": error},
+        )
+
+
+class RequisitionNodeWalkView(PermissionRequiredMixin, View):
+    """Live SNMP interfaces + neighbor links for one OpenNMS node (issue #34).
+
+    A small read-only companion to the dry-run table's node-name link — makes
+    the same pair of ``OpenNMSClient`` calls the One-Time-Sync preview does
+    (``reverse_sync.fetch_node_data``: ``list_snmp_interfaces`` +
+    ``get_node_links``), but only to display; nothing here plans or commits
+    anything to NetBox. ``fetch_node_data`` itself isn't reusable here since
+    it's keyed off a ``DiscoveredNode`` rather than a bare node id. Reachable
+    only for a row the dry-run table has already resolved an
+    ``opennms_node_id`` for (an "added" row — not yet provisioned in
+    OpenNMS — has no such link).
+    """
+
+    permission_required = "netbox_opennms.view_requisition"
+    template_name = "netbox_opennms/node_walk.html"
+
+    def get(self, request, pk, opennms_node_id):
+        requisition = get_object_or_404(Requisition, pk=pk)
+        target_server = target_server_for(requisition)
+        error = None
+        snmp_interfaces = []
+        links = []
+        if target_server is None:
+            error = "This Requisition's target OpenNMS Server could not be resolved."
+        else:
+            try:
+                with OpenNMSClient.from_server(target_server) as client:
+                    snmp_interfaces = client.list_snmp_interfaces(opennms_node_id)
+                    links = parse_node_links(client.get_node_links(opennms_node_id))
+            except OpenNMSError as exc:
+                error = str(exc)
+        return render(
+            request,
+            self.template_name,
+            {
+                "object": requisition,
+                "opennms_node_id": opennms_node_id,
+                "snmp_interfaces": snmp_interfaces,
+                "links": links,
+                "error": error,
+            },
         )
 
 

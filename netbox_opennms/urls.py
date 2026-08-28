@@ -67,6 +67,11 @@ urlpatterns = (
         views.RequisitionDryRunView.as_view(),
         name="requisition_dry_run",
     ),
+    path(
+        "requisitions/<int:pk>/nodes/<int:opennms_node_id>/walk/",
+        views.RequisitionNodeWalkView.as_view(),
+        name="requisition_node_walk",
+    ),
     *_crud("monitoring-detectors", "monitoringdetector", "MonitoringDetector",
            MonitoringDetector),
     *_crud("monitoring-policies", "monitoringpolicy", "MonitoringPolicy",

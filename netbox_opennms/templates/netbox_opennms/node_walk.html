@@ -1,0 +1,89 @@
+{# Copyright 2026 Ronny Trommer <ronny@no42.org> #}
+{# SPDX-License-Identifier: MIT #}
+{% extends 'base/layout.html' %}
+{% load helpers %}
+
+{% block title %}Node walk — {{ object.name }}{% endblock %}
+
+{% block content %}
+  <div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <h2 class="m-0">
+        Node walk — {{ object|linkify }} <code>{{ object.name }}</code>
+        <span class="text-muted">/ OpenNMS node {{ opennms_node_id }}</span>
+      </h2>
+      <a href="{% url 'plugins:netbox_opennms:requisition_dry_run' pk=object.pk %}" class="btn btn-sm btn-outline-secondary">
+        Back to dry run
+      </a>
+    </div>
+    <div class="card-body">
+      {% if error %}
+        <div class="alert alert-danger" role="alert">
+          <i class="mdi mdi-alert"></i> Could not reach OpenNMS: {{ error }}
+        </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="row mt-3">
+    <div class="col col-md-12">
+      <div class="card">
+        <h2 class="card-header">SNMP Interfaces</h2>
+        <table class="table table-hover">
+          <thead>
+            <tr>
+              <th>Index</th>
+              <th>Name</th>
+              <th>Description</th>
+              <th>Alias</th>
+              <th>Admin status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for iface in snmp_interfaces %}
+              <tr>
+                <td>{{ iface.ifIndex|placeholder }}</td>
+                <td>{{ iface.ifName|placeholder }}</td>
+                <td>{{ iface.ifDescr|placeholder }}</td>
+                <td>{{ iface.ifAlias|placeholder }}</td>
+                <td>{{ iface.ifAdminStatus|placeholder }}</td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="5" class="text-muted">No SNMP interfaces available.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="row mt-3">
+    <div class="col col-md-12">
+      <div class="card">
+        <h2 class="card-header">Neighbor Links</h2>
+        <table class="table table-hover">
+          <thead>
+            <tr>
+              <th>Protocol</th>
+              <th>Local port</th>
+              <th>Remote device</th>
+              <th>Remote port</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for link in links %}
+              <tr>
+                <td>{{ link.protocol }}</td>
+                <td>{{ link.local_port|placeholder }}</td>
+                <td>{{ link.remote_device|placeholder }}</td>
+                <td>{{ link.remote_port|placeholder }}</td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="4" class="text-muted">OpenNMS reports no neighbor links for this node.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+{% endblock %}

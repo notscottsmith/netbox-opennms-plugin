@@ -3,7 +3,9 @@
 """Tables for plugin list views (Requisition redesign)."""
 
 import django_tables2 as tables
-from netbox.tables import NetBoxTable, columns
+from django.urls import reverse
+from django.utils.html import format_html
+from netbox.tables import BaseTable, NetBoxTable, columns
 
 from .models import (
     AssetMapping,
@@ -92,6 +94,93 @@ class OpenNMSServerTable(NetBoxTable):
             "test_action",
             "scan_action",
         )
+
+
+class NodeDiffTable(BaseTable):
+    """One row per node in a Requisition dry-run diff (issue #34).
+
+    ``NodeDiff`` (``dryrun.py``) is a plain dataclass, not a Django model, so
+    this subclasses ``BaseTable`` rather than ``NetBoxTable`` — confirmed
+    against NetBox 4.6.8's source (this plugin's pinned NetBox version):
+    ``NetBoxTable.__init__`` unconditionally calls
+    ``ObjectType.objects.get_for_model(self._meta.model)`` to wire up custom
+    fields/links, which requires a real registered model and would raise for
+    a bare dataclass. ``BaseTable`` has none of that — it only adds the
+    per-user "Configure Table" column persistence (``configure()``, keyed by
+    ``self.__class__.__name__`` under ``request.user.config``), which is
+    model-agnostic and is all this table needs. ``empty_text`` is set
+    explicitly since ``BaseTable.__init__`` otherwise defaults it from
+    ``Meta.model._meta.verbose_name_plural``, which doesn't exist here.
+    Sorting is disabled throughout since the row set is a diff, not a
+    queryset NetBox can order server-side.
+    """
+
+    label = tables.Column(verbose_name="Node", orderable=False)
+    foreign_id = tables.Column(verbose_name="Foreign ID", orderable=False)
+    management_ip = tables.Column(verbose_name="Management IP", orderable=False)
+    location = tables.Column(orderable=False)
+    netbox_object = tables.Column(verbose_name="Matched NetBox object", orderable=False)
+    opennms_node = tables.Column(
+        accessor="opennms_node_id", verbose_name="OpenNMS node", orderable=False
+    )
+    changes = tables.Column(orderable=False)
+
+    class Meta(BaseTable.Meta):
+        fields = (
+            "label",
+            "foreign_id",
+            "management_ip",
+            "location",
+            "netbox_object",
+            "opennms_node",
+            "changes",
+        )
+        default_columns = fields
+        empty_text = "No nodes"
+        row_attrs = {
+            "class": lambda record: {
+                "added": "table-success",
+                "removed": "table-danger",
+                "changed": "table-warning",
+            }.get(record.status, ""),
+        }
+
+    def __init__(self, *args, requisition_pk=None, server_url="", **kwargs):
+        # Passed in by the view rather than derived from the record (issue
+        # #34): the walk-view link needs the Requisition's pk, and the
+        # OpenNMS node link needs the target Server's base URL — neither is
+        # data the dataclass row itself carries.
+        self.requisition_pk = requisition_pk
+        self.server_url = server_url
+        super().__init__(*args, **kwargs)
+
+    def render_label(self, record):
+        if not record.opennms_node_id:
+            return record.label
+        url = reverse(
+            "plugins:netbox_opennms:requisition_node_walk",
+            args=[self.requisition_pk, record.opennms_node_id],
+        )
+        return format_html('<a href="{}">{}</a>', url, record.label)
+
+    def render_netbox_object(self, record):
+        if record.netbox_object is None:
+            return "No match"
+        return format_html(
+            '<a href="{}">{}</a>',
+            record.netbox_object.get_absolute_url(),
+            record.netbox_object,
+        )
+
+    def render_opennms_node(self, record):
+        if not record.opennms_node_id or not self.server_url:
+            return "—"
+        base = self.server_url.rstrip("/")
+        url = f"{base}/element/node.jsp?node={record.opennms_node_id}"
+        return format_html('<a href="{}">{}</a>', url, record.opennms_node_id)
+
+    def render_changes(self, record):
+        return "; ".join(record.changes) or "—"
 
 
 class MonitoringExclusionTable(NetBoxTable):

@@ -21,6 +21,7 @@ from ipam.models import IPAddress
 from utilities.testing import ViewTestCases
 
 from netbox_opennms.client import OpenNMSError
+from netbox_opennms.dryrun import DryRun, NodeDiff
 from netbox_opennms.models import (
     AssetMapping,
     DiscoveredNode,
@@ -628,6 +629,224 @@ class RequisitionNodesViewTest(TestCase):
         response = self.client.get(self._url())
         content = response.content.decode()
         self.assertNotIn("One-Time Sync", content)
+
+
+class RequisitionDryRunViewTest(TestCase):
+    """NodeDiffTable rendering for the dry-run view (issue #34)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.server = OpenNMSServer.objects.create(
+            name="Acme", url="https://onms.example/opennms"
+        )
+        cls.site = Site.objects.create(name="Site 1", slug="site-1")
+        cls.role = DeviceRole.objects.create(name="Router", slug="router")
+        mfr = Manufacturer.objects.create(name="Acme", slug="acme")
+        dt = DeviceType.objects.create(manufacturer=mfr, model="M1", slug="m1")
+        cls.device = Device.objects.create(
+            name="rtr-1", device_type=dt, role=cls.role, site=cls.site
+        )
+        iface = Interface.objects.create(
+            device=cls.device, name="eth0", type="virtual"
+        )
+        address = IPAddress.objects.create(
+            address="10.0.0.1/24", assigned_object=iface
+        )
+        cls.device.primary_ip4 = address
+        cls.device.save()
+        cls.requisition = Requisition.objects.create(
+            name="fs-1", filter_params=FILTER
+        )
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="tester")
+        self.user.user_permissions.add(
+            Permission.objects.get(
+                codename="view_requisition",
+                content_type__app_label="netbox_opennms",
+            )
+        )
+        self.client.force_login(self.user)
+
+    def _url(self):
+        return reverse(
+            "plugins:netbox_opennms:requisition_dry_run", args=[self.requisition.pk]
+        )
+
+    def test_login_required(self):
+        self.client.logout()
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 302)
+
+    @mock.patch("netbox_opennms.views.dry_run")
+    def test_error_is_shown_and_no_table_rendered(self, mock_dry_run):
+        mock_dry_run.side_effect = OpenNMSError("unreachable")
+        response = self.client.get(self._url())
+        self.assertContains(response, "Could not reach OpenNMS")
+        self.assertIsNone(response.context["table"])
+
+    @mock.patch("netbox_opennms.views.dry_run")
+    def test_conflicts_freeze_hides_the_table(self, mock_dry_run):
+        mock_dry_run.return_value = DryRun(
+            foreign_source="fs-1", exists=True, conflicts=["c1"]
+        )
+        response = self.client.get(self._url())
+        self.assertContains(response, "Frozen")
+        self.assertIsNone(response.context["table"])
+
+    @mock.patch("netbox_opennms.views.dry_run")
+    def test_row_status_drives_the_row_css_class(self, mock_dry_run):
+        mock_dry_run.return_value = DryRun(
+            foreign_source="fs-1",
+            exists=True,
+            target_server=self.server,
+            added=[NodeDiff("device-1", "rtr-1", "added")],
+            removed=[NodeDiff("device-2", "rtr-2", "removed")],
+            changed=[NodeDiff("device-3", "rtr-3", "changed", ["+interface x"])],
+            unchanged=[NodeDiff("device-4", "rtr-4", "unchanged")],
+        )
+        response = self.client.get(self._url())
+        table = response.context["table"]
+        rows_by_label = {row.record.label: row for row in table.rows}
+        self.assertIn("table-success", rows_by_label["rtr-1"].attrs["class"])
+        self.assertIn("table-danger", rows_by_label["rtr-2"].attrs["class"])
+        self.assertIn("table-warning", rows_by_label["rtr-3"].attrs["class"])
+        self.assertEqual(rows_by_label["rtr-4"].attrs["class"], "")
+
+    @mock.patch("netbox_opennms.views.dry_run")
+    def test_matched_netbox_object_is_linked(self, mock_dry_run):
+        mock_dry_run.return_value = DryRun(
+            foreign_source="fs-1",
+            exists=True,
+            target_server=self.server,
+            added=[
+                NodeDiff(
+                    "device-1", "rtr-1", "added", netbox_object=self.device
+                )
+            ],
+        )
+        response = self.client.get(self._url())
+        self.assertContains(response, self.device.get_absolute_url())
+
+    @mock.patch("netbox_opennms.views.dry_run")
+    def test_unmatched_row_shows_no_match(self, mock_dry_run):
+        mock_dry_run.return_value = DryRun(
+            foreign_source="fs-1",
+            exists=True,
+            target_server=self.server,
+            removed=[NodeDiff("device-9", "rtr-9", "removed")],
+        )
+        response = self.client.get(self._url())
+        self.assertContains(response, "No match")
+
+    @mock.patch("netbox_opennms.views.dry_run")
+    def test_added_row_has_no_walk_link_or_opennms_node_link(self, mock_dry_run):
+        # Not yet provisioned in OpenNMS — opennms_node_id stays None.
+        mock_dry_run.return_value = DryRun(
+            foreign_source="fs-1",
+            exists=False,
+            target_server=self.server,
+            added=[NodeDiff("device-1", "rtr-1", "added")],
+        )
+        response = self.client.get(self._url())
+        self.assertNotContains(
+            response,
+            reverse(
+                "plugins:netbox_opennms:requisition_node_walk",
+                args=[self.requisition.pk, 1],
+            ),
+        )
+
+    @mock.patch("netbox_opennms.views.dry_run")
+    def test_row_with_opennms_node_id_links_to_the_walk_view(self, mock_dry_run):
+        node = NodeDiff("device-1", "rtr-1", "unchanged")
+        node.opennms_node_id = 42
+        mock_dry_run.return_value = DryRun(
+            foreign_source="fs-1",
+            exists=True,
+            target_server=self.server,
+            unchanged=[node],
+        )
+        response = self.client.get(self._url())
+        self.assertContains(
+            response,
+            reverse(
+                "plugins:netbox_opennms:requisition_node_walk",
+                args=[self.requisition.pk, 42],
+            ),
+        )
+
+
+class RequisitionNodeWalkViewTest(TestCase):
+    """RequisitionNodeWalkView's live SNMP/neighbor-link rendering (issue #34)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.server = OpenNMSServer.objects.create(
+            name="Acme", url="https://onms.example/opennms"
+        )
+        cls.requisition = Requisition.objects.create(
+            name="fs-1", filter_params=FILTER
+        )
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="tester")
+        self.user.user_permissions.add(
+            Permission.objects.get(
+                codename="view_requisition",
+                content_type__app_label="netbox_opennms",
+            )
+        )
+        self.client.force_login(self.user)
+
+    def _url(self, node_id=42):
+        return reverse(
+            "plugins:netbox_opennms:requisition_node_walk",
+            args=[self.requisition.pk, node_id],
+        )
+
+    def test_login_required(self):
+        self.client.logout()
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 302)
+
+    @mock.patch("netbox_opennms.views.target_server_for")
+    def test_unresolved_server_shows_error(self, mock_target_server_for):
+        mock_target_server_for.return_value = None
+        response = self.client.get(self._url())
+        self.assertContains(response, "could not be resolved")
+
+    @mock.patch("netbox_opennms.views.target_server_for")
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_fetch_failure_is_shown(self, mock_from_server, mock_target_server_for):
+        mock_target_server_for.return_value = self.server
+        client = mock_from_server.return_value.__enter__.return_value
+        client.list_snmp_interfaces.side_effect = OpenNMSError("unreachable")
+        response = self.client.get(self._url())
+        self.assertContains(response, "Could not reach OpenNMS")
+
+    @mock.patch("netbox_opennms.views.target_server_for")
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_snmp_interfaces_and_links_are_rendered(
+        self, mock_from_server, mock_target_server_for
+    ):
+        mock_target_server_for.return_value = self.server
+        client = mock_from_server.return_value.__enter__.return_value
+        client.list_snmp_interfaces.return_value = [
+            {"ifIndex": 1, "ifName": "eth0", "ifDescr": "eth0", "ifAlias": "wan",
+             "ifAdminStatus": 1}
+        ]
+        client.get_node_links.return_value = {
+            "lldpLinkNodes": {
+                "lldpLocalPort": "eth0",
+                "lldpRemChassisId": "switch-1",
+                "ldpRemPort": "Gi0/1",
+            }
+        }
+        response = self.client.get(self._url())
+        content = response.content.decode()
+        self.assertIn("eth0", content)
+        self.assertIn("switch-1", content)
 
 
 class MetadataEntryViewTest(
