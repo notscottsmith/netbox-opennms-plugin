@@ -1,0 +1,131 @@
+{
+  "version": 1,
+  "skills": {
+    "netbox": {
+      "source": "netboxlabs/skills",
+      "sourceType": "github",
+      "skillPath": "skills/netbox/SKILL.md",
+      "computedHash": "1f84b847c5d4c96be8e346a3cda7b7b08522ff7892ca7c29feefd99028e0fcf7"
+    },
+    "netbox-administration": {
+      "source": "netboxlabs/skills",
+      "sourceType": "github",
+      "skillPath": "skills/netbox-administration/SKILL.md",
+      "computedHash": "dd1eaec585531beff4b88b5467d43cf53401f86f9ba2a68f8e149c3bcdbef022"
+    },
+    "netbox-api-integration": {
+      "source": "netboxlabs/skills",
+      "sourceType": "github",
+      "skillPath": "skills/netbox-api-integration/SKILL.md",
+      "computedHash": "82a72015bac67be00c600b0a5e4352a4fad597ec0ec7a5df233107a31e1bf0e6"
+    },
+    "netbox-asset-lifecycle": {
+      "source": "netboxlabs/skills",
+      "sourceType": "github",
+      "skillPath": "skills/netbox-asset-lifecycle/SKILL.md",
+      "computedHash": "4e31d81b8d001b8876cf9d7d81bfd77cdb2cb77b874dedc9d8f4fa788a07050d"
+    },
+    "netbox-assurance": {
+      "source": "netboxlabs/skills",
+      "sourceType": "github",
+      "skillPath": "skills/netbox-assurance/SKILL.md",
+      "computedHash": "4fef3df6db28f4b661168c67258f31ec49fe730b04980d38bd515c98758ba21d"
+    },
+    "netbox-automation-patterns": {
+      "source": "netboxlabs/skills",
+      "sourceType": "github",
+      "skillPath": "skills/netbox-automation-patterns/SKILL.md",
+      "computedHash": "43d099203472c0234020e2baa821d6801baf8db99d4c99126315377d1c8728ac"
+    },
+    "netbox-branching": {
+      "source": "netboxlabs/skills",
+      "sourceType": "github",
+      "skillPath": "skills/netbox-branching/SKILL.md",
+      "computedHash": "26e1133f806ea497b668b4fefb70911e675ec41e75dffef4d7f629a96761766d"
+    },
+    "netbox-changes": {
+      "source": "netboxlabs/skills",
+      "sourceType": "github",
+      "skillPath": "skills/netbox-changes/SKILL.md",
+      "computedHash": "bc7fde43f53b250213e7256b4a3f9c314d091d844731706099c56f4991825af6"
+    },
+    "netbox-config-templates": {
+      "source": "netboxlabs/skills",
+      "sourceType": "github",
+      "skillPath": "skills/netbox-config-templates/SKILL.md",
+      "computedHash": "745d0c335a0666ceee12a027a917629121bf5b30545d127d1fab323b48a524a5"
+    },
+    "netbox-custom-objects": {
+      "source": "netboxlabs/skills",
+      "sourceType": "github",
+      "skillPath": "skills/netbox-custom-objects/SKILL.md",
+      "computedHash": "cafa643ec95f8ff0cd89936b1a673ec082940738187a80d88a432075d79faa41"
+    },
+    "netbox-custom-scripts": {
+      "source": "netboxlabs/skills",
+      "sourceType": "github",
+      "skillPath": "skills/netbox-custom-scripts/SKILL.md",
+      "computedHash": "358508a8d23978058f1d9abe5fc0bb9f8a41d6880415eee07bdd897331cc082c"
+    },
+    "netbox-data-modeling": {
+      "source": "netboxlabs/skills",
+      "sourceType": "github",
+      "skillPath": "skills/netbox-data-modeling/SKILL.md",
+      "computedHash": "7f65ae229c3117cc73056ba80361ffa17fc9a5bee14ef8d706dc66d11521b56d"
+    },
+    "netbox-diode": {
+      "source": "netboxlabs/skills",
+      "sourceType": "github",
+      "skillPath": "skills/netbox-diode/SKILL.md",
+      "computedHash": "0a808cbb0f43e6e11daaafae87a18773bdb2c21c72f346b54f1d076fc3808589"
+    },
+    "netbox-discovery": {
+      "source": "netboxlabs/skills",
+      "sourceType": "github",
+      "skillPath": "skills/netbox-discovery/SKILL.md",
+      "computedHash": "03a8bc8ec6292eec4e6da7f059aeed64da70167e6dd8570b1e0872fc6406e72e"
+    },
+    "netbox-migration": {
+      "source": "netboxlabs/skills",
+      "sourceType": "github",
+      "skillPath": "skills/netbox-migration/SKILL.md",
+      "computedHash": "a32ae55eec79b954b307a987acbcd5caf8b2b8babf4f6395c05155c579219753"
+    },
+    "netbox-ndx": {
+      "source": "netboxlabs/skills",
+      "sourceType": "github",
+      "skillPath": "skills/netbox-ndx/SKILL.md",
+      "computedHash": "31b95123c4bd519a0db7ff8a57188de29cbe39790ce3fce9efcbb6bbcfea507e"
+    },
+    "netbox-plugin-development": {
+      "source": "netboxlabs/skills",
+      "sourceType": "github",
+      "skillPath": "skills/netbox-plugin-development/SKILL.md",
+      "computedHash": "88546b8d747f5d0bc12b62fb2052cfafd4d5866d929c790fd0ff2d04cf339ce1"
+    },
+    "netbox-review-datamodel": {
+      "source": "netboxlabs/skills",
+      "sourceType": "github",
+      "skillPath": "skills/netbox-review-datamodel/SKILL.md",
+      "computedHash": "fb0bd9392a4f2a8b8010348bb94700be706426fe7265baae345f6bb0e0257824"
+    },
+    "netbox-review-integration": {
+      "source": "netboxlabs/skills",
+      "sourceType": "github",
+      "skillPath": "skills/netbox-review-integration/SKILL.md",
+      "computedHash": "a33476f86d5264488182bf82704b8569a8d052932c3802eea3fcce1eaca021e3"
+    },
+    "netbox-validation": {
+      "source": "netboxlabs/skills",
+      "sourceType": "github",
+      "skillPath": "skills/netbox-validation/SKILL.md",
+      "computedHash": "0036d30bcb6bf17523dcc8681551d4bfeae94237812f525a810ae399d622b31f"
+    },
+    "netboxlabs-platform-mcp": {
+      "source": "netboxlabs/skills",
+      "sourceType": "github",
+      "skillPath": "skills/netboxlabs-platform-mcp/SKILL.md",
+      "computedHash": "df38df1acd6c16422e2097fe2c855e522fe9acbcb6c4d10629f522c11256501e"
+    }
+  }
+}
