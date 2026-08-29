@@ -190,18 +190,26 @@
               <th>Local port</th>
               <th>Remote device</th>
               <th>Remote port</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
-            {% for link in links %}
+            {% for row in link_rows %}
               <tr>
-                <td>{{ link.protocol }}</td>
-                <td>{{ link.local_port|placeholder }}</td>
-                <td>{{ link.remote_device|placeholder }}</td>
-                <td>{{ link.remote_port|placeholder }}</td>
+                <td>{{ row.link.protocol }}</td>
+                <td>{{ row.link.local_port|placeholder }}</td>
+                <td>{{ row.link.remote_device|placeholder }}</td>
+                <td>{{ row.link.remote_port|placeholder }}</td>
+                <td class="text-end">
+                  {% if row.matched_object %}
+                    {{ row.matched_object|linkify }}
+                  {% elif row.walk_url %}
+                    <a href="{{ row.walk_url }}" class="btn btn-sm btn-outline-primary">Walk</a>
+                  {% endif %}
+                </td>
               </tr>
             {% empty %}
-              <tr><td colspan="4" class="text-muted">OpenNMS reports no neighbor links for this node.</td></tr>
+              <tr><td colspan="5" class="text-muted">OpenNMS reports no neighbor links for this node.</td></tr>
             {% endfor %}
           </tbody>
         </table>

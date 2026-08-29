@@ -525,7 +525,7 @@ class RequisitionScanView(PermissionRequiredMixin, View):
 
 
 class RequisitionNodeWalkView(PermissionRequiredMixin, View):
-    """Live OpenNMS data for one node (issues #34, #39, #59).
+    """Live OpenNMS data for one node (issues #34, #39, #59, #60).
 
     A read-only companion to the scan table's node-name link — a superset of
     the One-Time-Sync preview's fetch (``reverse_sync.fetch_node_data``:
@@ -695,6 +695,35 @@ class RequisitionNodeWalkView(PermissionRequiredMixin, View):
             for entry in (requisition_node.get("meta-data") or [])
             if isinstance(entry, dict) and entry.get("key") and entry.get("value")
         ]
+        # Per-link resolve/walk action (issue #60): a link's remote_node_id is
+        # an OpenNMS-internal node id, not a NetBox object -- whether it's
+        # already represented in NetBox is looked up against the existing
+        # DiscoveredNode inventory (issue #7's "OpenNMS node with its NetBox
+        # match verdict" record) rather than inventing a second placeholder
+        # concept. Recomputed on every request, deliberately uncached, so a
+        # node matched (or unmatched) since the last scan is never rendered
+        # stale. A link with no remote_node_id at all (id not recoverable
+        # from its *Url field) gets neither action, same as today.
+        link_rows = []
+        for link in links:
+            matched_object = None
+            walk_url = None
+            if link.remote_node_id is not None:
+                discovered_node = None
+                if target_server is not None:
+                    discovered_node = DiscoveredNode.objects.filter(
+                        server=target_server, opennms_node_id=link.remote_node_id
+                    ).first()
+                if discovered_node is not None and discovered_node.matched_object:
+                    matched_object = discovered_node.matched_object
+                else:
+                    walk_url = reverse(
+                        "plugins:netbox_opennms:requisition_node_walk",
+                        args=[requisition.pk, link.remote_node_id],
+                    )
+            link_rows.append(
+                {"link": link, "matched_object": matched_object, "walk_url": walk_url}
+            )
         return render(
             request,
             self.template_name,
@@ -703,6 +732,7 @@ class RequisitionNodeWalkView(PermissionRequiredMixin, View):
                 "opennms_node_id": opennms_node_id,
                 "snmp_interfaces": snmp_interfaces,
                 "links": links,
+                "link_rows": link_rows,
                 "category_rows": category_rows,
                 "asset_rows": asset_rows,
                 "node_metadata": node_metadata,
