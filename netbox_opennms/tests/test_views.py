@@ -320,14 +320,13 @@ class OpenNMSServerViewTest(
         super().test_get_object()
 
 
-class OpenNMSServerAssetSuggestionsViewTest(TestCase):
-    """OpenNMSServerView's live Asset Suggestions section (issue #64/#61)."""
+class ViewOpenNMSServerLoginMixin:
+    """Shared ``setUp`` for OpenNMSServerView detail-page section tests.
 
-    @classmethod
-    def setUpTestData(cls):
-        cls.server = OpenNMSServer.objects.create(
-            name="Acme", url="https://onms.example"
-        )
+    Each of these TestCases exercises a different detail-page section
+    (Asset Suggestions #64/#61, Monitoring Locations #62, Requisitions #63)
+    but they all need the same unprivileged-but-can-view user logged in.
+    """
 
     def setUp(self):
         self.user = User.objects.create_user(username="tester")
@@ -338,6 +337,16 @@ class OpenNMSServerAssetSuggestionsViewTest(TestCase):
             )
         )
         self.client.force_login(self.user)
+
+
+class OpenNMSServerAssetSuggestionsViewTest(ViewOpenNMSServerLoginMixin, TestCase):
+    """OpenNMSServerView's live Asset Suggestions section (issue #64/#61)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.server = OpenNMSServer.objects.create(
+            name="Acme", url="https://onms.example"
+        )
 
     @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
     def test_live_fetch_success_is_shown_collapsed_with_count(self, mock_from_server):
@@ -355,8 +364,9 @@ class OpenNMSServerAssetSuggestionsViewTest(TestCase):
         # Bootstrap's "show" class, or the list would render expanded.
         self.assertIn('class="collapse mt-2"', content)
         self.assertNotIn('class="collapse show', content)
-        # Count is visible even while collapsed.
-        self.assertIn(">2<", content)
+        # Count is visible even while collapsed -- scoped to the count badge
+        # markup itself, not a bare ">2<" that could match unrelated content.
+        self.assertIn('<span class="badge text-bg-secondary">2</span>', content)
 
     @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
     def test_live_fetch_empty_shows_no_error(self, mock_from_server):
@@ -382,7 +392,7 @@ class OpenNMSServerAssetSuggestionsViewTest(TestCase):
         self.assertIn(self.server.url, content)
 
 
-class OpenNMSServerMonitoringLocationsViewTest(TestCase):
+class OpenNMSServerMonitoringLocationsViewTest(ViewOpenNMSServerLoginMixin, TestCase):
     """Server detail page's cached Monitoring Locations section (issue #62)."""
 
     @classmethod
@@ -401,16 +411,6 @@ class OpenNMSServerMonitoringLocationsViewTest(TestCase):
             password="x",
         )
 
-    def setUp(self):
-        self.user = User.objects.create_user(username="tester")
-        self.user.user_permissions.add(
-            Permission.objects.get(
-                codename="view_opennmsserver",
-                content_type__app_label="netbox_opennms",
-            )
-        )
-        self.client.force_login(self.user)
-
     def test_populated_locations_are_shown(self):
         response = self.client.get(self.server_with_locations.get_absolute_url())
         self.assertEqual(response.status_code, 200)
@@ -427,7 +427,7 @@ class OpenNMSServerMonitoringLocationsViewTest(TestCase):
         self.assertIn("No cached Monitoring Locations", content)
 
 
-class OpenNMSServerRequisitionsSectionViewTest(TestCase):
+class OpenNMSServerRequisitionsSectionViewTest(ViewOpenNMSServerLoginMixin, TestCase):
     """OpenNMSServerView's live "Requisitions" section (issue #63).
 
     No persisted FK exists — a Requisition's Server membership is fully
@@ -464,16 +464,6 @@ class OpenNMSServerRequisitionsSectionViewTest(TestCase):
         cls.requisition_b = Requisition.objects.create(
             name="req-b", filter_params={"site": ["site-b"]}
         )
-
-    def setUp(self):
-        self.user = User.objects.create_user(username="tester")
-        self.user.user_permissions.add(
-            Permission.objects.get(
-                codename="view_opennmsserver",
-                content_type__app_label="netbox_opennms",
-            )
-        )
-        self.client.force_login(self.user)
 
     def test_requisitions_resolving_to_this_server_are_listed(self):
         response = self.client.get(self.server_a.get_absolute_url())
