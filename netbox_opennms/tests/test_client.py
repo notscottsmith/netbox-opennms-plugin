@@ -684,6 +684,7 @@ class OpenNMSClientTest(SimpleTestCase):
         mock_request.return_value = mock.Mock(
             status_code=200,
             ok=True,
+            text='{"service": [{"serviceType": {"name": "ICMP"}}]}',
             json=mock.Mock(
                 return_value={"service": [{"serviceType": {"name": "ICMP"}}]}
             ),
@@ -699,7 +700,38 @@ class OpenNMSClientTest(SimpleTestCase):
     @mock.patch.object(requests.Session, "request")
     def test_list_services_unparseable_raises(self, mock_request):
         mock_request.return_value = mock.Mock(
-            status_code=200, ok=True, json=mock.Mock(side_effect=ValueError("x"))
+            status_code=200,
+            ok=True,
+            text="not-json-garbage",
+            json=mock.Mock(side_effect=ValueError("x")),
         )
         with self.assertRaises(OpenNMSError):
             _client().list_services(1, "10.0.0.1")
+
+    @mock.patch.object(requests.Session, "request")
+    def test_list_services_empty_body_returns_empty_list(self, mock_request):
+        # OpenNMS returns an empty response body (no JSON at all) for an IP
+        # interface with zero monitored services — a valid, expected state,
+        # not a parse failure (issue #40/#66). ``json()`` would raise
+        # ``ValueError`` on this body if called, so a side effect confirms
+        # the empty-body check short-circuits before any parsing is
+        # attempted.
+        mock_request.return_value = mock.Mock(
+            status_code=200,
+            ok=True,
+            text="",
+            json=mock.Mock(side_effect=ValueError("Expecting value")),
+        )
+        self.assertEqual(_client().list_services(1, "10.0.0.1"), [])
+
+    @mock.patch.object(requests.Session, "request")
+    def test_list_services_null_body_returns_empty_list(self, mock_request):
+        # A literal JSON ``null`` body is valid JSON but not a list/dict —
+        # also "no services", not a parse failure.
+        mock_request.return_value = mock.Mock(
+            status_code=200,
+            ok=True,
+            text="null",
+            json=mock.Mock(return_value=None),
+        )
+        self.assertEqual(_client().list_services(1, "10.0.0.1"), [])
