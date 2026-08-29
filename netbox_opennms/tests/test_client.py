@@ -572,6 +572,56 @@ class OpenNMSClientTest(SimpleTestCase):
         self.assertIsNone(_client().get_node(1))
 
     @mock.patch.object(requests.Session, "request")
+    def test_get_requisition_node_returns_json(self, mock_request):
+        mock_request.return_value = mock.Mock(
+            status_code=200,
+            ok=True,
+            json=mock.Mock(
+                return_value={
+                    "foreign-id": "42",
+                    "node-label": "router-1",
+                    "category": [{"name": "Routers"}],
+                    "asset": [{"name": "serialNumber", "value": "ABC123"}],
+                    "meta-data": [
+                        {"context": "requisition", "key": "note", "value": "x"}
+                    ],
+                }
+            ),
+        )
+        result = _client().get_requisition_node("fs-1", "42")
+        self.assertEqual(result["foreign-id"], "42")
+        self.assertEqual(result["category"], [{"name": "Routers"}])
+        method, url = mock_request.call_args.args
+        self.assertEqual(method, "GET")
+        self.assertEqual(
+            url, "https://onms.example/opennms/rest/requisitions/fs-1/nodes/42"
+        )
+
+    @mock.patch.object(requests.Session, "request")
+    def test_get_requisition_node_404_returns_none(self, mock_request):
+        mock_request.return_value = mock.Mock(status_code=404, ok=False)
+        self.assertIsNone(_client().get_requisition_node("fs-1", "42"))
+
+    @mock.patch.object(requests.Session, "request")
+    def test_get_requisition_node_unparseable_raises(self, mock_request):
+        mock_request.return_value = mock.Mock(
+            status_code=200, ok=True, json=mock.Mock(side_effect=ValueError("x"))
+        )
+        with self.assertRaises(OpenNMSError):
+            _client().get_requisition_node("fs-1", "42")
+
+    @mock.patch.object(requests.Session, "request")
+    def test_get_requisition_node_encodes_unsafe_chars(self, mock_request):
+        # Both the Foreign Source and Foreign ID are URL-quoted into the
+        # path (defensive, like the other requisitions endpoints).
+        mock_request.return_value = mock.Mock(
+            status_code=200, ok=True, json=mock.Mock(return_value={})
+        )
+        _client().get_requisition_node("a/b c", "node 1")
+        _, url = mock_request.call_args.args
+        self.assertTrue(url.endswith("/rest/requisitions/a%2Fb%20c/nodes/node%201"))
+
+    @mock.patch.object(requests.Session, "request")
     def test_get_node_links_returns_json(self, mock_request):
         mock_request.return_value = mock.Mock(
             status_code=200,

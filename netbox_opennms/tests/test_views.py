@@ -1265,15 +1265,17 @@ class RequisitionNodeWalkViewTest(TestCase):
         client = mock_from_server.return_value.__enter__.return_value
         client.list_snmp_interfaces.return_value = []
         client.get_node_links.return_value = None
-        client.get_node.return_value = {
-            "categories": {"category": [{"name": "Routers"}, {"name": "Edge"}]},
-            "assetRecord": {
-                "serialNumber": "ABC123",
-                "assetNumber": "UNMAPPED-1",
-            },
+        client.get_node.return_value = {"foreignSource": "fs-1", "foreignId": "42"}
+        client.get_requisition_node.return_value = {
+            "category": [{"name": "Routers"}, {"name": "Edge"}],
+            "asset": [
+                {"name": "serialNumber", "value": "ABC123"},
+                {"name": "assetNumber", "value": "UNMAPPED-1"},
+            ],
         }
         client.list_ip_interfaces.return_value = []
         response = self.client.get(self._url())
+        client.get_requisition_node.assert_called_once_with("fs-1", "42")
         content = response.content.decode()
         self.assertIn("Routers", content)
         self.assertIn("Edge", content)
@@ -1293,26 +1295,36 @@ class RequisitionNodeWalkViewTest(TestCase):
 
     @mock.patch("netbox_opennms.views.target_server_for")
     @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
-    def test_snmp_metadata_excludes_categories_and_assets(
+    def test_node_metadata_excludes_categories_and_assets(
         self, mock_from_server, mock_target_server_for
     ):
+        # Issue #59: Node Metadata (formerly mislabeled "SNMP Metadata") is
+        # sourced from the Requisition-node document's own "meta-data" array,
+        # not the monitoring API's grab-bag of every other node_detail field
+        # -- so a sibling "category"/"asset" entry on that same document
+        # never leaks into the Node Metadata table.
         mock_target_server_for.return_value = self.server
         client = mock_from_server.return_value.__enter__.return_value
         client.list_snmp_interfaces.return_value = []
         client.get_node_links.return_value = None
-        client.get_node.return_value = {
-            "sysObjectId": "1.3.6.1.4.1.9.1.1",
-            "sysLocation": "DC1",
-            "categories": {"category": [{"name": "Routers"}]},
-            "assetRecord": {"serialNumber": "ABC123"},
+        client.get_node.return_value = {"foreignSource": "fs-1", "foreignId": "42"}
+        client.get_requisition_node.return_value = {
+            "category": [{"name": "Routers"}],
+            "asset": [{"name": "serialNumber", "value": "ABC123"}],
+            "meta-data": [
+                {"context": "requisition", "key": "sysLocation", "value": "DC1"}
+            ],
         }
         client.list_ip_interfaces.return_value = []
         response = self.client.get(self._url())
         content = response.content.decode()
-        self.assertIn("sysObjectId", content)
-        self.assertIn("1.3.6.1.4.1.9.1.1", content)
         self.assertIn("sysLocation", content)
         self.assertIn("DC1", content)
+        node_metadata = response.context["node_metadata"]
+        self.assertEqual(
+            node_metadata,
+            [{"context": "requisition", "key": "sysLocation", "value": "DC1"}],
+        )
 
     @mock.patch("netbox_opennms.views.target_server_for")
     @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
@@ -1353,7 +1365,7 @@ class RequisitionNodeWalkViewTest(TestCase):
         self.assertIsNone(response.context.get("error"))
         self.assertIn("No categories reported", content)
         self.assertIn("No asset record fields reported", content)
-        self.assertIn("No SNMP metadata reported", content)
+        self.assertIn("No Node Metadata reported", content)
         self.assertIn("No SNMP interfaces available", content)
         self.assertIn("No IP interfaces available", content)
 
@@ -1386,8 +1398,9 @@ class RequisitionNodeWalkViewTest(TestCase):
                 "ldpRemPort": "Gi0/1",
             }
         }
-        client.get_node.return_value = {
-            "categories": {"category": [{"name": "Routers"}]},
+        client.get_node.return_value = {"foreignSource": "fs-1", "foreignId": "42"}
+        client.get_requisition_node.return_value = {
+            "category": [{"name": "Routers"}],
         }
         client.list_ip_interfaces.return_value = [
             {"ipAddress": "10.0.0.1", "snmpPrimary": "P"},
@@ -1419,10 +1432,12 @@ class RequisitionNodeWalkViewTest(TestCase):
     def test_node_detail_failure_does_not_blank_other_sections(
         self, mock_from_server, mock_target_server_for
     ):
-        # Issue #58: a failing `get_node` call must only blank
-        # categories/assets (both derived from its payload) -- IP
-        # interfaces, SNMP interfaces, and node links, whose own calls
-        # succeeded, still render.
+        # Issue #58/#59: a failing `get_node` call must only blank
+        # categories/assets/Node Metadata -- since it also supplies
+        # foreignSource/foreignId, its failure means `get_requisition_node`
+        # (the source those three sections now read from, issue #59) is
+        # never even attempted -- IP interfaces, SNMP interfaces, and node
+        # links, whose own calls succeeded, still render.
         mock_target_server_for.return_value = self.server
         client = mock_from_server.return_value.__enter__.return_value
         client.list_snmp_interfaces.return_value = [
@@ -1448,13 +1463,64 @@ class RequisitionNodeWalkViewTest(TestCase):
         client.list_services.return_value = [{"serviceType": {"name": "ICMP"}}]
         response = self.client.get(self._url())
         content = response.content.decode()
+        client.get_requisition_node.assert_not_called()
         self.assertIn("No categories reported", content)
         self.assertIn("No asset record fields reported", content)
+        self.assertIn("No Node Metadata reported", content)
         self.assertIn("eth0", content)
         self.assertIn("switch-1", content)
         self.assertIn("10.0.0.1", content)
         self.assertIn("ICMP", content)
         self.assertIn("node detail unreachable", response.context["error"])
+
+    @mock.patch("netbox_opennms.views.target_server_for")
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_requisition_node_failure_does_not_blank_other_sections(
+        self, mock_from_server, mock_target_server_for
+    ):
+        # Issue #59: a failing `get_requisition_node` call (the new
+        # Requisitions-API source for Categories/Assets/Node Metadata) must
+        # only blank those three sections -- IP interfaces, SNMP interfaces,
+        # and node links, whose own calls succeeded, still render. Mirrors
+        # `test_node_detail_failure_does_not_blank_other_sections` above,
+        # except here `get_node` itself succeeds (so foreignSource/foreignId
+        # resolve fine) and only the follow-up call fails.
+        mock_target_server_for.return_value = self.server
+        client = mock_from_server.return_value.__enter__.return_value
+        client.list_snmp_interfaces.return_value = [
+            {
+                "ifIndex": 1,
+                "ifName": "eth0",
+                "ifDescr": "eth0",
+                "ifAlias": "wan",
+                "ifAdminStatus": 1,
+            }
+        ]
+        client.get_node_links.return_value = {
+            "lldpLinkNodes": {
+                "lldpLocalPort": "eth0",
+                "lldpRemChassisId": "switch-1",
+                "ldpRemPort": "Gi0/1",
+            }
+        }
+        client.get_node.return_value = {"foreignSource": "fs-1", "foreignId": "42"}
+        client.get_requisition_node.side_effect = OpenNMSError(
+            "requisition node unreachable"
+        )
+        client.list_ip_interfaces.return_value = [
+            {"ipAddress": "10.0.0.1", "snmpPrimary": "P"}
+        ]
+        client.list_services.return_value = [{"serviceType": {"name": "ICMP"}}]
+        response = self.client.get(self._url())
+        content = response.content.decode()
+        self.assertIn("No categories reported", content)
+        self.assertIn("No asset record fields reported", content)
+        self.assertIn("No Node Metadata reported", content)
+        self.assertIn("eth0", content)
+        self.assertIn("switch-1", content)
+        self.assertIn("10.0.0.1", content)
+        self.assertIn("ICMP", content)
+        self.assertIn("requisition node unreachable", response.context["error"])
 
     @mock.patch("netbox_opennms.views.target_server_for")
     @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
@@ -1476,8 +1542,9 @@ class RequisitionNodeWalkViewTest(TestCase):
             }
         ]
         client.get_node_links.side_effect = OpenNMSError("links unreachable")
-        client.get_node.return_value = {
-            "categories": {"category": [{"name": "Routers"}]},
+        client.get_node.return_value = {"foreignSource": "fs-1", "foreignId": "42"}
+        client.get_requisition_node.return_value = {
+            "category": [{"name": "Routers"}],
         }
         client.list_ip_interfaces.return_value = [
             {"ipAddress": "10.0.0.1", "snmpPrimary": "P"}

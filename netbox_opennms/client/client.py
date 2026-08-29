@@ -529,6 +529,25 @@ class OpenNMSClient:
             f"/rest/requisitions/{quote(foreign_source, safe='')}"
         )
 
+    def get_requisition_node(self, foreign_source, foreign_id):
+        """One node's Requisition-scoped detail as JSON, or ``None`` if absent.
+
+        ``GET /rest/requisitions/{fs}/nodes/{foreignId}`` — a real, distinct
+        single-node Requisitions-API endpoint (confirmed live against a
+        production Horizon instance), separate from the whole-document
+        ``get_requisition``. Returns the same per-node ``RequisitionNode``
+        shape as one entry of ``get_requisition``'s bulk document, including
+        its own embedded ``category``/``asset``/``meta-data`` arrays — the
+        Requisition's own authoritative, always-available definition, unlike
+        ``get_node``'s live-scanned monitoring-API view of the same node
+        (issue #59). A 404 (node not yet in the deployed requisition)
+        returns ``None``, like ``get_requisition``.
+        """
+        return self._get_json_or_none(
+            f"/rest/requisitions/{quote(foreign_source, safe='')}/nodes/"
+            f"{quote(foreign_id, safe='')}"
+        )
+
     def get_foreign_source(self, foreign_source):
         """The current foreign-source definition for a Foreign Source as JSON, or None.
 
