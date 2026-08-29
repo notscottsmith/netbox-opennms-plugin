@@ -512,6 +512,7 @@ class OpenNMSClientTest(SimpleTestCase):
         mock_request.return_value = mock.Mock(
             status_code=200,
             ok=True,
+            text='{"ipInterface": [{"ipAddress": "10.0.0.1"}]}',
             json=mock.Mock(return_value={"ipInterface": [{"ipAddress": "10.0.0.1"}]}),
         )
         ifaces = _client().list_ip_interfaces(1)
@@ -524,10 +525,40 @@ class OpenNMSClientTest(SimpleTestCase):
     @mock.patch.object(requests.Session, "request")
     def test_list_ip_interfaces_unparseable_raises(self, mock_request):
         mock_request.return_value = mock.Mock(
-            status_code=200, ok=True, json=mock.Mock(side_effect=ValueError("x"))
+            status_code=200,
+            ok=True,
+            text="not-json-garbage",
+            json=mock.Mock(side_effect=ValueError("x")),
         )
         with self.assertRaises(OpenNMSError):
             _client().list_ip_interfaces(1)
+
+    @mock.patch.object(requests.Session, "request")
+    def test_list_ip_interfaces_empty_body_returns_empty_list(self, mock_request):
+        # OpenNMS returns an empty response body (no JSON at all) for a node
+        # with zero IP interfaces — a valid, expected state, not a parse
+        # failure (issue #40/#57). ``json()`` would raise ``ValueError`` on
+        # this body if called, so a side effect confirms the empty-body
+        # check short-circuits before any parsing is attempted.
+        mock_request.return_value = mock.Mock(
+            status_code=200,
+            ok=True,
+            text="",
+            json=mock.Mock(side_effect=ValueError("Expecting value")),
+        )
+        self.assertEqual(_client().list_ip_interfaces(1), [])
+
+    @mock.patch.object(requests.Session, "request")
+    def test_list_ip_interfaces_null_body_returns_empty_list(self, mock_request):
+        # A literal JSON ``null`` body is valid JSON but not a list/dict —
+        # also "no interfaces", not a parse failure.
+        mock_request.return_value = mock.Mock(
+            status_code=200,
+            ok=True,
+            text="null",
+            json=mock.Mock(return_value=None),
+        )
+        self.assertEqual(_client().list_ip_interfaces(1), [])
 
     @mock.patch.object(requests.Session, "request")
     def test_list_snmp_interfaces_parses_wrapped_form(self, mock_request):

@@ -252,6 +252,12 @@ class OpenNMSClient:
         """A node's IP interfaces (Discovery scan, issue #7).
 
         ``GET /api/v2/nodes/{id}/ipinterfaces`` (JSON).
+
+        A node with zero IP interfaces is a normal, valid state — OpenNMS
+        may answer with an empty body (no JSON at all) or a literal JSON
+        ``null`` instead of ``[]``/``{}``. Both are treated as "no
+        interfaces" here rather than a parse failure (issue #40/#57); only a
+        genuinely non-empty-but-undecodable body still raises.
         """
         response = self._request(
             "GET",
@@ -259,8 +265,13 @@ class OpenNMSClient:
             headers={"Accept": "application/json"},
             params={"limit": 0},
         )
+        text = getattr(response, "text", None)
+        if not (isinstance(text, str) and text.strip()):
+            return []
         try:
             payload = response.json()
+            if payload is None:
+                return []
             entries = (
                 payload if isinstance(payload, list) else payload.get("ipInterface", [])
             )
