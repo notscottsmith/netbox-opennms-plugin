@@ -186,6 +186,46 @@ class OpenNMSClient:
                 "OpenNMS returned an unparseable foreignSourcesConfig/assets response."
             ) from exc
 
+    def list_asset_suggestions(self):
+        """Known asset-field values OpenNMS has seen, for reuse instead of a
+        near-duplicate (Server detail page, issue #64/#61).
+
+        ``GET /rest/asset/suggestions`` -> a JSON object keyed by asset field
+        name, each value shaped
+        ``{"totalCount": N|null, "count": N|null, "offset": 0, "suggestion": [...]}``.
+        ``totalCount``/``count`` may be ``null`` with an empty ``suggestion``
+        list when a field has no known values.
+
+        Parsed defensively like ``list_locations``/``list_assets``: a field
+        entry that isn't shaped as expected (not a dict, or ``suggestion``
+        isn't a list) is skipped rather than raised on, and a field with an
+        empty/missing ``suggestion`` list is omitted from the returned mapping
+        so callers only see fields with real content. Only a genuinely
+        unparseable top-level response body raises the typed ``OpenNMSError``.
+        """
+        response = self._request(
+            "GET",
+            "/rest/asset/suggestions",
+            headers={"Accept": "application/json"},
+        )
+        try:
+            payload = response.json()
+            suggestions = {}
+            for field, entry in payload.items():
+                if not isinstance(entry, dict):
+                    continue
+                values = entry.get("suggestion")
+                if not isinstance(values, list):
+                    continue
+                names = [v for v in values if isinstance(v, str)]
+                if names:
+                    suggestions[field] = names
+            return suggestions
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise OpenNMSError(
+                "OpenNMS returned an unparseable asset/suggestions response."
+            ) from exc
+
     def _list_plugins(self, path):
         """GET a ``foreignSourcesConfig`` plugin list; typed taxonomy on a bad body."""
         response = self._request("GET", path, headers={"Accept": "application/json"})
