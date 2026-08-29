@@ -311,6 +311,174 @@ class OpenNMSServerViewTest(
             "headers": "{}",
         }
 
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_get_object(self, mock_from_server):
+        # OpenNMSServerView live-fetches Asset Suggestions (issue #64) -- stub
+        # it out so this inherited test doesn't reach the network.
+        client = mock_from_server.return_value.__enter__.return_value
+        client.list_asset_suggestions.return_value = {}
+        super().test_get_object()
+
+
+class ViewOpenNMSServerLoginMixin:
+    """Shared ``setUp`` for OpenNMSServerView detail-page section tests.
+
+    Each of these TestCases exercises a different detail-page section
+    (Asset Suggestions #64/#61, Monitoring Locations #62, Requisitions #63)
+    but they all need the same unprivileged-but-can-view user logged in.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="tester")
+        self.user.user_permissions.add(
+            Permission.objects.get(
+                codename="view_opennmsserver",
+                content_type__app_label="netbox_opennms",
+            )
+        )
+        self.client.force_login(self.user)
+
+
+class OpenNMSServerAssetSuggestionsViewTest(ViewOpenNMSServerLoginMixin, TestCase):
+    """OpenNMSServerView's live Asset Suggestions section (issue #64/#61)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.server = OpenNMSServer.objects.create(
+            name="Acme", url="https://onms.example"
+        )
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_live_fetch_success_is_shown_collapsed_with_count(self, mock_from_server):
+        client = mock_from_server.return_value.__enter__.return_value
+        client.list_asset_suggestions.return_value = {
+            "building": ["Paris Grove", "Perth Office"],
+        }
+        response = self.client.get(self.server.get_absolute_url())
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        self.assertIn("building", content)
+        self.assertIn("Paris Grove", content)
+        self.assertIn("Perth Office", content)
+        # Collapsed by default -- the "collapse" class must not also carry
+        # Bootstrap's "show" class, or the list would render expanded.
+        self.assertIn('class="collapse mt-2"', content)
+        self.assertNotIn('class="collapse show', content)
+        # Count is visible even while collapsed -- scoped to the count badge
+        # markup itself, not a bare ">2<" that could match unrelated content.
+        self.assertIn('<span class="badge text-bg-secondary">2</span>', content)
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_live_fetch_empty_shows_no_error(self, mock_from_server):
+        client = mock_from_server.return_value.__enter__.return_value
+        client.list_asset_suggestions.return_value = {}
+        response = self.client.get(self.server.get_absolute_url())
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        self.assertNotIn("Could not reach OpenNMS", content)
+        self.assertIn("No asset suggestions reported", content)
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_live_fetch_failure_shows_inline_error_only(self, mock_from_server):
+        client = mock_from_server.return_value.__enter__.return_value
+        client.list_asset_suggestions.side_effect = OpenNMSError("unreachable")
+        response = self.client.get(self.server.get_absolute_url())
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        self.assertIn("Could not reach OpenNMS", content)
+        self.assertIn("unreachable", content)
+        # The rest of the page (Server's own attributes) still renders.
+        self.assertIn(self.server.name, content)
+        self.assertIn(self.server.url, content)
+
+
+class OpenNMSServerMonitoringLocationsViewTest(ViewOpenNMSServerLoginMixin, TestCase):
+    """Server detail page's cached Monitoring Locations section (issue #62)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.server_with_locations = OpenNMSServer.objects.create(
+            name="srv-with-locations",
+            url="https://srv-with-locations.example",
+            username="svc",
+            password="x",
+            available_locations=["Raleigh", "Fulda"],
+        )
+        cls.server_without_locations = OpenNMSServer.objects.create(
+            name="srv-without-locations",
+            url="https://srv-without-locations.example",
+            username="svc",
+            password="x",
+        )
+
+    def test_populated_locations_are_shown(self):
+        response = self.client.get(self.server_with_locations.get_absolute_url())
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        self.assertIn("Monitoring Locations", content)
+        self.assertIn("Raleigh", content)
+        self.assertIn("Fulda", content)
+
+    def test_empty_locations_render_placeholder(self):
+        response = self.client.get(self.server_without_locations.get_absolute_url())
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        self.assertIn("Monitoring Locations", content)
+        self.assertIn("No cached Monitoring Locations", content)
+
+
+class OpenNMSServerRequisitionsSectionViewTest(ViewOpenNMSServerLoginMixin, TestCase):
+    """OpenNMSServerView's live "Requisitions" section (issue #63).
+
+    No persisted FK exists — a Requisition's Server membership is fully
+    derived from Scope (ADR 0002/0003) via ``membership.target_server_for``.
+    Two Requisitions, each filtered to a different Site, and each Site
+    scoped to a different Server: each Requisition must appear only on its
+    own Server's page.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        mfr = Manufacturer.objects.create(name="Acme", slug="acme")
+        dt = DeviceType.objects.create(
+            manufacturer=mfr, model="Model 1", slug="model-1"
+        )
+        role = DeviceRole.objects.create(name="Router", slug="router")
+        site_a = Site.objects.create(name="Site A", slug="site-a")
+        site_b = Site.objects.create(name="Site B", slug="site-b")
+        Device.objects.create(name="dev-a", device_type=dt, role=role, site=site_a)
+        Device.objects.create(name="dev-b", device_type=dt, role=role, site=site_b)
+
+        cls.server_a = OpenNMSServer.objects.create(
+            name="Server A", url="https://server-a.example"
+        )
+        cls.server_a.sites.add(site_a)
+        cls.server_b = OpenNMSServer.objects.create(
+            name="Server B", url="https://server-b.example"
+        )
+        cls.server_b.sites.add(site_b)
+
+        cls.requisition_a = Requisition.objects.create(
+            name="req-a", filter_params={"site": ["site-a"]}
+        )
+        cls.requisition_b = Requisition.objects.create(
+            name="req-b", filter_params={"site": ["site-b"]}
+        )
+
+    def test_requisitions_resolving_to_this_server_are_listed(self):
+        response = self.client.get(self.server_a.get_absolute_url())
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        self.assertIn("req-a", content)
+        self.assertNotIn("req-b", content)
+
+    def test_requisitions_resolving_to_other_server_are_excluded(self):
+        response = self.client.get(self.server_b.get_absolute_url())
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        self.assertIn("req-b", content)
+        self.assertNotIn("req-a", content)
+
 
 class MonitoringExclusionViewTest(
     ViewTestCases.GetObjectViewTestCase,

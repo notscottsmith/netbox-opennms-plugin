@@ -3,6 +3,7 @@
 """UI views for plugin models (Requisition redesign)."""
 
 import json
+import logging
 from copy import deepcopy
 
 from dcim.models import Cable, Device, Interface, Site
@@ -70,6 +71,8 @@ from .reverse_sync import (
 from .scan import KIND_MODELS, scan_server, upsert_discovered_nodes
 from .translation import RenderError, render_node_document
 from .validation import validate_resolution
+
+logger = logging.getLogger("netbox_opennms")
 
 # Sync jobs are enqueued without an instance, so they run on the default RQ
 # queue (get_queue_for_model(None) -> RQ_QUEUE_DEFAULT). FR-13 / AD-16.
@@ -915,6 +918,50 @@ class MetadataEntryBulkDeleteView(generic.BulkDeleteView):
 
 class OpenNMSServerView(generic.ObjectView):
     queryset = OpenNMSServer.objects.all()
+
+    def get_extra_context(self, request, instance):
+        """Requisitions resolving here (#63) and live Asset Suggestions (#64/#61).
+
+        Requisitions: no persisted FK exists — a Requisition's Server
+        membership is fully derived from Scope (ADR 0002/0003). Mirrors the
+        inverse computation in ``membership.matching_requisitions``: iterate
+        every Requisition and keep those where ``target_server_for`` resolves
+        to *instance*. O(requisitions) per page render, not cached —
+        consistent with how the rest of the plugin recomputes Scope
+        resolution live. Wrapped in its own ``try``/``except`` so a future
+        change to Requisition-resolution logic can't take down the rest of
+        the page — structurally the same isolation guarantee as Asset
+        Suggestions below, not just an accident of ``target_server_for``
+        currently having no failure mode.
+
+        Asset Suggestions: fetched fresh on every page view (not cached, not
+        refreshed by the health-check job); wrapped in its own
+        ``try``/``except`` so a failure here degrades only this section,
+        independent of the Requisitions context above.
+        """
+        try:
+            requisitions = [
+                requisition
+                for requisition in Requisition.objects.all()
+                if target_server_for(requisition) == instance
+            ]
+        except Exception:
+            logger.exception(
+                "Failed to resolve Requisitions for OpenNMS Server %s", instance.pk
+            )
+            requisitions = []
+        asset_suggestions_error = None
+        try:
+            with OpenNMSClient.from_server(instance) as client:
+                asset_suggestions = client.list_asset_suggestions()
+        except OpenNMSError as exc:
+            asset_suggestions_error = str(exc)
+            asset_suggestions = {}
+        return {
+            "requisitions": requisitions,
+            "asset_suggestions": asset_suggestions,
+            "asset_suggestions_error": asset_suggestions_error,
+        }
 
 
 class OpenNMSServerListView(generic.ObjectListView):

@@ -392,6 +392,89 @@ class OpenNMSClientTest(SimpleTestCase):
         _, url = mock_request.call_args.args
         self.assertTrue(url.endswith("/rest/foreignSourcesConfig/assets"))
 
+    @mock.patch.object(requests.Session, "request")
+    def test_list_asset_suggestions_parses_well_formed_payload(self, mock_request):
+        mock_request.return_value = mock.Mock(
+            status_code=200,
+            ok=True,
+            json=mock.Mock(
+                return_value={
+                    "address1": {
+                        "totalCount": 2,
+                        "count": 2,
+                        "offset": 0,
+                        "suggestion": ["101 Malaga Drive", "16 Morrison St"],
+                    },
+                    "building": {
+                        "totalCount": 2,
+                        "count": 2,
+                        "offset": 0,
+                        "suggestion": ["Paris Grove", "Perth Office"],
+                    },
+                }
+            ),
+        )
+        self.assertEqual(
+            _client().list_asset_suggestions(),
+            {
+                "address1": ["101 Malaga Drive", "16 Morrison St"],
+                "building": ["Paris Grove", "Perth Office"],
+            },
+        )
+        method, url = mock_request.call_args.args
+        self.assertEqual(method, "GET")
+        self.assertTrue(url.endswith("/rest/assets/suggestions"))
+
+    @mock.patch.object(requests.Session, "request")
+    def test_list_asset_suggestions_omits_null_and_empty_fields(self, mock_request):
+        mock_request.return_value = mock.Mock(
+            status_code=200,
+            ok=True,
+            json=mock.Mock(
+                return_value={
+                    "admin": {
+                        "totalCount": None,
+                        "count": None,
+                        "offset": 0,
+                        "suggestion": [],
+                    },
+                    "category": {
+                        "totalCount": 1,
+                        "count": 1,
+                        "offset": 0,
+                        "suggestion": ["Switch"],
+                    },
+                    "malformed": "not-a-dict",
+                    "no-suggestion-key": {"totalCount": 1, "count": 1, "offset": 0},
+                }
+            ),
+        )
+        self.assertEqual(_client().list_asset_suggestions(), {"category": ["Switch"]})
+
+    @mock.patch.object(requests.Session, "request")
+    def test_list_asset_suggestions_non_json_body_raises_opennms_error(
+        self, mock_request
+    ):
+        mock_request.return_value = mock.Mock(
+            status_code=200,
+            ok=True,
+            json=mock.Mock(side_effect=ValueError("no json")),
+        )
+        with self.assertRaises(OpenNMSError):
+            _client().list_asset_suggestions()
+
+    @mock.patch.object(requests.Session, "request")
+    def test_list_asset_suggestions_json_scalar_raises_opennms_error(
+        self, mock_request
+    ):
+        # A JSON scalar (e.g. a bare list/None) has no .items() -- must not
+        # escape as a bare AttributeError.
+        mock_request.return_value = mock.Mock(
+            status_code=200, ok=True, json=mock.Mock(return_value=None)
+        )
+        with self.assertRaises(OpenNMSError):
+            _client().list_asset_suggestions()
+
     def test_from_server_builds_client_with_credentials(self):
         server = OpenNMSServer(
             name="Acme",
