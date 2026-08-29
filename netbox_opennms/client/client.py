@@ -190,8 +190,9 @@ class OpenNMSClient:
         """Known asset-field values OpenNMS has seen, for reuse instead of a
         near-duplicate (Server detail page, issue #64/#61).
 
-        ``GET /rest/asset/suggestions`` -> a JSON object keyed by asset field
-        name, each value shaped
+        ``GET /rest/assets/suggestions`` (plural ``assets`` — confirmed against
+        a live Horizon 34 instance; the singular ``/rest/asset/suggestions``
+        404s) -> a JSON object keyed by asset field name, each value shaped
         ``{"totalCount": N|null, "count": N|null, "offset": 0, "suggestion": [...]}``.
         ``totalCount``/``count`` may be ``null`` with an empty ``suggestion``
         list when a field has no known values.
@@ -205,7 +206,7 @@ class OpenNMSClient:
         """
         response = self._request(
             "GET",
-            "/rest/asset/suggestions",
+            "/rest/assets/suggestions",
             headers={"Accept": "application/json"},
         )
         try:

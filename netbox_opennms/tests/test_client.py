@@ -423,7 +423,7 @@ class OpenNMSClientTest(SimpleTestCase):
         )
         method, url = mock_request.call_args.args
         self.assertEqual(method, "GET")
-        self.assertTrue(url.endswith("/rest/asset/suggestions"))
+        self.assertTrue(url.endswith("/rest/assets/suggestions"))
 
     @mock.patch.object(requests.Session, "request")
     def test_list_asset_suggestions_omits_null_and_empty_fields(self, mock_request):
