@@ -66,4 +66,35 @@
       </div>
     </div>
   </div>
+  <div class="row mt-3">
+    <div class="col col-md-12">
+      <div class="card">
+        <h2 class="card-header">Asset Suggestions</h2>
+        <div class="card-body">
+          {% if asset_suggestions_error %}
+            <div class="alert alert-danger" role="alert">
+              <i class="mdi mdi-alert"></i> Could not reach OpenNMS: {{ asset_suggestions_error }}
+            </div>
+          {% elif asset_suggestions %}
+            {% for field, values in asset_suggestions.items %}
+              <div class="mb-2">
+                <a class="btn btn-sm btn-outline-secondary" data-bs-toggle="collapse" href="#asset-suggestion-{{ forloop.counter }}" role="button" aria-expanded="false" aria-controls="asset-suggestion-{{ forloop.counter }}">
+                  {{ field }} <span class="badge text-bg-secondary">{{ values|length }}</span>
+                </a>
+                <div class="collapse mt-2" id="asset-suggestion-{{ forloop.counter }}">
+                  <ul class="list-group">
+                    {% for value in values %}
+                      <li class="list-group-item">{{ value }}</li>
+                    {% endfor %}
+                  </ul>
+                </div>
+              </div>
+            {% endfor %}
+          {% else %}
+            <p class="text-muted mb-0">No asset suggestions reported for this Server.</p>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
 {% endblock %}

@@ -916,6 +916,26 @@ class MetadataEntryBulkDeleteView(generic.BulkDeleteView):
 class OpenNMSServerView(generic.ObjectView):
     queryset = OpenNMSServer.objects.all()
 
+    def get_extra_context(self, request, instance):
+        """Live OpenNMS Asset Suggestions for this Server (issue #64/#61).
+
+        Fetched fresh on every page view (not cached, not refreshed by the
+        health-check job); wrapped in its own ``try``/``except`` so a failure
+        here degrades only this section, independent of any other context
+        keys a sibling ticket on the same spec (#61) may add here.
+        """
+        asset_suggestions_error = None
+        try:
+            with OpenNMSClient.from_server(instance) as client:
+                asset_suggestions = client.list_asset_suggestions()
+        except OpenNMSError as exc:
+            asset_suggestions_error = str(exc)
+            asset_suggestions = {}
+        return {
+            "asset_suggestions": asset_suggestions,
+            "asset_suggestions_error": asset_suggestions_error,
+        }
+
 
 class OpenNMSServerListView(generic.ObjectListView):
     queryset = OpenNMSServer.objects.all()

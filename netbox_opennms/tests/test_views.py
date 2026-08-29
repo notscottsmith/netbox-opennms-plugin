@@ -311,6 +311,76 @@ class OpenNMSServerViewTest(
             "headers": "{}",
         }
 
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_get_object(self, mock_from_server):
+        # OpenNMSServerView live-fetches Asset Suggestions (issue #64) -- stub
+        # it out so this inherited test doesn't reach the network.
+        client = mock_from_server.return_value.__enter__.return_value
+        client.list_asset_suggestions.return_value = {}
+        super().test_get_object()
+
+
+class OpenNMSServerAssetSuggestionsViewTest(TestCase):
+    """OpenNMSServerView's live Asset Suggestions section (issue #64/#61)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.server = OpenNMSServer.objects.create(
+            name="Acme", url="https://onms.example"
+        )
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="tester")
+        self.user.user_permissions.add(
+            Permission.objects.get(
+                codename="view_opennmsserver",
+                content_type__app_label="netbox_opennms",
+            )
+        )
+        self.client.force_login(self.user)
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_live_fetch_success_is_shown_collapsed_with_count(self, mock_from_server):
+        client = mock_from_server.return_value.__enter__.return_value
+        client.list_asset_suggestions.return_value = {
+            "building": ["Paris Grove", "Perth Office"],
+        }
+        response = self.client.get(self.server.get_absolute_url())
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        self.assertIn("building", content)
+        self.assertIn("Paris Grove", content)
+        self.assertIn("Perth Office", content)
+        # Collapsed by default -- the "collapse" class must not also carry
+        # Bootstrap's "show" class, or the list would render expanded.
+        self.assertIn('class="collapse mt-2"', content)
+        self.assertNotIn('class="collapse show', content)
+        # Count is visible even while collapsed.
+        self.assertIn(">2<", content)
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_live_fetch_empty_shows_no_error(self, mock_from_server):
+        client = mock_from_server.return_value.__enter__.return_value
+        client.list_asset_suggestions.return_value = {}
+        response = self.client.get(self.server.get_absolute_url())
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        self.assertNotIn("Could not reach OpenNMS", content)
+        self.assertIn("No asset suggestions reported", content)
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_live_fetch_failure_shows_inline_error_only(self, mock_from_server):
+        client = mock_from_server.return_value.__enter__.return_value
+        client.list_asset_suggestions.side_effect = OpenNMSError("unreachable")
+        response = self.client.get(self.server.get_absolute_url())
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        self.assertIn("Could not reach OpenNMS", content)
+        self.assertIn("unreachable", content)
+        # The rest of the page (Server's own attributes) still renders.
+        self.assertIn(self.server.name, content)
+        self.assertIn(self.server.url, content)
+
 
 class MonitoringExclusionViewTest(
     ViewTestCases.GetObjectViewTestCase,
