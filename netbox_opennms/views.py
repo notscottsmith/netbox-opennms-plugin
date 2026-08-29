@@ -550,83 +550,108 @@ class RequisitionNodeWalkView(PermissionRequiredMixin, View):
     def get(self, request, pk, opennms_node_id):
         requisition = get_object_or_404(Requisition, pk=pk)
         target_server = target_server_for(requisition)
-        error = None
+        errors = []
         snmp_interfaces = []
         links = []
         node_detail = {}
         categories = []
         category_rows = []
         asset_rows = []
+        ip_interfaces = []
+        services_by_ip = {}
         live_interface_rows = []
         mapped_asset_fields = set(
             requisition.asset_mappings.values_list("asset_field", flat=True)
         )
         if target_server is None:
-            error = "This Requisition's target OpenNMS Server could not be resolved."
+            errors.append(
+                "This Requisition's target OpenNMS Server could not be resolved."
+            )
         else:
-            try:
-                with OpenNMSClient.from_server(target_server) as client:
+            # Each data source is fetched (and fails) independently (issue
+            # #58) -- previously these all shared one try/except, so the
+            # first failure anywhere aborted every call after it and
+            # discarded data from calls that had already succeeded. A
+            # section whose call fails keeps its pre-declared empty default
+            # above, which the template already renders as that section's
+            # normal empty state.
+            with OpenNMSClient.from_server(target_server) as client:
+                try:
                     snmp_interfaces = client.list_snmp_interfaces(opennms_node_id)
+                except OpenNMSError as exc:
+                    errors.append(str(exc))
+                try:
                     links = parse_node_links(client.get_node_links(opennms_node_id))
+                except OpenNMSError as exc:
+                    errors.append(str(exc))
+                try:
                     node_detail = client.get_node(opennms_node_id) or {}
-                    ip_interfaces, services_by_ip = _fetch_ip_interfaces_and_services(
-                        client, opennms_node_id
+                except OpenNMSError as exc:
+                    errors.append(str(exc))
+                try:
+                    ip_interfaces, services_by_ip, failed_service_ips = (
+                        _fetch_ip_interfaces_and_services(client, opennms_node_id)
                     )
-            except OpenNMSError as exc:
-                error = str(exc)
-            else:
-                categories = import_node.parse_categories(node_detail)
-                # Cross-reference against this Requisition's own
-                # set-node-category policies (issue #39 follow-up) -- there is
-                # no separate "category mapping" model; a MonitoringPolicy
-                # using that preset already *is* the category-mapping
-                # mechanism (see MonitoringPolicy/presets.py), so this reuses
-                # it rather than inventing a redundant, functionally-inert one.
-                policy_categories = {
-                    policy.parameters.get("category")
-                    for policy in MonitoringPolicy.objects.filter(
-                        requisition=requisition, preset="set-node-category"
-                    )
-                    if policy.parameters.get("category")
-                }
-                category_rows = [
-                    {
-                        "name": name,
-                        # Live on the node AND a configured policy targets it:
-                        # the policy has already taken effect.
-                        "already_exists": name in policy_categories,
-                    }
-                    for name in categories
-                ]
-                # Configured by a policy but not yet live on the node: a sync
-                # would create it.
-                for name in sorted(policy_categories - set(categories)):
-                    category_rows.append({"name": name, "pending_policy": True})
-                asset_record = node_detail.get("assetRecord") or {}
-                asset_rows = [
-                    {
-                        "field": field,
-                        "value": value,
-                        "mapped": field in mapped_asset_fields,
-                    }
-                    for field, value in asset_record.items()
-                    if value
-                ]
-                parsed_interfaces, parsed_services = (
-                    import_node.parse_discovery_payload(ip_interfaces, services_by_ip)
+                except OpenNMSError as exc:
+                    errors.append(str(exc))
+                else:
+                    if failed_service_ips:
+                        errors.append(
+                            "Could not retrieve services for IP interface(s): "
+                            + ", ".join(failed_service_ips)
+                        )
+            categories = import_node.parse_categories(node_detail)
+            # Cross-reference against this Requisition's own
+            # set-node-category policies (issue #39 follow-up) -- there is
+            # no separate "category mapping" model; a MonitoringPolicy
+            # using that preset already *is* the category-mapping
+            # mechanism (see MonitoringPolicy/presets.py), so this reuses
+            # it rather than inventing a redundant, functionally-inert one.
+            policy_categories = {
+                policy.parameters.get("category")
+                for policy in MonitoringPolicy.objects.filter(
+                    requisition=requisition, preset="set-node-category"
                 )
-                service_names_by_ip = {}
-                for service in parsed_services:
-                    service_names_by_ip.setdefault(service.ip_address, []).append(
-                        service.name
-                    )
-                live_interface_rows = [
-                    {
-                        "interface": iface,
-                        "services": service_names_by_ip.get(iface.ip_address, []),
-                    }
-                    for iface in parsed_interfaces
-                ]
+                if policy.parameters.get("category")
+            }
+            category_rows = [
+                {
+                    "name": name,
+                    # Live on the node AND a configured policy targets it:
+                    # the policy has already taken effect.
+                    "already_exists": name in policy_categories,
+                }
+                for name in categories
+            ]
+            # Configured by a policy but not yet live on the node: a sync
+            # would create it.
+            for name in sorted(policy_categories - set(categories)):
+                category_rows.append({"name": name, "pending_policy": True})
+            asset_record = node_detail.get("assetRecord") or {}
+            asset_rows = [
+                {
+                    "field": field,
+                    "value": value,
+                    "mapped": field in mapped_asset_fields,
+                }
+                for field, value in asset_record.items()
+                if value
+            ]
+            parsed_interfaces, parsed_services = import_node.parse_discovery_payload(
+                ip_interfaces, services_by_ip
+            )
+            service_names_by_ip = {}
+            for service in parsed_services:
+                service_names_by_ip.setdefault(service.ip_address, []).append(
+                    service.name
+                )
+            live_interface_rows = [
+                {
+                    "interface": iface,
+                    "services": service_names_by_ip.get(iface.ip_address, []),
+                }
+                for iface in parsed_interfaces
+            ]
         snmp_metadata = {
             key: value
             for key, value in node_detail.items()
@@ -644,7 +669,7 @@ class RequisitionNodeWalkView(PermissionRequiredMixin, View):
                 "asset_rows": asset_rows,
                 "snmp_metadata": snmp_metadata,
                 "live_interface_rows": live_interface_rows,
-                "error": error,
+                "error": "; ".join(errors) if errors else None,
             },
         )
 
@@ -1101,17 +1126,37 @@ def _fetch_ip_interfaces_and_services(client, opennms_node_id):
     """IP interfaces plus per-interface services for one OpenNMS node.
 
     Shared by the live-fetch paths in ``DiscoveredNodeView``,
-    ``DiscoveredNodeImportView``, and ``DiscoveredNodeBulkImportView`` — all
-    three walk the same ``list_ip_interfaces`` -> per-IP ``list_services``
-    shape.
+    ``DiscoveredNodeImportView``, ``DiscoveredNodeBulkImportView``, and
+    ``RequisitionNodeWalkView`` — all four walk the same ``list_ip_interfaces``
+    -> per-IP ``list_services`` shape.
+
+    ``list_services`` is called once per IP interface, so one interface's
+    services being unreachable (e.g. issue #57's empty-body defect) must not
+    discard every other interface's already-fetched data (issue #58) — each
+    per-IP call is isolated and defaults that IP's services to ``[]`` on
+    failure. The third return value lists the IPs whose services call failed,
+    so a caller that wants to surface it can, rather than the failure being
+    silently swallowed; every failure is also logged here so callers that
+    don't surface it still leave a trace.
     """
     ip_interfaces = client.list_ip_interfaces(opennms_node_id)
     services_by_ip = {}
+    failed_service_ips = []
     for iface in ip_interfaces:
         ip = iface.get("ipAddress") if isinstance(iface, dict) else None
         if ip:
-            services_by_ip[ip] = client.list_services(opennms_node_id, ip)
-    return ip_interfaces, services_by_ip
+            try:
+                services_by_ip[ip] = client.list_services(opennms_node_id, ip)
+            except OpenNMSError as exc:
+                logger.warning(
+                    "Could not fetch OpenNMS services for node %s IP %s: %s",
+                    opennms_node_id,
+                    ip,
+                    exc,
+                )
+                services_by_ip[ip] = []
+                failed_service_ips.append(ip)
+    return ip_interfaces, services_by_ip, failed_service_ips
 
 
 class DiscoveredNodeView(generic.ObjectView):
@@ -1122,8 +1167,8 @@ class DiscoveredNodeView(generic.ObjectView):
         try:
             with OpenNMSClient.from_server(instance.server) as client:
                 node_detail = client.get_node(instance.opennms_node_id) or {}
-                ip_interfaces, services_by_ip = _fetch_ip_interfaces_and_services(
-                    client, instance.opennms_node_id
+                ip_interfaces, services_by_ip, _failed_service_ips = (
+                    _fetch_ip_interfaces_and_services(client, instance.opennms_node_id)
                 )
         except OpenNMSError as exc:
             live_fetch_error = str(exc)
@@ -1278,8 +1323,8 @@ class DiscoveredNodeImportView(GetReturnURLMixin, PermissionRequiredMixin, View)
         try:
             with OpenNMSClient.from_server(node.server) as client:
                 detail = client.get_node(node.opennms_node_id) or {}
-                ip_interfaces, services_by_ip = _fetch_ip_interfaces_and_services(
-                    client, node.opennms_node_id
+                ip_interfaces, services_by_ip, _failed_service_ips = (
+                    _fetch_ip_interfaces_and_services(client, node.opennms_node_id)
                 )
         except OpenNMSError as exc:
             return None, str(exc)
@@ -1464,8 +1509,8 @@ class DiscoveredNodeBulkImportView(GetReturnURLMixin, PermissionRequiredMixin, V
             row_data["name"] = node.label
             try:
                 with OpenNMSClient.from_server(node.server) as client:
-                    ip_interfaces, services_by_ip = _fetch_ip_interfaces_and_services(
-                        client, node.opennms_node_id
+                    ip_interfaces, services_by_ip, _failed_service_ips = (
+                        _fetch_ip_interfaces_and_services(client, node.opennms_node_id)
                     )
             except OpenNMSError as exc:
                 errors.append(f"{node.label}: could not reach OpenNMS ({exc}).")
