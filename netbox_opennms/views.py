@@ -524,24 +524,65 @@ class RequisitionScanView(PermissionRequiredMixin, View):
         )
 
 
+def _try_fetch(errors, func, default=None):
+    """Call ``func``, recording an ``OpenNMSError`` on ``errors`` instead of raising.
+
+    Factors out the ``try: X = client.foo(...) / except OpenNMSError as exc:
+    errors.append(str(exc))`` shape repeated across
+    ``RequisitionNodeWalkView.get()``'s independent per-source fetches (issue
+    #58) -- each call site still fails independently, this just removes the
+    boilerplate around it. Returns ``func()``'s result, or ``default`` if it
+    raised.
+    """
+    try:
+        return func()
+    except OpenNMSError as exc:
+        errors.append(str(exc))
+        return default
+
+
+def _requisition_entries(requisition_node, list_key, required_keys):
+    """Dict entries from one list on a Requisition-node document.
+
+    ``asset`` (``{"name", "value"}``) and ``meta-data``
+    (``{"context", "key", "value"}``) entries share the same "is it a dict,
+    and are its required fields present" guard shape (issue #59) -- this
+    factors that out. Each call site still does its own field
+    renaming/defaulting on top of the filtered list this returns.
+    """
+    return [
+        entry
+        for entry in (requisition_node.get(list_key) or [])
+        if isinstance(entry, dict) and all(entry.get(key) for key in required_keys)
+    ]
+
+
 class RequisitionNodeWalkView(PermissionRequiredMixin, View):
-    """Live OpenNMS data for one node (issues #34, #39).
+    """Live OpenNMS data for one node (issues #34, #39, #59, #60).
 
     A read-only companion to the scan table's node-name link — a superset of
     the One-Time-Sync preview's fetch (``reverse_sync.fetch_node_data``:
     ``list_snmp_interfaces`` + ``get_node_links``), plus everything else
-    ``OpenNMSClient`` already exposes per-node: ``get_node`` (categories,
-    asset record, SNMP agent metadata such as ``sysObjectId``/``sysLocation``
-    in one call) and IP interfaces/monitored services via the same
+    ``OpenNMSClient`` already exposes per-node. ``get_node`` (the monitoring
+    API, ``/api/v2/nodes/{id}``) is used only to resolve the
+    ``foreignSource``/``foreignId`` pair needed to key the Requisitions
+    API's ``get_requisition_node`` call — Categories, Assets, and Node
+    Metadata are sourced from ``get_requisition_node`` instead (issue #59),
+    since those reflect the Requisition's own authoritative,
+    always-available definition rather than OpenNMS's live-scanned state,
+    which can be sparse or empty immediately after import or before a
+    rescan; no other field from ``get_node``'s response is rendered here.
+    IP interfaces/monitored services are fetched via the same
     ``_fetch_ip_interfaces_and_services`` helper the Discovery Scan review
-    page (``DiscoveredNodeView``) uses. Nothing here plans or commits
-    anything to NetBox — it's display only, and (unlike ``DiscoveredNode``'s
-    walk) nothing is persisted; every visit is a fresh live fetch.
-    ``fetch_node_data``/``DiscoveredNodeView.get_extra_context`` themselves
-    aren't reusable here since they're keyed off a ``DiscoveredNode`` rather
-    than a bare node id. Reachable only for a row the scan table has already
-    resolved an ``opennms_node_id`` for (an "added" row — not yet
-    provisioned in OpenNMS — has no such link).
+    page (``DiscoveredNodeView``) uses.
+    Nothing here plans or commits anything to NetBox — it's display only,
+    and (unlike ``DiscoveredNode``'s walk) nothing is persisted; every visit
+    is a fresh live fetch. ``fetch_node_data``/
+    ``DiscoveredNodeView.get_extra_context`` themselves aren't reusable here
+    since they're keyed off a ``DiscoveredNode`` rather than a bare node id.
+    Reachable only for a row the scan table has already resolved an
+    ``opennms_node_id`` for (an "added" row — not yet provisioned in
+    OpenNMS — has no such link).
     """
 
     permission_required = "netbox_opennms.view_requisition"
@@ -550,88 +591,182 @@ class RequisitionNodeWalkView(PermissionRequiredMixin, View):
     def get(self, request, pk, opennms_node_id):
         requisition = get_object_or_404(Requisition, pk=pk)
         target_server = target_server_for(requisition)
-        error = None
+        errors = []
         snmp_interfaces = []
         links = []
         node_detail = {}
+        requisition_node = {}
         categories = []
         category_rows = []
         asset_rows = []
+        ip_interfaces = []
+        services_by_ip = {}
         live_interface_rows = []
         mapped_asset_fields = set(
             requisition.asset_mappings.values_list("asset_field", flat=True)
         )
         if target_server is None:
-            error = "This Requisition's target OpenNMS Server could not be resolved."
+            errors.append(
+                "This Requisition's target OpenNMS Server could not be resolved."
+            )
         else:
-            try:
-                with OpenNMSClient.from_server(target_server) as client:
-                    snmp_interfaces = client.list_snmp_interfaces(opennms_node_id)
-                    links = parse_node_links(client.get_node_links(opennms_node_id))
-                    node_detail = client.get_node(opennms_node_id) or {}
-                    ip_interfaces, services_by_ip = _fetch_ip_interfaces_and_services(
-                        client, opennms_node_id
-                    )
-            except OpenNMSError as exc:
-                error = str(exc)
-            else:
-                categories = import_node.parse_categories(node_detail)
-                # Cross-reference against this Requisition's own
-                # set-node-category policies (issue #39 follow-up) -- there is
-                # no separate "category mapping" model; a MonitoringPolicy
-                # using that preset already *is* the category-mapping
-                # mechanism (see MonitoringPolicy/presets.py), so this reuses
-                # it rather than inventing a redundant, functionally-inert one.
-                policy_categories = {
-                    policy.parameters.get("category")
-                    for policy in MonitoringPolicy.objects.filter(
-                        requisition=requisition, preset="set-node-category"
-                    )
-                    if policy.parameters.get("category")
-                }
-                category_rows = [
-                    {
-                        "name": name,
-                        # Live on the node AND a configured policy targets it:
-                        # the policy has already taken effect.
-                        "already_exists": name in policy_categories,
-                    }
-                    for name in categories
-                ]
-                # Configured by a policy but not yet live on the node: a sync
-                # would create it.
-                for name in sorted(policy_categories - set(categories)):
-                    category_rows.append({"name": name, "pending_policy": True})
-                asset_record = node_detail.get("assetRecord") or {}
-                asset_rows = [
-                    {
-                        "field": field,
-                        "value": value,
-                        "mapped": field in mapped_asset_fields,
-                    }
-                    for field, value in asset_record.items()
-                    if value
-                ]
-                parsed_interfaces, parsed_services = (
-                    import_node.parse_discovery_payload(ip_interfaces, services_by_ip)
+            # Each data source is fetched (and fails) independently (issue
+            # #58) -- previously these all shared one try/except, so the
+            # first failure anywhere aborted every call after it and
+            # discarded data from calls that had already succeeded. A
+            # section whose call fails keeps its pre-declared empty default
+            # above, which the template already renders as that section's
+            # normal empty state.
+            with OpenNMSClient.from_server(target_server) as client:
+                snmp_interfaces = _try_fetch(
+                    errors, lambda: client.list_snmp_interfaces(opennms_node_id), []
                 )
-                service_names_by_ip = {}
-                for service in parsed_services:
-                    service_names_by_ip.setdefault(service.ip_address, []).append(
-                        service.name
+                links = _try_fetch(
+                    errors,
+                    lambda: parse_node_links(client.get_node_links(opennms_node_id)),
+                    [],
+                )
+                node_detail = _try_fetch(
+                    errors, lambda: client.get_node(opennms_node_id) or {}, {}
+                )
+                # Categories/Assets/Node Metadata come from the Requisition's
+                # own definition, not the monitoring API (issue #59) --
+                # keyed by foreignSource/foreignId, which get_node's payload
+                # already carries. A missing/failed node_detail leaves both
+                # blank above, so this is skipped rather than called with
+                # incomplete keys; that failure is already recorded above.
+                foreign_source = node_detail.get("foreignSource")
+                foreign_id = node_detail.get("foreignId")
+                if foreign_source and foreign_id:
+                    requisition_node = _try_fetch(
+                        errors,
+                        lambda: (
+                            client.get_requisition_node(foreign_source, foreign_id)
+                            or {}
+                        ),
+                        {},
                     )
-                live_interface_rows = [
-                    {
-                        "interface": iface,
-                        "services": service_names_by_ip.get(iface.ip_address, []),
-                    }
-                    for iface in parsed_interfaces
-                ]
-        snmp_metadata = {
-            key: value
-            for key, value in node_detail.items()
-            if key not in ("categories", "category", "assetRecord") and value
-        }
+                try:
+                    ip_interfaces, services_by_ip, failed_service_ips = (
+                        _fetch_ip_interfaces_and_services(client, opennms_node_id)
+                    )
+                except OpenNMSError as exc:
+                    errors.append(str(exc))
+                else:
+                    if failed_service_ips:
+                        errors.append(
+                            "Could not retrieve services for IP interface(s): "
+                            + ", ".join(failed_service_ips)
+                        )
+            # Sourced from the Requisition-node document, not node_detail
+            # (issue #59) -- parse_categories already tolerates the same
+            # dict-or-list "category" shape either payload can carry.
+            categories = import_node.parse_categories(requisition_node)
+            # Cross-reference against this Requisition's own
+            # set-node-category policies (issue #39 follow-up) -- there is
+            # no separate "category mapping" model; a MonitoringPolicy
+            # using that preset already *is* the category-mapping
+            # mechanism (see MonitoringPolicy/presets.py), so this reuses
+            # it rather than inventing a redundant, functionally-inert one.
+            policy_categories = {
+                policy.parameters.get("category")
+                for policy in MonitoringPolicy.objects.filter(
+                    requisition=requisition, preset="set-node-category"
+                )
+                if policy.parameters.get("category")
+            }
+            category_rows = [
+                {
+                    "name": name,
+                    # Live on the node AND a configured policy targets it:
+                    # the policy has already taken effect.
+                    "already_exists": name in policy_categories,
+                }
+                for name in categories
+            ]
+            # Configured by a policy but not yet live on the node: a sync
+            # would create it.
+            for name in sorted(policy_categories - set(categories)):
+                category_rows.append({"name": name, "pending_policy": True})
+            # Requisition-node "asset" entries are a list of {"name",
+            # "value"} dicts (the RequisitionAsset shape), not the
+            # monitoring API's flat assetRecord dict (issue #59).
+            asset_rows = [
+                {
+                    "field": entry.get("name"),
+                    "value": entry.get("value"),
+                    "mapped": entry.get("name") in mapped_asset_fields,
+                }
+                for entry in _requisition_entries(
+                    requisition_node, "asset", ("name", "value")
+                )
+            ]
+            parsed_interfaces, parsed_services = import_node.parse_discovery_payload(
+                ip_interfaces, services_by_ip
+            )
+            service_names_by_ip = {}
+            for service in parsed_services:
+                service_names_by_ip.setdefault(service.ip_address, []).append(
+                    service.name
+                )
+            live_interface_rows = [
+                {
+                    "interface": iface,
+                    "services": service_names_by_ip.get(iface.ip_address, []),
+                }
+                for iface in parsed_interfaces
+            ]
+        # Requisition-node "meta-data" entries are a list of {"context",
+        # "key", "value"} dicts (the RequisitionMetaData shape) -- the
+        # Requisition's own meta-data, not the ad-hoc grab-bag of every
+        # other monitoring-API node_detail field this used to be (issue
+        # #59, was "SNMP Metadata").
+        node_metadata = [
+            {
+                "context": entry.get("context", ""),
+                "key": entry.get("key", ""),
+                "value": entry.get("value", ""),
+            }
+            for entry in _requisition_entries(
+                requisition_node, "meta-data", ("key", "value")
+            )
+        ]
+        # Per-link resolve/walk action (issue #60): a link's remote_node_id is
+        # an OpenNMS-internal node id, not a NetBox object -- whether it's
+        # already represented in NetBox is looked up against the existing
+        # DiscoveredNode inventory (issue #7's "OpenNMS node with its NetBox
+        # match verdict" record) rather than inventing a second placeholder
+        # concept. Recomputed on every request, deliberately uncached, so a
+        # node matched (or unmatched) since the last scan is never rendered
+        # stale. A link with no remote_node_id at all (id not recoverable
+        # from its *Url field) gets neither action, same as today.
+        remote_node_ids = [
+            link.remote_node_id for link in links if link.remote_node_id is not None
+        ]
+        discovered_nodes_by_id = {}
+        if target_server is not None and remote_node_ids:
+            discovered_nodes_by_id = {
+                node.opennms_node_id: node
+                for node in DiscoveredNode.objects.filter(
+                    server=target_server, opennms_node_id__in=remote_node_ids
+                )
+            }
+        link_rows = []
+        for link in links:
+            matched_object = None
+            walk_url = None
+            if link.remote_node_id is not None:
+                discovered_node = discovered_nodes_by_id.get(link.remote_node_id)
+                if discovered_node is not None and discovered_node.matched_object:
+                    matched_object = discovered_node.matched_object
+                else:
+                    walk_url = reverse(
+                        "plugins:netbox_opennms:requisition_node_walk",
+                        args=[requisition.pk, link.remote_node_id],
+                    )
+            link_rows.append(
+                {"link": link, "matched_object": matched_object, "walk_url": walk_url}
+            )
         return render(
             request,
             self.template_name,
@@ -640,11 +775,12 @@ class RequisitionNodeWalkView(PermissionRequiredMixin, View):
                 "opennms_node_id": opennms_node_id,
                 "snmp_interfaces": snmp_interfaces,
                 "links": links,
+                "link_rows": link_rows,
                 "category_rows": category_rows,
                 "asset_rows": asset_rows,
-                "snmp_metadata": snmp_metadata,
+                "node_metadata": node_metadata,
                 "live_interface_rows": live_interface_rows,
-                "error": error,
+                "error": "; ".join(errors) if errors else None,
             },
         )
 
@@ -1101,17 +1237,37 @@ def _fetch_ip_interfaces_and_services(client, opennms_node_id):
     """IP interfaces plus per-interface services for one OpenNMS node.
 
     Shared by the live-fetch paths in ``DiscoveredNodeView``,
-    ``DiscoveredNodeImportView``, and ``DiscoveredNodeBulkImportView`` — all
-    three walk the same ``list_ip_interfaces`` -> per-IP ``list_services``
-    shape.
+    ``DiscoveredNodeImportView``, ``DiscoveredNodeBulkImportView``, and
+    ``RequisitionNodeWalkView`` — all four walk the same ``list_ip_interfaces``
+    -> per-IP ``list_services`` shape.
+
+    ``list_services`` is called once per IP interface, so one interface's
+    services being unreachable (e.g. issue #57's empty-body defect) must not
+    discard every other interface's already-fetched data (issue #58) — each
+    per-IP call is isolated and defaults that IP's services to ``[]`` on
+    failure. The third return value lists the IPs whose services call failed,
+    so a caller that wants to surface it can, rather than the failure being
+    silently swallowed; every failure is also logged here so callers that
+    don't surface it still leave a trace.
     """
     ip_interfaces = client.list_ip_interfaces(opennms_node_id)
     services_by_ip = {}
+    failed_service_ips = []
     for iface in ip_interfaces:
         ip = iface.get("ipAddress") if isinstance(iface, dict) else None
         if ip:
-            services_by_ip[ip] = client.list_services(opennms_node_id, ip)
-    return ip_interfaces, services_by_ip
+            try:
+                services_by_ip[ip] = client.list_services(opennms_node_id, ip)
+            except OpenNMSError as exc:
+                logger.warning(
+                    "Could not fetch OpenNMS services for node %s IP %s: %s",
+                    opennms_node_id,
+                    ip,
+                    exc,
+                )
+                services_by_ip[ip] = []
+                failed_service_ips.append(ip)
+    return ip_interfaces, services_by_ip, failed_service_ips
 
 
 class DiscoveredNodeView(generic.ObjectView):
@@ -1122,8 +1278,8 @@ class DiscoveredNodeView(generic.ObjectView):
         try:
             with OpenNMSClient.from_server(instance.server) as client:
                 node_detail = client.get_node(instance.opennms_node_id) or {}
-                ip_interfaces, services_by_ip = _fetch_ip_interfaces_and_services(
-                    client, instance.opennms_node_id
+                ip_interfaces, services_by_ip, _failed_service_ips = (
+                    _fetch_ip_interfaces_and_services(client, instance.opennms_node_id)
                 )
         except OpenNMSError as exc:
             live_fetch_error = str(exc)
@@ -1278,8 +1434,8 @@ class DiscoveredNodeImportView(GetReturnURLMixin, PermissionRequiredMixin, View)
         try:
             with OpenNMSClient.from_server(node.server) as client:
                 detail = client.get_node(node.opennms_node_id) or {}
-                ip_interfaces, services_by_ip = _fetch_ip_interfaces_and_services(
-                    client, node.opennms_node_id
+                ip_interfaces, services_by_ip, _failed_service_ips = (
+                    _fetch_ip_interfaces_and_services(client, node.opennms_node_id)
                 )
         except OpenNMSError as exc:
             return None, str(exc)
@@ -1464,8 +1620,8 @@ class DiscoveredNodeBulkImportView(GetReturnURLMixin, PermissionRequiredMixin, V
             row_data["name"] = node.label
             try:
                 with OpenNMSClient.from_server(node.server) as client:
-                    ip_interfaces, services_by_ip = _fetch_ip_interfaces_and_services(
-                        client, node.opennms_node_id
+                    ip_interfaces, services_by_ip, _failed_service_ips = (
+                        _fetch_ip_interfaces_and_services(client, node.opennms_node_id)
                     )
             except OpenNMSError as exc:
                 errors.append(f"{node.label}: could not reach OpenNMS ({exc}).")
