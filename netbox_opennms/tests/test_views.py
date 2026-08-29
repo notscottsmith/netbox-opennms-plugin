@@ -1559,6 +1559,156 @@ class RequisitionNodeWalkViewTest(TestCase):
         self.assertIn("ICMP", content)
         self.assertIn("links unreachable", response.context["error"])
 
+    def _device(self, name="switch-1"):
+        site = Site.objects.create(name=f"Site {name}", slug=f"site-{name}")
+        mfr = Manufacturer.objects.create(name=f"Mfr {name}", slug=f"mfr-{name}")
+        device_type = DeviceType.objects.create(
+            manufacturer=mfr, model=f"Model {name}", slug=f"model-{name}"
+        )
+        role = DeviceRole.objects.create(name=f"Role {name}", slug=f"role-{name}")
+        return Device.objects.create(
+            name=name, device_type=device_type, role=role, site=site
+        )
+
+    def _links_payload(self, remote_url=None):
+        entry = {
+            "lldpLocalPort": "eth0",
+            "lldpRemChassisId": "switch-1",
+            "ldpRemPort": "Gi0/1",
+        }
+        if remote_url is not None:
+            entry["lldpRemChassisIdUrl"] = remote_url
+        return {"lldpLinkNodes": entry}
+
+    @mock.patch("netbox_opennms.views.target_server_for")
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_matched_remote_node_links_to_netbox_object(
+        self, mock_from_server, mock_target_server_for
+    ):
+        # Issue #60: a Neighbor Link whose remote_node_id already resolves to
+        # a matched DiscoveredNode (an existing NetBox Device/VM) renders a
+        # link to that object instead of a "Walk" action -- self-correcting
+        # if the remote turns out not to be a stranger to NetBox after all.
+        mock_target_server_for.return_value = self.server
+        device = self._device("switch-1")
+        DiscoveredNode.objects.create(
+            server=self.server,
+            opennms_node_id=7,
+            label="switch-1",
+            verdict="green",
+            matched_object=device,
+        )
+        client = mock_from_server.return_value.__enter__.return_value
+        client.list_snmp_interfaces.return_value = []
+        client.get_node_links.return_value = self._links_payload(
+            "element/node.jsp?node=7"
+        )
+        client.get_node.return_value = {}
+        client.list_ip_interfaces.return_value = []
+        response = self.client.get(self._url())
+        content = response.content.decode()
+        self.assertIn(device.get_absolute_url(), content)
+        walk_url = reverse(
+            "plugins:netbox_opennms:requisition_node_walk",
+            args=[self.requisition.pk, 7],
+        )
+        self.assertNotIn(walk_url, content)
+        link_rows = response.context["link_rows"]
+        self.assertEqual(len(link_rows), 1)
+        self.assertEqual(link_rows[0]["matched_object"], device)
+        self.assertIsNone(link_rows[0]["walk_url"])
+
+    @mock.patch("netbox_opennms.views.target_server_for")
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_unmatched_remote_node_shows_walk_action(
+        self, mock_from_server, mock_target_server_for
+    ):
+        # No DiscoveredNode row at all for opennms_node_id 8 -- unmatched,
+        # so the row offers a "Walk" action that reuses this same view/URL
+        # keyed by the remote's bare OpenNMS node id (issue #60).
+        mock_target_server_for.return_value = self.server
+        client = mock_from_server.return_value.__enter__.return_value
+        client.list_snmp_interfaces.return_value = []
+        client.get_node_links.return_value = self._links_payload(
+            "element/node.jsp?node=8"
+        )
+        client.get_node.return_value = {}
+        client.list_ip_interfaces.return_value = []
+        response = self.client.get(self._url())
+        content = response.content.decode()
+        walk_url = reverse(
+            "plugins:netbox_opennms:requisition_node_walk",
+            args=[self.requisition.pk, 8],
+        )
+        self.assertIn(walk_url, content)
+        self.assertIn("Walk", content)
+        link_rows = response.context["link_rows"]
+        self.assertEqual(len(link_rows), 1)
+        self.assertIsNone(link_rows[0]["matched_object"])
+        self.assertEqual(link_rows[0]["walk_url"], walk_url)
+
+    @mock.patch("netbox_opennms.views.target_server_for")
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_unmatched_verdict_red_remote_node_shows_walk_action(
+        self, mock_from_server, mock_target_server_for
+    ):
+        # A DiscoveredNode row exists for this remote but is unmatched
+        # (verdict "red", no matched_object) -- still treated as unmatched,
+        # not as if any row's presence were enough.
+        mock_target_server_for.return_value = self.server
+        DiscoveredNode.objects.create(
+            server=self.server,
+            opennms_node_id=9,
+            label="switch-2",
+            verdict="red",
+        )
+        client = mock_from_server.return_value.__enter__.return_value
+        client.list_snmp_interfaces.return_value = []
+        client.get_node_links.return_value = self._links_payload(
+            "element/node.jsp?node=9"
+        )
+        client.get_node.return_value = {}
+        client.list_ip_interfaces.return_value = []
+        response = self.client.get(self._url())
+        walk_url = reverse(
+            "plugins:netbox_opennms:requisition_node_walk",
+            args=[self.requisition.pk, 9],
+        )
+        content = response.content.decode()
+        self.assertIn(walk_url, content)
+        link_rows = response.context["link_rows"]
+        self.assertIsNone(link_rows[0]["matched_object"])
+        self.assertEqual(link_rows[0]["walk_url"], walk_url)
+
+    @mock.patch("netbox_opennms.views.target_server_for")
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_link_without_remote_node_id_shows_no_action(
+        self, mock_from_server, mock_target_server_for
+    ):
+        # No *Url field at all on the raw payload -> remote_node_id is None
+        # -> neither a matched-object link nor a Walk action, same inert
+        # rendering as before issue #60.
+        mock_target_server_for.return_value = self.server
+        client = mock_from_server.return_value.__enter__.return_value
+        client.list_snmp_interfaces.return_value = []
+        client.get_node_links.return_value = self._links_payload(remote_url=None)
+        client.get_node.return_value = {}
+        client.list_ip_interfaces.return_value = []
+        response = self.client.get(self._url())
+        content = response.content.decode()
+        self.assertIn("switch-1", content)
+        self.assertNotIn(
+            reverse(
+                "plugins:netbox_opennms:requisition_node_walk",
+                args=[self.requisition.pk, 7],
+            ),
+            content,
+        )
+        link_rows = response.context["link_rows"]
+        self.assertEqual(len(link_rows), 1)
+        self.assertIsNone(link_rows[0]["matched_object"])
+        self.assertIsNone(link_rows[0]["walk_url"])
+
 
 class RequisitionSyncNodeViewTest(TestCase):
     """RequisitionSyncNodeView: single-node push from a scan row (issue #35)."""
