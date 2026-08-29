@@ -1357,6 +1357,141 @@ class RequisitionNodeWalkViewTest(TestCase):
         self.assertIn("No SNMP interfaces available", content)
         self.assertIn("No IP interfaces available", content)
 
+    @mock.patch("netbox_opennms.views.target_server_for")
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_one_ip_interfaces_services_failure_does_not_blank_other_sections(
+        self, mock_from_server, mock_target_server_for
+    ):
+        # Issue #58: a failing per-IP `list_services` call used to abort
+        # `_fetch_ip_interfaces_and_services` entirely, discarding every
+        # other IP interface. Now it's isolated per-IP -- the failing
+        # interface still renders (with no services), every other IP
+        # interface renders normally, and unrelated sections (SNMP
+        # interfaces, categories, assets, node links) are unaffected.
+        mock_target_server_for.return_value = self.server
+        client = mock_from_server.return_value.__enter__.return_value
+        client.list_snmp_interfaces.return_value = [
+            {
+                "ifIndex": 1,
+                "ifName": "eth0",
+                "ifDescr": "eth0",
+                "ifAlias": "wan",
+                "ifAdminStatus": 1,
+            }
+        ]
+        client.get_node_links.return_value = {
+            "lldpLinkNodes": {
+                "lldpLocalPort": "eth0",
+                "lldpRemChassisId": "switch-1",
+                "ldpRemPort": "Gi0/1",
+            }
+        }
+        client.get_node.return_value = {
+            "categories": {"category": [{"name": "Routers"}]},
+        }
+        client.list_ip_interfaces.return_value = [
+            {"ipAddress": "10.0.0.1", "snmpPrimary": "P"},
+            {"ipAddress": "10.0.0.2", "snmpPrimary": "S"},
+        ]
+
+        def _list_services(node_id, ip_address):
+            if ip_address == "10.0.0.1":
+                raise OpenNMSError("empty body")
+            return [{"serviceType": {"name": "ICMP"}}]
+
+        client.list_services.side_effect = _list_services
+        response = self.client.get(self._url())
+        content = response.content.decode()
+        # Both IP interfaces render -- the failing one with no services info.
+        self.assertIn("10.0.0.1", content)
+        self.assertIn("10.0.0.2", content)
+        self.assertIn("ICMP", content)
+        # Unrelated sections still render normally.
+        self.assertIn("eth0", content)
+        self.assertIn("switch-1", content)
+        self.assertIn("Routers", content)
+        # The page still surfaces that something failed.
+        self.assertIn("Could not reach OpenNMS", content)
+        self.assertIn("10.0.0.1", response.context["error"])
+
+    @mock.patch("netbox_opennms.views.target_server_for")
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_node_detail_failure_does_not_blank_other_sections(
+        self, mock_from_server, mock_target_server_for
+    ):
+        # Issue #58: a failing `get_node` call must only blank
+        # categories/assets (both derived from its payload) -- IP
+        # interfaces, SNMP interfaces, and node links, whose own calls
+        # succeeded, still render.
+        mock_target_server_for.return_value = self.server
+        client = mock_from_server.return_value.__enter__.return_value
+        client.list_snmp_interfaces.return_value = [
+            {
+                "ifIndex": 1,
+                "ifName": "eth0",
+                "ifDescr": "eth0",
+                "ifAlias": "wan",
+                "ifAdminStatus": 1,
+            }
+        ]
+        client.get_node_links.return_value = {
+            "lldpLinkNodes": {
+                "lldpLocalPort": "eth0",
+                "lldpRemChassisId": "switch-1",
+                "ldpRemPort": "Gi0/1",
+            }
+        }
+        client.get_node.side_effect = OpenNMSError("node detail unreachable")
+        client.list_ip_interfaces.return_value = [
+            {"ipAddress": "10.0.0.1", "snmpPrimary": "P"}
+        ]
+        client.list_services.return_value = [{"serviceType": {"name": "ICMP"}}]
+        response = self.client.get(self._url())
+        content = response.content.decode()
+        self.assertIn("No categories reported", content)
+        self.assertIn("No asset record fields reported", content)
+        self.assertIn("eth0", content)
+        self.assertIn("switch-1", content)
+        self.assertIn("10.0.0.1", content)
+        self.assertIn("ICMP", content)
+        self.assertIn("node detail unreachable", response.context["error"])
+
+    @mock.patch("netbox_opennms.views.target_server_for")
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_node_links_failure_does_not_blank_other_sections(
+        self, mock_from_server, mock_target_server_for
+    ):
+        # Issue #58: a failing `get_node_links` call must only blank the
+        # Neighbor Links table -- everything else, whose own calls
+        # succeeded, still renders.
+        mock_target_server_for.return_value = self.server
+        client = mock_from_server.return_value.__enter__.return_value
+        client.list_snmp_interfaces.return_value = [
+            {
+                "ifIndex": 1,
+                "ifName": "eth0",
+                "ifDescr": "eth0",
+                "ifAlias": "wan",
+                "ifAdminStatus": 1,
+            }
+        ]
+        client.get_node_links.side_effect = OpenNMSError("links unreachable")
+        client.get_node.return_value = {
+            "categories": {"category": [{"name": "Routers"}]},
+        }
+        client.list_ip_interfaces.return_value = [
+            {"ipAddress": "10.0.0.1", "snmpPrimary": "P"}
+        ]
+        client.list_services.return_value = [{"serviceType": {"name": "ICMP"}}]
+        response = self.client.get(self._url())
+        content = response.content.decode()
+        self.assertIn("OpenNMS reports no neighbor links", content)
+        self.assertIn("eth0", content)
+        self.assertIn("Routers", content)
+        self.assertIn("10.0.0.1", content)
+        self.assertIn("ICMP", content)
+        self.assertIn("links unreachable", response.context["error"])
+
 
 class RequisitionSyncNodeViewTest(TestCase):
     """RequisitionSyncNodeView: single-node push from a scan row (issue #35)."""
