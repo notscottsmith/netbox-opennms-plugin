@@ -64,6 +64,21 @@
           <tr><th scope="row">Locations</th><td>{% for l in object.locations.all %}{{ l|linkify }}{% if not forloop.last %}, {% endif %}{% empty %}{{ ''|placeholder }}{% endfor %}</td></tr>
         </table>
       </div>
+      <div class="card">
+        <h2 class="card-header">Requisitions</h2>
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">Resolving to this Server</th>
+            <td>
+              {% for requisition in requisitions %}
+                {{ requisition|linkify }}{% if not forloop.last %}, {% endif %}
+              {% empty %}
+                {{ ''|placeholder }}
+              {% endfor %}
+            </td>
+          </tr>
+        </table>
+      </div>
     </div>
   </div>
   <div class="row">

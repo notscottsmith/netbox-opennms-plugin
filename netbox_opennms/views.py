@@ -917,13 +917,26 @@ class OpenNMSServerView(generic.ObjectView):
     queryset = OpenNMSServer.objects.all()
 
     def get_extra_context(self, request, instance):
-        """Live OpenNMS Asset Suggestions for this Server (issue #64/#61).
+        """Requisitions resolving here (#63) and live Asset Suggestions (#64/#61).
 
-        Fetched fresh on every page view (not cached, not refreshed by the
-        health-check job); wrapped in its own ``try``/``except`` so a failure
-        here degrades only this section, independent of any other context
-        keys a sibling ticket on the same spec (#61) may add here.
+        Requisitions: no persisted FK exists — a Requisition's Server
+        membership is fully derived from Scope (ADR 0002/0003). Mirrors the
+        inverse computation in ``membership.matching_requisitions``: iterate
+        every Requisition and keep those where ``target_server_for`` resolves
+        to *instance*. O(requisitions) per page render, not cached —
+        consistent with how the rest of the plugin recomputes Scope
+        resolution live.
+
+        Asset Suggestions: fetched fresh on every page view (not cached, not
+        refreshed by the health-check job); wrapped in its own
+        ``try``/``except`` so a failure here degrades only this section,
+        independent of the Requisitions context above.
         """
+        requisitions = [
+            requisition
+            for requisition in Requisition.objects.all()
+            if target_server_for(requisition) == instance
+        ]
         asset_suggestions_error = None
         try:
             with OpenNMSClient.from_server(instance) as client:
@@ -932,6 +945,7 @@ class OpenNMSServerView(generic.ObjectView):
             asset_suggestions_error = str(exc)
             asset_suggestions = {}
         return {
+            "requisitions": requisitions,
             "asset_suggestions": asset_suggestions,
             "asset_suggestions_error": asset_suggestions_error,
         }
