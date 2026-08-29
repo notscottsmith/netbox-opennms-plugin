@@ -312,6 +312,51 @@ class OpenNMSServerViewTest(
         }
 
 
+class OpenNMSServerMonitoringLocationsViewTest(TestCase):
+    """Server detail page's cached Monitoring Locations section (issue #62)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.server_with_locations = OpenNMSServer.objects.create(
+            name="srv-with-locations",
+            url="https://srv-with-locations.example",
+            username="svc",
+            password="x",
+            available_locations=["Raleigh", "Fulda"],
+        )
+        cls.server_without_locations = OpenNMSServer.objects.create(
+            name="srv-without-locations",
+            url="https://srv-without-locations.example",
+            username="svc",
+            password="x",
+        )
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="tester")
+        self.user.user_permissions.add(
+            Permission.objects.get(
+                codename="view_opennmsserver",
+                content_type__app_label="netbox_opennms",
+            )
+        )
+        self.client.force_login(self.user)
+
+    def test_populated_locations_are_shown(self):
+        response = self.client.get(self.server_with_locations.get_absolute_url())
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        self.assertIn("Monitoring Locations", content)
+        self.assertIn("Raleigh", content)
+        self.assertIn("Fulda", content)
+
+    def test_empty_locations_render_placeholder(self):
+        response = self.client.get(self.server_without_locations.get_absolute_url())
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        self.assertIn("Monitoring Locations", content)
+        self.assertIn("No cached Monitoring Locations", content)
+
+
 class MonitoringExclusionViewTest(
     ViewTestCases.GetObjectViewTestCase,
     ViewTestCases.GetObjectChangelogViewTestCase,

@@ -66,4 +66,22 @@
       </div>
     </div>
   </div>
+  <div class="row">
+    <div class="col col-md-12">
+      <div class="card">
+        <h2 class="card-header">Monitoring Locations</h2>
+        <div class="card-body">
+          {% if object.available_locations %}
+            <ul class="list-group list-group-flush">
+              {% for location in object.available_locations %}
+                <li class="list-group-item">{{ location }}</li>
+              {% endfor %}
+            </ul>
+          {% else %}
+            <span class="text-muted">No cached Monitoring Locations. Run "Test connection" to fetch them.</span>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
 {% endblock %}
