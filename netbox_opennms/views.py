@@ -525,23 +525,30 @@ class RequisitionScanView(PermissionRequiredMixin, View):
 
 
 class RequisitionNodeWalkView(PermissionRequiredMixin, View):
-    """Live OpenNMS data for one node (issues #34, #39).
+    """Live OpenNMS data for one node (issues #34, #39, #59).
 
     A read-only companion to the scan table's node-name link — a superset of
     the One-Time-Sync preview's fetch (``reverse_sync.fetch_node_data``:
     ``list_snmp_interfaces`` + ``get_node_links``), plus everything else
-    ``OpenNMSClient`` already exposes per-node: ``get_node`` (categories,
-    asset record, SNMP agent metadata such as ``sysObjectId``/``sysLocation``
-    in one call) and IP interfaces/monitored services via the same
-    ``_fetch_ip_interfaces_and_services`` helper the Discovery Scan review
-    page (``DiscoveredNodeView``) uses. Nothing here plans or commits
-    anything to NetBox — it's display only, and (unlike ``DiscoveredNode``'s
-    walk) nothing is persisted; every visit is a fresh live fetch.
-    ``fetch_node_data``/``DiscoveredNodeView.get_extra_context`` themselves
-    aren't reusable here since they're keyed off a ``DiscoveredNode`` rather
-    than a bare node id. Reachable only for a row the scan table has already
-    resolved an ``opennms_node_id`` for (an "added" row — not yet
-    provisioned in OpenNMS — has no such link).
+    ``OpenNMSClient`` already exposes per-node. ``get_node`` (the monitoring
+    API, ``/api/v2/nodes/{id}``) still supplies SNMP agent metadata such as
+    ``sysObjectId``/``sysLocation``, plus the ``foreignSource``/``foreignId``
+    pair needed to resolve the same node in the Requisitions API — but
+    Categories, Assets, and Node Metadata are sourced from
+    ``get_requisition_node`` instead (issue #59), since those reflect the
+    Requisition's own authoritative, always-available definition rather
+    than OpenNMS's live-scanned state, which can be sparse or empty
+    immediately after import or before a rescan. IP interfaces/monitored
+    services are fetched via the same ``_fetch_ip_interfaces_and_services``
+    helper the Discovery Scan review page (``DiscoveredNodeView``) uses.
+    Nothing here plans or commits anything to NetBox — it's display only,
+    and (unlike ``DiscoveredNode``'s walk) nothing is persisted; every visit
+    is a fresh live fetch. ``fetch_node_data``/
+    ``DiscoveredNodeView.get_extra_context`` themselves aren't reusable here
+    since they're keyed off a ``DiscoveredNode`` rather than a bare node id.
+    Reachable only for a row the scan table has already resolved an
+    ``opennms_node_id`` for (an "added" row — not yet provisioned in
+    OpenNMS — has no such link).
     """
 
     permission_required = "netbox_opennms.view_requisition"
@@ -554,6 +561,7 @@ class RequisitionNodeWalkView(PermissionRequiredMixin, View):
         snmp_interfaces = []
         links = []
         node_detail = {}
+        requisition_node = {}
         categories = []
         category_rows = []
         asset_rows = []
@@ -588,6 +596,22 @@ class RequisitionNodeWalkView(PermissionRequiredMixin, View):
                     node_detail = client.get_node(opennms_node_id) or {}
                 except OpenNMSError as exc:
                     errors.append(str(exc))
+                # Categories/Assets/Node Metadata come from the Requisition's
+                # own definition, not the monitoring API (issue #59) --
+                # keyed by foreignSource/foreignId, which get_node's payload
+                # already carries. A missing/failed node_detail leaves both
+                # blank above, so this is skipped rather than called with
+                # incomplete keys; that failure is already recorded above.
+                foreign_source = node_detail.get("foreignSource")
+                foreign_id = node_detail.get("foreignId")
+                if foreign_source and foreign_id:
+                    try:
+                        requisition_node = (
+                            client.get_requisition_node(foreign_source, foreign_id)
+                            or {}
+                        )
+                    except OpenNMSError as exc:
+                        errors.append(str(exc))
                 try:
                     ip_interfaces, services_by_ip, failed_service_ips = (
                         _fetch_ip_interfaces_and_services(client, opennms_node_id)
@@ -600,7 +624,10 @@ class RequisitionNodeWalkView(PermissionRequiredMixin, View):
                             "Could not retrieve services for IP interface(s): "
                             + ", ".join(failed_service_ips)
                         )
-            categories = import_node.parse_categories(node_detail)
+            # Sourced from the Requisition-node document, not node_detail
+            # (issue #59) -- parse_categories already tolerates the same
+            # dict-or-list "category" shape either payload can carry.
+            categories = import_node.parse_categories(requisition_node)
             # Cross-reference against this Requisition's own
             # set-node-category policies (issue #39 follow-up) -- there is
             # no separate "category mapping" model; a MonitoringPolicy
@@ -627,15 +654,17 @@ class RequisitionNodeWalkView(PermissionRequiredMixin, View):
             # would create it.
             for name in sorted(policy_categories - set(categories)):
                 category_rows.append({"name": name, "pending_policy": True})
-            asset_record = node_detail.get("assetRecord") or {}
+            # Requisition-node "asset" entries are a list of {"name",
+            # "value"} dicts (the RequisitionAsset shape), not the
+            # monitoring API's flat assetRecord dict (issue #59).
             asset_rows = [
                 {
-                    "field": field,
-                    "value": value,
-                    "mapped": field in mapped_asset_fields,
+                    "field": entry.get("name"),
+                    "value": entry.get("value"),
+                    "mapped": entry.get("name") in mapped_asset_fields,
                 }
-                for field, value in asset_record.items()
-                if value
+                for entry in (requisition_node.get("asset") or [])
+                if isinstance(entry, dict) and entry.get("name") and entry.get("value")
             ]
             parsed_interfaces, parsed_services = import_node.parse_discovery_payload(
                 ip_interfaces, services_by_ip
@@ -652,11 +681,20 @@ class RequisitionNodeWalkView(PermissionRequiredMixin, View):
                 }
                 for iface in parsed_interfaces
             ]
-        snmp_metadata = {
-            key: value
-            for key, value in node_detail.items()
-            if key not in ("categories", "category", "assetRecord") and value
-        }
+        # Requisition-node "meta-data" entries are a list of {"context",
+        # "key", "value"} dicts (the RequisitionMetaData shape) -- the
+        # Requisition's own meta-data, not the ad-hoc grab-bag of every
+        # other monitoring-API node_detail field this used to be (issue
+        # #59, was "SNMP Metadata").
+        node_metadata = [
+            {
+                "context": entry.get("context", ""),
+                "key": entry.get("key", ""),
+                "value": entry.get("value", ""),
+            }
+            for entry in (requisition_node.get("meta-data") or [])
+            if isinstance(entry, dict) and entry.get("key") and entry.get("value")
+        ]
         return render(
             request,
             self.template_name,
@@ -667,7 +705,7 @@ class RequisitionNodeWalkView(PermissionRequiredMixin, View):
                 "links": links,
                 "category_rows": category_rows,
                 "asset_rows": asset_rows,
-                "snmp_metadata": snmp_metadata,
+                "node_metadata": node_metadata,
                 "live_interface_rows": live_interface_rows,
                 "error": "; ".join(errors) if errors else None,
             },

@@ -146,11 +146,14 @@ def _propose_field(source, asset_record, overrides, site_model):
 
 
 def parse_categories(node_detail):
-    """Category names from a ``client.get_node()`` payload, dict-or-list tolerant.
+    """Category names from an OpenNMS node payload, dict-or-list tolerant.
 
-    Shared by ``build_proposal`` (red-row import) and
-    ``RequisitionNodeWalkView`` (issue #39) — both read the same
-    ``categories``/``category`` shape OpenNMS's node detail can return.
+    Shared by ``build_proposal`` (red-row import, reading
+    ``client.get_node()``'s monitoring-API payload) and
+    ``RequisitionNodeWalkView`` (issue #39, now reading
+    ``client.get_requisition_node()``'s Requisitions-API payload instead —
+    issue #59) — both carry the same ``categories``/``category``
+    dict-or-list shape, so this one parser tolerates either source.
     """
     raw = node_detail.get("categories", node_detail.get("category", []))
     if isinstance(raw, dict):

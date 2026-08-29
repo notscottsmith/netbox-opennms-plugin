@@ -82,16 +82,29 @@
   <div class="row mt-3">
     <div class="col col-md-12">
       <div class="card">
-        <h2 class="card-header">SNMP Metadata</h2>
-        {% if snmp_metadata %}
+        <h2 class="card-header">Node Metadata</h2>
+        {% if node_metadata %}
           <table class="table table-hover attr-table">
-            {% for key, value in snmp_metadata.items %}
-              <tr><th scope="row">{{ key }}</th><td>{{ value }}</td></tr>
-            {% endfor %}
+            <thead>
+              <tr>
+                <th>Context</th>
+                <th>Key</th>
+                <th>Value</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for entry in node_metadata %}
+                <tr>
+                  <td>{{ entry.context|placeholder }}</td>
+                  <td>{{ entry.key }}</td>
+                  <td>{{ entry.value }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
           </table>
         {% else %}
           <div class="card-body">
-            <p class="text-muted mb-0">No SNMP metadata reported for this node.</p>
+            <p class="text-muted mb-0">No Node Metadata reported for this node.</p>
           </div>
         {% endif %}
       </div>
