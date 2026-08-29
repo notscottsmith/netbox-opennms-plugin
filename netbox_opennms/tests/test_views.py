@@ -312,6 +312,69 @@ class OpenNMSServerViewTest(
         }
 
 
+class OpenNMSServerRequisitionsSectionViewTest(TestCase):
+    """OpenNMSServerView's live "Requisitions" section (issue #63).
+
+    No persisted FK exists — a Requisition's Server membership is fully
+    derived from Scope (ADR 0002/0003) via ``membership.target_server_for``.
+    Two Requisitions, each filtered to a different Site, and each Site
+    scoped to a different Server: each Requisition must appear only on its
+    own Server's page.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        mfr = Manufacturer.objects.create(name="Acme", slug="acme")
+        dt = DeviceType.objects.create(
+            manufacturer=mfr, model="Model 1", slug="model-1"
+        )
+        role = DeviceRole.objects.create(name="Router", slug="router")
+        site_a = Site.objects.create(name="Site A", slug="site-a")
+        site_b = Site.objects.create(name="Site B", slug="site-b")
+        Device.objects.create(name="dev-a", device_type=dt, role=role, site=site_a)
+        Device.objects.create(name="dev-b", device_type=dt, role=role, site=site_b)
+
+        cls.server_a = OpenNMSServer.objects.create(
+            name="Server A", url="https://server-a.example"
+        )
+        cls.server_a.sites.add(site_a)
+        cls.server_b = OpenNMSServer.objects.create(
+            name="Server B", url="https://server-b.example"
+        )
+        cls.server_b.sites.add(site_b)
+
+        cls.requisition_a = Requisition.objects.create(
+            name="req-a", filter_params={"site": ["site-a"]}
+        )
+        cls.requisition_b = Requisition.objects.create(
+            name="req-b", filter_params={"site": ["site-b"]}
+        )
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="tester")
+        self.user.user_permissions.add(
+            Permission.objects.get(
+                codename="view_opennmsserver",
+                content_type__app_label="netbox_opennms",
+            )
+        )
+        self.client.force_login(self.user)
+
+    def test_requisitions_resolving_to_this_server_are_listed(self):
+        response = self.client.get(self.server_a.get_absolute_url())
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        self.assertIn("req-a", content)
+        self.assertNotIn("req-b", content)
+
+    def test_requisitions_resolving_to_other_server_are_excluded(self):
+        response = self.client.get(self.server_b.get_absolute_url())
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        self.assertIn("req-b", content)
+        self.assertNotIn("req-a", content)
+
+
 class MonitoringExclusionViewTest(
     ViewTestCases.GetObjectViewTestCase,
     ViewTestCases.GetObjectChangelogViewTestCase,

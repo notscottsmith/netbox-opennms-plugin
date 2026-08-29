@@ -916,6 +916,23 @@ class MetadataEntryBulkDeleteView(generic.BulkDeleteView):
 class OpenNMSServerView(generic.ObjectView):
     queryset = OpenNMSServer.objects.all()
 
+    def get_extra_context(self, request, instance):
+        """Every Requisition currently rendering to this Server (issue #63).
+
+        No persisted FK exists — a Requisition's Server membership is fully
+        derived from Scope (ADR 0002/0003). Mirrors the inverse computation
+        in ``membership.matching_requisitions``: iterate every Requisition
+        and keep those where ``target_server_for`` resolves to *instance*.
+        O(requisitions) per page render, not cached — consistent with how
+        the rest of the plugin recomputes Scope resolution live.
+        """
+        requisitions = [
+            requisition
+            for requisition in Requisition.objects.all()
+            if target_server_for(requisition) == instance
+        ]
+        return {"requisitions": requisitions}
+
 
 class OpenNMSServerListView(generic.ObjectListView):
     queryset = OpenNMSServer.objects.all()
