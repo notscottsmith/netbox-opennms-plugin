@@ -524,6 +524,39 @@ class RequisitionScanView(PermissionRequiredMixin, View):
         )
 
 
+def _try_fetch(errors, func, default=None):
+    """Call ``func``, recording an ``OpenNMSError`` on ``errors`` instead of raising.
+
+    Factors out the ``try: X = client.foo(...) / except OpenNMSError as exc:
+    errors.append(str(exc))`` shape repeated across
+    ``RequisitionNodeWalkView.get()``'s independent per-source fetches (issue
+    #58) -- each call site still fails independently, this just removes the
+    boilerplate around it. Returns ``func()``'s result, or ``default`` if it
+    raised.
+    """
+    try:
+        return func()
+    except OpenNMSError as exc:
+        errors.append(str(exc))
+        return default
+
+
+def _requisition_entries(requisition_node, list_key, required_keys):
+    """Dict entries from one list on a Requisition-node document.
+
+    ``asset`` (``{"name", "value"}``) and ``meta-data``
+    (``{"context", "key", "value"}``) entries share the same "is it a dict,
+    and are its required fields present" guard shape (issue #59) -- this
+    factors that out. Each call site still does its own field
+    renaming/defaulting on top of the filtered list this returns.
+    """
+    return [
+        entry
+        for entry in (requisition_node.get(list_key) or [])
+        if isinstance(entry, dict) and all(entry.get(key) for key in required_keys)
+    ]
+
+
 class RequisitionNodeWalkView(PermissionRequiredMixin, View):
     """Live OpenNMS data for one node (issues #34, #39, #59, #60).
 
@@ -531,16 +564,17 @@ class RequisitionNodeWalkView(PermissionRequiredMixin, View):
     the One-Time-Sync preview's fetch (``reverse_sync.fetch_node_data``:
     ``list_snmp_interfaces`` + ``get_node_links``), plus everything else
     ``OpenNMSClient`` already exposes per-node. ``get_node`` (the monitoring
-    API, ``/api/v2/nodes/{id}``) still supplies SNMP agent metadata such as
-    ``sysObjectId``/``sysLocation``, plus the ``foreignSource``/``foreignId``
-    pair needed to resolve the same node in the Requisitions API — but
-    Categories, Assets, and Node Metadata are sourced from
-    ``get_requisition_node`` instead (issue #59), since those reflect the
-    Requisition's own authoritative, always-available definition rather
-    than OpenNMS's live-scanned state, which can be sparse or empty
-    immediately after import or before a rescan. IP interfaces/monitored
-    services are fetched via the same ``_fetch_ip_interfaces_and_services``
-    helper the Discovery Scan review page (``DiscoveredNodeView``) uses.
+    API, ``/api/v2/nodes/{id}``) is used only to resolve the
+    ``foreignSource``/``foreignId`` pair needed to key the Requisitions
+    API's ``get_requisition_node`` call — Categories, Assets, and Node
+    Metadata are sourced from ``get_requisition_node`` instead (issue #59),
+    since those reflect the Requisition's own authoritative,
+    always-available definition rather than OpenNMS's live-scanned state,
+    which can be sparse or empty immediately after import or before a
+    rescan; no other field from ``get_node``'s response is rendered here.
+    IP interfaces/monitored services are fetched via the same
+    ``_fetch_ip_interfaces_and_services`` helper the Discovery Scan review
+    page (``DiscoveredNodeView``) uses.
     Nothing here plans or commits anything to NetBox — it's display only,
     and (unlike ``DiscoveredNode``'s walk) nothing is persisted; every visit
     is a fresh live fetch. ``fetch_node_data``/
@@ -584,18 +618,17 @@ class RequisitionNodeWalkView(PermissionRequiredMixin, View):
             # above, which the template already renders as that section's
             # normal empty state.
             with OpenNMSClient.from_server(target_server) as client:
-                try:
-                    snmp_interfaces = client.list_snmp_interfaces(opennms_node_id)
-                except OpenNMSError as exc:
-                    errors.append(str(exc))
-                try:
-                    links = parse_node_links(client.get_node_links(opennms_node_id))
-                except OpenNMSError as exc:
-                    errors.append(str(exc))
-                try:
-                    node_detail = client.get_node(opennms_node_id) or {}
-                except OpenNMSError as exc:
-                    errors.append(str(exc))
+                snmp_interfaces = _try_fetch(
+                    errors, lambda: client.list_snmp_interfaces(opennms_node_id), []
+                )
+                links = _try_fetch(
+                    errors,
+                    lambda: parse_node_links(client.get_node_links(opennms_node_id)),
+                    [],
+                )
+                node_detail = _try_fetch(
+                    errors, lambda: client.get_node(opennms_node_id) or {}, {}
+                )
                 # Categories/Assets/Node Metadata come from the Requisition's
                 # own definition, not the monitoring API (issue #59) --
                 # keyed by foreignSource/foreignId, which get_node's payload
@@ -605,13 +638,14 @@ class RequisitionNodeWalkView(PermissionRequiredMixin, View):
                 foreign_source = node_detail.get("foreignSource")
                 foreign_id = node_detail.get("foreignId")
                 if foreign_source and foreign_id:
-                    try:
-                        requisition_node = (
+                    requisition_node = _try_fetch(
+                        errors,
+                        lambda: (
                             client.get_requisition_node(foreign_source, foreign_id)
                             or {}
-                        )
-                    except OpenNMSError as exc:
-                        errors.append(str(exc))
+                        ),
+                        {},
+                    )
                 try:
                     ip_interfaces, services_by_ip, failed_service_ips = (
                         _fetch_ip_interfaces_and_services(client, opennms_node_id)
@@ -663,8 +697,9 @@ class RequisitionNodeWalkView(PermissionRequiredMixin, View):
                     "value": entry.get("value"),
                     "mapped": entry.get("name") in mapped_asset_fields,
                 }
-                for entry in (requisition_node.get("asset") or [])
-                if isinstance(entry, dict) and entry.get("name") and entry.get("value")
+                for entry in _requisition_entries(
+                    requisition_node, "asset", ("name", "value")
+                )
             ]
             parsed_interfaces, parsed_services = import_node.parse_discovery_payload(
                 ip_interfaces, services_by_ip
@@ -692,8 +727,9 @@ class RequisitionNodeWalkView(PermissionRequiredMixin, View):
                 "key": entry.get("key", ""),
                 "value": entry.get("value", ""),
             }
-            for entry in (requisition_node.get("meta-data") or [])
-            if isinstance(entry, dict) and entry.get("key") and entry.get("value")
+            for entry in _requisition_entries(
+                requisition_node, "meta-data", ("key", "value")
+            )
         ]
         # Per-link resolve/walk action (issue #60): a link's remote_node_id is
         # an OpenNMS-internal node id, not a NetBox object -- whether it's
@@ -704,16 +740,23 @@ class RequisitionNodeWalkView(PermissionRequiredMixin, View):
         # node matched (or unmatched) since the last scan is never rendered
         # stale. A link with no remote_node_id at all (id not recoverable
         # from its *Url field) gets neither action, same as today.
+        remote_node_ids = [
+            link.remote_node_id for link in links if link.remote_node_id is not None
+        ]
+        discovered_nodes_by_id = {}
+        if target_server is not None and remote_node_ids:
+            discovered_nodes_by_id = {
+                node.opennms_node_id: node
+                for node in DiscoveredNode.objects.filter(
+                    server=target_server, opennms_node_id__in=remote_node_ids
+                )
+            }
         link_rows = []
         for link in links:
             matched_object = None
             walk_url = None
             if link.remote_node_id is not None:
-                discovered_node = None
-                if target_server is not None:
-                    discovered_node = DiscoveredNode.objects.filter(
-                        server=target_server, opennms_node_id=link.remote_node_id
-                    ).first()
+                discovered_node = discovered_nodes_by_id.get(link.remote_node_id)
                 if discovered_node is not None and discovered_node.matched_object:
                     matched_object = discovered_node.matched_object
                 else:
