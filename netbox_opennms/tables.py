@@ -397,6 +397,15 @@ class DiscoveryScanTable(NetBoxTable):
 
 
 class DiscoveredNodeTable(NetBoxTable):
+    # DiscoveredNode is scan-populated only -- there's no add/edit view or
+    # URL registered for it (see the model's docstring in models.py; linking/
+    # import/confirm-ip are the only mutation paths, rendered by separate
+    # workflow columns elsewhere). NetBoxTable's default "actions" column
+    # tries to reverse() an edit URL for every row regardless, which raised
+    # NoReverseMatch on this list view (#69). Restrict it to the two actions
+    # that actually have registered views: delete and changelog.
+    actions = columns.ActionsColumn(actions=("delete", "changelog"))
+
     label = tables.Column(linkify=True)
     server = tables.Column(linkify=True)
     verdict = tables.TemplateColumn(

@@ -21,7 +21,11 @@ from netbox_opennms.models import (
     OpenNMSServer,
     Requisition,
 )
-from netbox_opennms.tables import DiscoveryScanTable, OpenNMSServerTable
+from netbox_opennms.tables import (
+    DiscoveredNodeTable,
+    DiscoveryScanTable,
+    OpenNMSServerTable,
+)
 
 FILTER = {"site": ["raleigh"]}
 
@@ -202,3 +206,54 @@ class DiscoveryScanTableStatusAndNodeCountTest(TestCase):
         html = self._row(self.settled).get_cell("trigger_action")
         self.assertIn("disabled", html)
         self.assertIn("title=", html)
+
+
+class DiscoveredNodeTableActionsColumnTest(TestCase):
+    """Issue #69: DiscoveredNode has no add/edit view, but NetBoxTable's
+    default "actions" column unconditionally tries to reverse() an edit URL
+    for every row, raising NoReverseMatch. A view-only user never exercises
+    this (ActionsColumn skips an action it lacks permission for -- see the
+    other tables' *ActionsTest classes above, which log in with
+    is_superuser=True for the same reason), so the regression must be
+    checked with a superuser.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        server = OpenNMSServer.objects.create(name="Acme", url="https://onms.example")
+        cls.node = DiscoveredNode.objects.create(
+            server=server, opennms_node_id=1, label="node-1", verdict="green"
+        )
+
+    def test_actions_column_has_no_edit_action(self):
+        table = DiscoveredNodeTable(DiscoveredNode.objects.all())
+        self.assertNotIn("edit", table.base_columns["actions"].actions)
+
+    def test_actions_column_offers_delete_and_changelog(self):
+        table = DiscoveredNodeTable(DiscoveredNode.objects.all())
+        self.assertEqual(
+            set(table.base_columns["actions"].actions), {"delete", "changelog"}
+        )
+
+    def test_list_page_renders_without_noreversematch(self):
+        user = User.objects.create_user(username="tester", is_superuser=True)
+        self.client.force_login(user)
+
+        response = self.client.get(
+            reverse("plugins:netbox_opennms:discoverednode_list")
+        )
+
+        self.assertEqual(response.status_code, 200)
+        tbody = _tbody(response)
+        self.assertIn(
+            reverse(
+                "plugins:netbox_opennms:discoverednode_delete", args=[self.node.pk]
+            ),
+            tbody,
+        )
+        self.assertIn(
+            reverse(
+                "plugins:netbox_opennms:discoverednode_changelog", args=[self.node.pk]
+            ),
+            tbody,
+        )
