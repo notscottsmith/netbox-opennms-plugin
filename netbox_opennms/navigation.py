@@ -111,6 +111,14 @@ menu = PluginMenu(
                         ),
                     ),
                 ),
+                PluginMenuItem(
+                    link="plugins:netbox_opennms:monitoringdetectors_list",
+                    link_text=labels.NAV_MONITORING_DETECTORS,
+                ),
+                PluginMenuItem(
+                    link="plugins:netbox_opennms:monitoringpolicies_list",
+                    link_text=labels.NAV_MONITORING_POLICIES,
+                ),
             ),
         ),
     ),

@@ -20,6 +20,8 @@ NAV_OVERRIDES = "Overrides"
 NAV_EXCLUSIONS = "Exclusions"
 NAV_METADATA_CONTEXTS = "Metadata Contexts"
 NAV_METADATA_KEYS = "Metadata Keys"
+NAV_MONITORING_DETECTORS = "Detectors"
+NAV_MONITORING_POLICIES = "Policies"
 
 # --- Requisition table columns (tables.py) ----------------------------------
 
