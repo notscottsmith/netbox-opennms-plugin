@@ -20,6 +20,7 @@ from dcim.choices import InterfaceTypeChoices
 from dcim.models import Device
 from django.contrib.contenttypes.models import ContentType
 from django.db import transaction
+from django.db.models import Q
 from ipam.models import IPAddress, IPRange, Prefix
 
 from .import_node import KIND_INTERFACE_MODELS, parse_discovery_payload
@@ -130,10 +131,14 @@ def netbox_ip_index(ip_addresses):
     """
     if not ip_addresses:
         return {}
+    # net_host is a django-netfields transform that only supports direct
+    # equality (or net_host_contained) -- it can't be chained with __in, so
+    # each address needs its own Q().
+    query = Q()
+    for ip in ip_addresses:
+        query |= Q(address__net_host=ip)
     index = {}
-    for row in IPAddress.objects.filter(
-        address__net_host__in=ip_addresses
-    ).select_related("vrf"):
+    for row in IPAddress.objects.filter(query).select_related("vrf"):
         index[str(row.address.ip)] = row
     return index
 
