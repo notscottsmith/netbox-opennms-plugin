@@ -125,8 +125,8 @@
                   <td>
                     {% if iv.proposal.prefix %}
                       Prefix {{ iv.proposal.prefix }}
-                      {%- if iv.proposal.scope %} (scope {{ iv.proposal.scope }}){% endif %}
-                      {%- if iv.proposal.vrf %} (VRF {{ iv.proposal.vrf }}){% endif %}
+                      {% if iv.proposal.scope %} (scope {{ iv.proposal.scope }}){% endif %}
+                      {% if iv.proposal.vrf %} (VRF {{ iv.proposal.vrf }}){% endif %}
                     {% elif iv.proposal.start_address %}
                       IP Range {{ iv.proposal.start_address }}–{{ iv.proposal.end_address }}{% if iv.proposal.vrf %} (VRF {{ iv.proposal.vrf }}){% endif %}
                     {% else %}
