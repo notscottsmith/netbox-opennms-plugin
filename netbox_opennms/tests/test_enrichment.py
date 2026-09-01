@@ -16,7 +16,7 @@ from django.core.exceptions import ValidationError
 from django.test import SimpleTestCase, TestCase
 from ipam.models import IPAddress
 
-from netbox_opennms.enrichment import resolve_source
+from netbox_opennms.enrichment import _parse_physical_address, resolve_source
 from netbox_opennms.membership import resolve_node
 from netbox_opennms.models import (
     AssetMapping,
@@ -50,6 +50,138 @@ class ResolveSourceTest(SimpleTestCase):
 
     def test_unknown_source_is_none(self):
         self.assertIsNone(resolve_source(self._obj(), "bogus"))
+
+
+class ParsePhysicalAddressTest(SimpleTestCase):
+    """_parse_physical_address (Part A): best-effort split of Site's freeform
+    physical_address into OpenNMS's discrete address1/address2/city/state/zip."""
+
+    def _site(self, physical_address):
+        return SimpleNamespace(physical_address=physical_address)
+
+    def test_well_formed_two_line_address(self):
+        result = _parse_physical_address(
+            self._site("123 Main St\nRaleigh, NC 27601")
+        )
+        self.assertEqual(
+            result,
+            {
+                "address1": "123 Main St",
+                "address2": "",
+                "city": "Raleigh",
+                "state": "NC",
+                "zip": "27601",
+            },
+        )
+
+    def test_multi_line_address_before_city_state_zip(self):
+        result = _parse_physical_address(
+            self._site("123 Main St\nSuite 400\nRaleigh, NC 27601")
+        )
+        self.assertEqual(result["address1"], "123 Main St")
+        self.assertEqual(result["address2"], "Suite 400")
+        self.assertEqual(result["city"], "Raleigh")
+        self.assertEqual(result["state"], "NC")
+        self.assertEqual(result["zip"], "27601")
+
+    def test_no_city_state_zip_line_leaves_them_blank(self):
+        result = _parse_physical_address(self._site("123 Main St\nBuilding 2"))
+        self.assertEqual(result["address1"], "123 Main St")
+        self.assertEqual(result["address2"], "Building 2")
+        self.assertEqual(result["city"], "")
+        self.assertEqual(result["state"], "")
+        self.assertEqual(result["zip"], "")
+
+    def test_single_line_address_has_no_city_state_zip_match(self):
+        result = _parse_physical_address(self._site("Raleigh, NC 27601"))
+        self.assertEqual(result["address1"], "Raleigh, NC 27601")
+        self.assertEqual(result["address2"], "")
+        self.assertEqual(result["city"], "")
+
+    def test_blank_address_returns_all_blank(self):
+        result = _parse_physical_address(self._site(""))
+        self.assertEqual(
+            result,
+            {"address1": "", "address2": "", "city": "", "state": "", "zip": ""},
+        )
+
+    def test_none_site_returns_all_blank(self):
+        result = _parse_physical_address(None)
+        self.assertEqual(
+            result,
+            {"address1": "", "address2": "", "city": "", "state": "", "zip": ""},
+        )
+
+    def test_blank_lines_are_ignored(self):
+        result = _parse_physical_address(
+            self._site("123 Main St\n\n  \nRaleigh, NC 27601")
+        )
+        self.assertEqual(result["address1"], "123 Main St")
+        self.assertEqual(result["city"], "Raleigh")
+
+
+class ResolveSourceSiteFieldsTest(SimpleTestCase):
+    """The seven new CURATED site_* resolvers (Part A)."""
+
+    def _obj(self, site=None):
+        return SimpleNamespace(custom_field_data={}, site=site)
+
+    def test_site_address1(self):
+        site = SimpleNamespace(physical_address="123 Main St\nRaleigh, NC 27601")
+        self.assertEqual(
+            resolve_source(self._obj(site=site), "site_address1"), "123 Main St"
+        )
+
+    def test_site_address2(self):
+        site = SimpleNamespace(
+            physical_address="123 Main St\nSuite 400\nRaleigh, NC 27601"
+        )
+        self.assertEqual(
+            resolve_source(self._obj(site=site), "site_address2"), "Suite 400"
+        )
+
+    def test_site_city(self):
+        site = SimpleNamespace(physical_address="123 Main St\nRaleigh, NC 27601")
+        self.assertEqual(resolve_source(self._obj(site=site), "site_city"), "Raleigh")
+
+    def test_site_state(self):
+        site = SimpleNamespace(physical_address="123 Main St\nRaleigh, NC 27601")
+        self.assertEqual(resolve_source(self._obj(site=site), "site_state"), "NC")
+
+    def test_site_zip(self):
+        site = SimpleNamespace(physical_address="123 Main St\nRaleigh, NC 27601")
+        self.assertEqual(resolve_source(self._obj(site=site), "site_zip"), "27601")
+
+    def test_site_latitude(self):
+        site = SimpleNamespace(latitude=35.7796)
+        self.assertEqual(
+            resolve_source(self._obj(site=site), "site_latitude"), "35.7796"
+        )
+
+    def test_site_longitude(self):
+        site = SimpleNamespace(longitude=-78.6382)
+        self.assertEqual(
+            resolve_source(self._obj(site=site), "site_longitude"), "-78.6382"
+        )
+
+    def test_no_site_yields_none_for_all_site_sources(self):
+        obj = self._obj(site=None)
+        for source in (
+            "site_address1",
+            "site_address2",
+            "site_city",
+            "site_state",
+            "site_zip",
+            "site_latitude",
+            "site_longitude",
+        ):
+            self.assertIsNone(resolve_source(obj, source))
+
+    def test_blank_physical_address_yields_none_for_address_fields(self):
+        site = SimpleNamespace(physical_address="")
+        obj = self._obj(site=site)
+        for source in ("site_address1", "site_address2", "site_city", "site_state", "site_zip"):
+            self.assertIsNone(resolve_source(obj, source))
 
 
 class AssetMappingValidationTest(TestCase):
@@ -87,7 +219,9 @@ class MetadataEntryValidationTest(TestCase):
         return MetadataEntry(**kw)
 
     def test_requisition_context_with_literal_ok(self):
-        self._entry(context="requisition", literal_value="v").clean()
+        self._entry(
+            context="requisition", scope="requisition", literal_value="v"
+        ).clean()
 
     def test_custom_context_must_be_x_prefixed(self):
         with self.assertRaises(ValidationError):

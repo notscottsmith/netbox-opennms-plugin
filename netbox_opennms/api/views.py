@@ -6,11 +6,13 @@ from netbox.api.viewsets import NetBoxModelViewSet
 
 from ..filtersets import (
     AssetMappingFilterSet,
+    CategoryFilterSet,
     DiscoveredNodeFilterSet,
     DiscoveryScanFilterSet,
     MetadataContextFilterSet,
     MetadataEntryFilterSet,
     MetadataKeyFilterSet,
+    MetadataPullMappingFilterSet,
     MonitoredInterfaceFilterSet,
     MonitoredServiceFilterSet,
     MonitoringDetectorFilterSet,
@@ -22,11 +24,13 @@ from ..filtersets import (
 )
 from ..models import (
     AssetMapping,
+    Category,
     DiscoveredNode,
     DiscoveryScan,
     MetadataContext,
     MetadataEntry,
     MetadataKey,
+    MetadataPullMapping,
     MonitoredInterface,
     MonitoredService,
     MonitoringDetector,
@@ -38,11 +42,13 @@ from ..models import (
 )
 from .serializers import (
     AssetMappingSerializer,
+    CategorySerializer,
     DiscoveredNodeSerializer,
     DiscoveryScanSerializer,
     MetadataContextSerializer,
     MetadataEntrySerializer,
     MetadataKeySerializer,
+    MetadataPullMappingSerializer,
     MonitoredInterfaceSerializer,
     MonitoredServiceSerializer,
     MonitoringDetectorSerializer,
@@ -150,3 +156,15 @@ class DiscoveryScanViewSet(NetBoxModelViewSet):
     queryset = DiscoveryScan.objects.select_related("server", "requisition")
     serializer_class = DiscoveryScanSerializer
     filterset_class = DiscoveryScanFilterSet
+
+
+class CategoryViewSet(NetBoxModelViewSet):
+    queryset = Category.objects.all()
+    serializer_class = CategorySerializer
+    filterset_class = CategoryFilterSet
+
+
+class MetadataPullMappingViewSet(NetBoxModelViewSet):
+    queryset = MetadataPullMapping.objects.select_related("requisition")
+    serializer_class = MetadataPullMappingSerializer
+    filterset_class = MetadataPullMappingFilterSet

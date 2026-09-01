@@ -120,11 +120,13 @@ class MetadataScopeChoices(ChoiceSet):
     NODE = "node"
     INTERFACE = "interface"
     SERVICE = "service"
+    REQUISITION = "requisition"
 
     CHOICES = [
         (NODE, "Node"),
         (INTERFACE, "Interface"),
         (SERVICE, "Service"),
+        (REQUISITION, "Requisition"),
     ]
 
 
@@ -148,6 +150,30 @@ class NetBoxSourceChoices(ChoiceSet):
         ("site", "Site"),
         ("rack", "Rack"),
         ("tenant", "Tenant"),
+        ("description", "Description"),
+        ("comments", "Comments"),
+        ("site_address1", "Site: Address line 1"),
+        ("site_address2", "Site: Address line 2"),
+        ("site_city", "Site: City"),
+        ("site_state", "Site: State/Province"),
+        ("site_zip", "Site: ZIP/Postal code"),
+        ("site_latitude", "Site: Latitude"),
+        ("site_longitude", "Site: Longitude"),
+    ]
+
+
+class NetBoxTargetChoices(ChoiceSet):
+    """Safe NetBox write destinations for a Metadata Pull Mapping (RD-3 pull-back).
+
+    Deliberately narrow: only freeform text fields that can't corrupt a relation
+    (no site/tenant/role/etc) are offered — a value pulled from OpenNMS monitoring
+    data must never silently re-point an FK. ``cf_<name>`` (custom fields) is
+    accepted out-of-band, matching the existing ``enrichment.py`` convention.
+    """
+
+    key = "MetadataPullMapping.netbox_target"
+
+    CHOICES = [
         ("description", "Description"),
         ("comments", "Comments"),
     ]

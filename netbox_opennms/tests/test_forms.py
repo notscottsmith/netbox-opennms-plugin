@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: MIT
 """Form-layer tests for the Epic 5 models (override IP ownership)."""
 
-from core.models import ObjectType
 from dcim.models import (
     Device,
     DeviceRole,
@@ -15,7 +14,6 @@ from dcim.models import (
 )
 from django.core.exceptions import ValidationError
 from django.test import TestCase
-from extras.models import SavedFilter
 from ipam.models import IPAddress
 from tenancy.models import Tenant, TenantGroup
 
@@ -29,6 +27,7 @@ from netbox_opennms.forms import (
     RequisitionForm,
 )
 from netbox_opennms.models import (
+    Category,
     MetadataContext,
     MetadataEntry,
     MetadataKey,
@@ -67,7 +66,15 @@ class MonitoringOverrideFormTest(TestCase):
         self.assertFalse(form.is_valid())
 
 
-class RequisitionSavedFilterImportTest(TestCase):
+class RequisitionScopeRequiredTest(TestCase):
+    """A Requisition must always be Scope-anchored: an Advanced filter alone
+    (no Tenant Group/Tenant/Site Group/Site/Location pick) is rejected, and
+    "Import from Saved Filter" no longer exists as a way around that."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.site = Site.objects.create(name="Raleigh", slug="raleigh")
+
     def _form(self, **overrides):
         data = {
             "name": "core-switches",
@@ -79,38 +86,31 @@ class RequisitionSavedFilterImportTest(TestCase):
         data.update(overrides)
         return RequisitionForm(data=data)
 
-    def test_import_copies_saved_filter_parameters(self):
-        saved = SavedFilter.objects.create(
-            name="Switches", slug="switches", parameters={"role": ["switch"]}
-        )
-        saved.object_types.set([ObjectType.objects.get_for_model(Device)])
-        form = self._form(import_from_saved_filter=saved.pk)
+    def test_saved_filter_import_field_no_longer_exists(self):
+        form = self._form()
+        self.assertNotIn("import_from_saved_filter", form.fields)
+
+    def test_advanced_filter_alone_is_rejected(self):
+        form = self._form(filter_params='{"role": ["router"]}')
+        self.assertFalse(form.is_valid())
+        self.assertIn("Pick at least one Scope level", str(form.errors))
+
+    def test_scope_pick_with_no_advanced_filter_is_accepted(self):
+        form = self._form(scope_site=self.site.pk)
         self.assertTrue(form.is_valid(), form.errors)
-        # One-shot copy: the empty filter is replaced by the Saved Filter's params.
-        self.assertEqual(form.cleaned_data["filter_params"], {"role": ["switch"]})
 
-    def test_import_and_typed_filter_conflict_is_rejected(self):
-        # Picking a Saved Filter AND typing a filter is ambiguous — reject, don't
-        # silently discard the typed one (review #5).
-        saved = SavedFilter.objects.create(
-            name="Switches", slug="switches", parameters={"role": ["switch"]}
+    def test_scope_location_auto_selected_from_matching_slug(self):
+        location = Location.objects.create(
+            name="raleigh", slug="raleigh", site=self.site
         )
-        saved.object_types.set([ObjectType.objects.get_for_model(Device)])
-        form = self._form(
-            import_from_saved_filter=saved.pk, filter_params='{"role": ["router"]}'
+        requisition = Requisition.objects.create(
+            name="core-switches",
+            object_types="device",
+            filter_params={"site": [self.site.slug]},
+            location="raleigh",
         )
-        self.assertFalse(form.is_valid())
-        self.assertIn("import_from_saved_filter", form.errors)
-
-    def test_import_of_empty_saved_filter_is_still_guarded(self):
-        # Importing a Saved Filter with no effective constraint is rejected (H1).
-        saved = SavedFilter.objects.create(
-            name="Everything", slug="everything", parameters={}
-        )
-        saved.object_types.set([ObjectType.objects.get_for_model(Device)])
-        form = self._form(import_from_saved_filter=saved.pk)
-        self.assertFalse(form.is_valid())
-        self.assertIn("filter_params", form.errors)
+        form = RequisitionForm(instance=requisition)
+        self.assertEqual(form.initial.get("scope_location"), location.pk)
 
 
 class RequisitionScopePickerTest(TestCase):
@@ -262,7 +262,11 @@ class RequisitionScopePickerTest(TestCase):
     def test_location_value_outside_choices_still_saves(self):
         # CharField doesn't validate against the widget's choices — a value the
         # cache doesn't (yet) know about must still validate and save.
-        form = RequisitionForm(data=self._data(location="edge-9-not-in-choices"))
+        form = RequisitionForm(
+            data=self._data(
+                location="edge-9-not-in-choices", scope_site=self.site_a.pk
+            )
+        )
         self.assertTrue(form.is_valid(), form.errors)
         self.assertEqual(form.cleaned_data["location"], "edge-9-not-in-choices")
 
@@ -624,3 +628,111 @@ class MetadataEntryFormContextChoicesTest(TestCase):
         form = MetadataEntryForm(instance=entry)
         choice_values = {value for value, _label in form.fields["context"].choices}
         self.assertIn("X-legacy-unregistered", choice_values)
+
+
+class MetadataEntryFormScopeLockTest(TestCase):
+    """RD-3 bugfix: for a base context, MetadataEntryForm locks scope to match
+    (context IS placement), so the UI can't recreate the old conflation bug."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.req = Requisition.objects.create(
+            name="me-form-scopelock", filter_params={"role": ["switch"]}
+        )
+
+    def test_scope_field_disabled_for_existing_base_context_instance(self):
+        entry = MetadataEntry(
+            requisition=self.req,
+            scope="requisition",
+            context="requisition",
+            key="k1",
+            literal_value="v",
+        )
+        form = MetadataEntryForm(instance=entry)
+        self.assertTrue(form.fields["scope"].disabled)
+        self.assertEqual(form.initial["scope"], "requisition")
+
+    def test_scope_field_not_disabled_for_custom_context_instance(self):
+        MetadataContext.objects.create(name="X-billing")
+        entry = MetadataEntry(
+            requisition=self.req,
+            scope="service",
+            context="X-billing",
+            key="k1",
+            literal_value="v",
+        )
+        form = MetadataEntryForm(instance=entry)
+        self.assertFalse(form.fields["scope"].disabled)
+
+    def test_submitting_requisition_context_forces_matching_scope(self):
+        # Even if a stray "scope" value were submitted, the base context wins
+        # (belt-and-suspenders alongside the disabled-field lock).
+        form = MetadataEntryForm(
+            data={
+                "requisition": self.req.pk,
+                "scope": "node",
+                "context": "requisition",
+                "key": "k1",
+                "value_source": "",
+                "literal_value": "v",
+            }
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["scope"], "requisition")
+
+
+class RequisitionDefaultCategoriesFormTest(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.site = Site.objects.create(name="Raleigh", slug="raleigh")
+        cls.category = Category.objects.create(name="X-core")
+
+    def test_default_categories_field_present(self):
+        form = RequisitionForm()
+        self.assertIn("default_categories", form.fields)
+
+    def test_saving_default_categories(self):
+        form = RequisitionForm(
+            data={
+                "name": "core-switches",
+                "object_types": "device",
+                "filter_params": "{}",
+                "scan_interval": "1d",
+                "default_interfaces": "primary",
+                "scope_site": self.site.pk,
+                "default_categories": [self.category.pk],
+            }
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        requisition = form.save()
+        self.assertEqual(list(requisition.default_categories.all()), [self.category])
+
+
+class MonitoringOverrideCategoriesFormTest(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        site = Site.objects.create(name="Raleigh", slug="raleigh")
+        role = DeviceRole.objects.create(name="Router", slug="router")
+        mfr = Manufacturer.objects.create(name="Acme", slug="acme")
+        dt = DeviceType.objects.create(manufacturer=mfr, model="M1", slug="m1")
+        cls.device = Device.objects.create(
+            name="rtr-1", device_type=dt, role=role, site=site
+        )
+        cls.category = Category.objects.create(name="X-core")
+
+    def test_categories_field_present(self):
+        form = MonitoringOverrideForm()
+        self.assertIn("categories", form.fields)
+
+    def test_saving_categories(self):
+        form = MonitoringOverrideForm(
+            data={
+                "device": self.device.pk,
+                "exclude": False,
+                "location": "",
+                "categories": [self.category.pk],
+            }
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        override = form.save()
+        self.assertEqual(list(override.categories.all()), [self.category])

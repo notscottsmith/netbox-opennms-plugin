@@ -52,6 +52,12 @@ from .scope import resolve_scope
 _DEVICE_RELATED = ("site", "role", "primary_ip4", "primary_ip6")
 _VM_RELATED = ("role", "site", "cluster", "primary_ip4", "primary_ip6")
 
+# filter_params keys written by RequisitionForm's Scope picker (issue #19) --
+# single source of truth for "membership must be Scope-anchored" (filter_errors
+# below): an Advanced filter (role, tag, ...) may narrow a Scope pick but must
+# never be the sole constraint.
+SCOPE_FILTER_KEYS = ("tenant_group", "tenant", "site_group", "site", "location")
+
 
 @dataclass
 class InterfaceSpec:
@@ -76,6 +82,9 @@ class NodeSpec:
     node_metadata: list = field(default_factory=list)  # (context, key, value)
     interface_metadata: list = field(default_factory=list)  # applied to each interface
     service_metadata: list = field(default_factory=list)  # applied to each service
+    # OpenNMS Categories (Requisition defaults ∪ the object's own Override, if
+    # any) rendered as <category name=.../> on the node.
+    categories: list = field(default_factory=list)
     # A non-blocking advisory (RD-6/h): set for an interface-less node (no management
     # IP) — the node provisions but is not actively monitored. Empty = healthy.
     warning: str = ""
@@ -344,14 +353,21 @@ def _resolve_server(servers_seen):
 
 
 def _resolve_enrichment(obj, requisition):
-    """(assets, node_md, iface_md, svc_md) for a member — see resolve_node (RD-2/3)."""
+    """(assets, node_md, iface_md, svc_md) for a member — see resolve_node (RD-2/3).
+
+    Requisition-scope entries are excluded here — they have no per-member
+    object to resolve against and are rendered once, at the requisition root
+    (see ``resolve_requisition_metadata``).
+    """
     assets = []
     for mapping in requisition.asset_mappings.all():
         value = resolve_source(obj, mapping.netbox_source)
         if value is not None:
             assets.append((mapping.asset_field, value))
     node_md, iface_md, svc_md = [], [], []
-    for entry in requisition.metadata_entries.all():
+    for entry in requisition.metadata_entries.exclude(
+        scope=MetadataScopeChoices.REQUISITION
+    ):
         value = (
             resolve_source(obj, entry.value_source)
             if entry.value_source
@@ -367,6 +383,22 @@ def _resolve_enrichment(obj, requisition):
         else:
             svc_md.append(triad)
     return assets, node_md, iface_md, svc_md
+
+
+def resolve_requisition_metadata(requisition):
+    """(context, key, value) triads rendered once at the requisition root.
+
+    Requisition-scope entries have no per-member object to resolve a
+    value_source against (enforced in ``MetadataEntry.clean()``) — only a
+    literal_value is honored.
+    """
+    triads = []
+    for entry in requisition.metadata_entries.filter(
+        scope=MetadataScopeChoices.REQUISITION
+    ):
+        if entry.literal_value:
+            triads.append((entry.context, entry.key, entry.literal_value))
+    return triads
 
 
 def resolve_node(obj, requisition, override):
@@ -387,6 +419,9 @@ def resolve_node(obj, requisition, override):
     override_location = override.location if override is not None else ""
     location = override_location or requisition.location
     assets, node_md, iface_md, svc_md = _resolve_enrichment(obj, requisition)
+    categories = list(requisition.default_categories.all())
+    if override is not None:
+        categories.extend(c for c in override.categories.all() if c not in categories)
 
     management = None
     if override is not None and override.management_ip_id:
@@ -407,6 +442,7 @@ def resolve_node(obj, requisition, override):
             [],
             assets=assets,
             node_metadata=node_md,
+            categories=categories,
             warning=warning,
             netbox_object=obj,
         )
@@ -461,6 +497,7 @@ def resolve_node(obj, requisition, override):
         node_metadata=node_md,
         interface_metadata=iface_md,
         service_metadata=svc_md,
+        categories=categories,
         netbox_object=obj,
     )
     return node, None

@@ -1,0 +1,53 @@
+{# Copyright 2026 Ronny Trommer <ronny@no42.org> #}
+{# SPDX-License-Identifier: MIT #}
+{% extends 'base/layout.html' %}
+{% load helpers %}
+
+{% block title %}Configure Metadata Pull — {{ object.name }}{% endblock %}
+
+{% block content %}
+  <div class="row">
+    <div class="col col-md-8">
+      <form method="post">
+        {% csrf_token %}
+        <div class="card">
+          <h2 class="card-header">Metadata keys observed on {{ object.name }}'s live nodes</h2>
+          <div class="card-body">
+            <p class="text-muted">
+              Pick a NetBox destination for each key you want pulled back —
+              leave blank to skip (or clear an existing mapping). Nothing is
+              written to NetBox until you use "Apply pull mappings" below.
+            </p>
+          </div>
+          <table class="table table-hover mb-0">
+            <thead>
+              <tr><th>Context</th><th>Key</th><th>NetBox target</th></tr>
+            </thead>
+            <tbody>
+              {% for row in rows %}
+                <tr>
+                  <td>{{ row.context }}</td>
+                  <td>{{ row.key }}</td>
+                  <td>
+                    <select name="target__{{ row.context }}__{{ row.key }}" class="form-select">
+                      <option value="">{{ ''|placeholder }}</option>
+                      {% for value, label in target_choices %}
+                        <option value="{{ value }}" {% if row.current_target == value %}selected{% endif %}>{{ label }}</option>
+                      {% endfor %}
+                    </select>
+                  </td>
+                </tr>
+              {% empty %}
+                <tr><td colspan="3">No metadata keys observed on this Requisition's live nodes.</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <div class="float-end">
+          <a href="{{ return_url }}" class="btn btn-outline-secondary">Cancel</a>
+          <button type="submit" class="btn btn-primary">Save mappings</button>
+        </div>
+      </form>
+    </div>
+  </div>
+{% endblock %}

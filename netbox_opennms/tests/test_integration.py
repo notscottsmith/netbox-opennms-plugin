@@ -304,7 +304,7 @@ class OpenNMSRoundTripTest(TestCase):
             requisition=requisition, netbox_source="serial", asset_field="serialNumber"
         )
         MetadataEntry.objects.create(
-            requisition=requisition, scope="node", context="requisition",
+            requisition=requisition, scope="node", context="node",
             key="netbox-owner", literal_value="neteng",
         )
         device = self._device_node()

@@ -45,6 +45,7 @@ from .membership import (
     matching_requisitions,
     monitored_foreign_sources,
     resolve,
+    resolve_requisition_metadata,
     resolve_target_server,
 )
 from .models import (
@@ -268,7 +269,14 @@ class SyncForeignSourceJob(JobRunner):
 
                 try:
                     requisition_xml = render_requisition(
-                        foreign_source, nodes, default_location=default_location
+                        foreign_source,
+                        nodes,
+                        default_location=default_location,
+                        requisition_metadata=(
+                            resolve_requisition_metadata(resolution.requisition)
+                            if resolution is not None
+                            else None
+                        ),
                     )
                     fs_xml = (
                         render_foreign_source_definition(

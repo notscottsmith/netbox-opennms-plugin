@@ -17,11 +17,9 @@ from dcim.models import (
 from django import forms
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
-from django.db.models import Q
 from django.urls import reverse
 from django.utils.html import format_html
 from django.utils.translation import gettext_lazy as _
-from extras.models import SavedFilter
 from ipam.models import IPAddress
 from netbox.forms import NetBoxModelFilterSetForm, NetBoxModelForm
 from netbox.plugins import get_plugin_config
@@ -31,19 +29,22 @@ from utilities.forms.fields import (
     DynamicModelMultipleChoiceField,
     JSONField,
 )
+from utilities.forms.rendering import FieldSet
 from virtualization.models import VirtualMachine
 
 from .catalog import get_detector_catalog, get_policy_catalog
-from .choices import ObjectTypeChoices, ServiceChoices
+from .choices import MetadataScopeChoices, ObjectTypeChoices, ServiceChoices
 from .derivation import default_requisition_name, location_name_error
 from .membership import filter_errors, target_server_for
 from .models import (
     AssetMapping,
+    Category,
     DiscoveredNode,
     DiscoveryScan,
     MetadataContext,
     MetadataEntry,
     MetadataKey,
+    MetadataPullMapping,
     MonitoredInterface,
     MonitoredService,
     MonitoringDetector,
@@ -77,30 +78,14 @@ class RequisitionForm(NetBoxModelForm):
             "freeform filter still requires an explicit name."
         ),
     )
-    import_from_saved_filter = forms.ModelChoiceField(
-        queryset=SavedFilter.objects.filter(
-            Q(object_types__app_label="dcim", object_types__model="device")
-            | Q(
-                object_types__app_label="virtualization",
-                object_types__model="virtualmachine",
-            )
-        ).distinct(),
-        required=False,
-        label=_("Import from Saved Filter"),
-        help_text=_(
-            "Copy a NetBox Device/VM Saved Filter's parameters into the filter "
-            "below — a one-time copy, with no live link to the Saved Filter."
-        ),
-    )
     filter_params = JSONField(
         required=False,
         label=_("Advanced filter"),
         help_text=_(
             "NetBox filter parameters, e.g. "
-            '{"role": ["switch"], "tag": ["critical"]}. Applied to the selected '
-            "object types to compute members. Not needed if the Scope picker "
-            "below (tenant/site/location/etc.) already covers this Requisition — "
-            "only required for finer-grained filtering (role, tag, ...)."
+            '{"role": ["switch"], "tag": ["critical"]}. Only used to further '
+            "narrow the Scope picked below (e.g. by role or tag) — on its own "
+            "it can no longer define membership; a Scope pick is required."
         ),
     )
     # A <select>, not a ChoiceField: the option list is populated server-side in
@@ -113,11 +98,13 @@ class RequisitionForm(NetBoxModelForm):
     # cache never blocks a save.
     location = forms.CharField(
         required=False,
-        label=_("Location"),
+        label=_("Monitoring Location"),
         help_text=_(
             "The OpenNMS Monitoring Location this Requisition's nodes report "
-            "to. Sourced from the resolved target Server's known locations — "
-            "test that Server's connection to (re)populate this list."
+            "to (an OpenNMS-side value, not a NetBox object — not to be "
+            "confused with the Scope picker's Location below). Sourced from "
+            "the resolved target Server's known locations — test that "
+            "Server's connection to (re)populate this list."
         ),
         widget=forms.Select(choices=()),
     )
@@ -126,6 +113,16 @@ class RequisitionForm(NetBoxModelForm):
         required=False,
         label=_("Declared services"),
         help_text=_("Applied to every member's interfaces (overridable per object)."),
+    )
+    default_categories = DynamicModelMultipleChoiceField(
+        queryset=Category.objects.all(),
+        required=False,
+        label=_("Default categories"),
+        help_text=_(
+            "OpenNMS Categories applied to every member's <category> by "
+            "default (a per-object Monitoring Override may add its own on "
+            "top)."
+        ),
     )
 
     # Scope picker (issue #19): five optional convenience fields that write/update
@@ -182,14 +179,38 @@ class RequisitionForm(NetBoxModelForm):
             "name",
             "description",
             "object_types",
-            "import_from_saved_filter",
             "filter_params",
             "scan_interval",
             "default_interfaces",
             "services",
             "location",
+            "default_categories",
             "tags",
         )
+
+    fieldsets = (
+        FieldSet(
+            "name",
+            "description",
+            "object_types",
+            "scan_interval",
+            "default_interfaces",
+            "services",
+            "location",
+            "default_categories",
+            "tags",
+            name=_("Requisition"),
+        ),
+        FieldSet(
+            "scope_tenant_group",
+            "scope_tenant",
+            "scope_site_group",
+            "scope_site",
+            "scope_location",
+            name=_("Scope"),
+        ),
+        FieldSet("filter_params", name=_("Advanced filter (optional)")),
+    )
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -208,6 +229,22 @@ class RequisitionForm(NetBoxModelForm):
         self.fields["location"].widget.choices = [("", "---------")] + [
             (loc, loc) for loc in location_choices
         ]
+        # Auto-select the Scope picker's Location to match this Requisition's own
+        # Monitoring Location, by slug (the same convention
+        # scope.requisition_scope_site_and_location reads back from
+        # filter_params["location"]) — so editing an existing, already-located
+        # Requisition doesn't present as "no Scope picked" despite one applying.
+        if (
+            current_location
+            and not self.initial.get("scope_location")
+            and not (self.instance.filter_params or {}).get("location")
+        ):
+            matching_location = Location.objects.filter(
+                slug=current_location
+            ).first()
+            if matching_location is not None:
+                self.initial["scope_location"] = matching_location.pk
+
         options = scope_options(server)
         if options is None:
             return
@@ -225,21 +262,6 @@ class RequisitionForm(NetBoxModelForm):
 
     def clean(self):
         super().clean()
-        # A one-shot copy: importing a Saved Filter seeds the filter params (no live
-        # link, R2). Done before the guard so the copied params are checked. Refuse
-        # to silently discard a filter the user also typed in the same submit.
-        saved = self.cleaned_data.get("import_from_saved_filter")
-        if saved is not None:
-            if self.cleaned_data.get("filter_params"):
-                self.add_error(
-                    "import_from_saved_filter",
-                    _(
-                        "Clear the Filter field to import a Saved Filter, or drop "
-                        "the import and edit the filter directly — not both."
-                    ),
-                )
-            else:
-                self.cleaned_data["filter_params"] = dict(saved.parameters or {})
         # Scope picker: a picked level writes/updates its matching filter key (by
         # slug, the same key format NetBox's own Device/VM filter UI uses) merged
         # into whatever's already in filter_params — an untouched key (including one
@@ -252,6 +274,20 @@ class RequisitionForm(NetBoxModelForm):
             if value is not None:
                 params[filter_key] = [value.slug]
         self.cleaned_data["filter_params"] = params
+        # A Requisition must always be Scope-anchored (the user's ask): the
+        # Advanced filter above may narrow a Scope pick but must never be the
+        # sole constraint. Checked here (not in membership.filter_errors,
+        # which also gates Sync for every pre-existing Requisition) so this
+        # only affects new saves through this form.
+        if not any(picked.values()):
+            self.add_error(
+                None,
+                _(
+                    "Pick at least one Scope level (Tenant Group/Tenant/Site "
+                    "Group/Site/Location) — the Advanced filter alone can't "
+                    "define this Requisition's membership."
+                ),
+            )
         # Auto-derive a blank name from the Scope picker (issue #20), scoped
         # to whichever levels requisition_naming_template lists -- a raw/
         # freeform filter (no Scope-picker fields set at all) is left blank
@@ -441,6 +477,15 @@ class MonitoringOverrideForm(NetBoxModelForm):
         label=_("Suppress declared services"),
         help_text=_("Declared services to remove for this object only."),
     )
+    categories = DynamicModelMultipleChoiceField(
+        queryset=Category.objects.all(),
+        required=False,
+        label=_("Categories"),
+        help_text=_(
+            "OpenNMS Categories for this object only, added on top of the "
+            "Requisition's default categories."
+        ),
+    )
 
     class Meta:
         model = MonitoringOverride
@@ -452,6 +497,7 @@ class MonitoringOverrideForm(NetBoxModelForm):
             "management_role",
             "suppressed_services",
             "location",
+            "categories",
             "tags",
         )
 
@@ -947,3 +993,74 @@ class MetadataEntryForm(NetBoxModelForm):
             "with no keys registered yet) accept any key.",
             key_list_url,
         )
+        # For the four base contexts, context IS placement (RD-3 bugfix,
+        # MetadataEntry.clean()) — lock scope to match instead of leaving it
+        # independently editable, so the UI can't recreate the "requisition
+        # context rendered per-node" bug. A custom/pattern context still
+        # picks scope freely.
+        base_contexts = {
+            MetadataScopeChoices.NODE,
+            MetadataScopeChoices.INTERFACE,
+            MetadataScopeChoices.SERVICE,
+            MetadataScopeChoices.REQUISITION,
+        }
+        if current in base_contexts:
+            self.fields["scope"].disabled = True
+            self.initial["scope"] = current
+
+    def clean(self):
+        cleaned_data = super().clean()
+        # Belt-and-suspenders alongside the disabled-field lock above: a
+        # disabled field's submitted value is ignored by Django, but the
+        # context may also change in the same submission (a fresh add, or
+        # editing context away from what __init__ locked scope to) —
+        # re-derive scope from the (possibly just-changed) context here so
+        # the two never drift apart before MetadataEntry.clean() runs.
+        context = cleaned_data.get("context")
+        if context in (
+            MetadataScopeChoices.NODE,
+            MetadataScopeChoices.INTERFACE,
+            MetadataScopeChoices.SERVICE,
+            MetadataScopeChoices.REQUISITION,
+        ):
+            cleaned_data["scope"] = context
+            self.instance.scope = context
+        return cleaned_data
+
+
+class CategoryForm(NetBoxModelForm):
+    """Create/edit an OpenNMS monitoring Category (Part C).
+
+    Categories are also populated by the "Sync categories from OpenNMS"
+    action (``get_or_create`` against ``client.list_categories()``); this
+    form covers the manual/edit path.
+    """
+
+    class Meta:
+        model = Category
+        fields = ("name", "description", "tags")
+
+
+class MetadataPullMappingForm(NetBoxModelForm):
+    """Map one observed OpenNMS ``(context, key)`` to a NetBox target (RD-3 pull-back).
+
+    Deliberately reused by ``MetadataPullMappingConfigureView`` as well as the
+    standalone add/edit views — ``context``/``key`` are typically pre-filled
+    from a discovered pair there, but stay plain text fields here (like
+    ``MetadataEntryForm.key``) so a mapping can also be hand-created ahead of
+    discovery.
+    """
+
+    requisition = DynamicModelChoiceField(
+        queryset=Requisition.objects.all(), label=_("Requisition")
+    )
+
+    class Meta:
+        model = MetadataPullMapping
+        fields = ("requisition", "context", "key", "netbox_target", "tags")
+        help_texts = {
+            "netbox_target": "Deliberately narrow — only free-text fields "
+            "(and cf_<name> custom fields) are offered, since a value "
+            "pulled from monitoring data must never silently re-point a "
+            "relation.",
+        }

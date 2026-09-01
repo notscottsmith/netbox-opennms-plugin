@@ -31,6 +31,7 @@ from .choices import (
     InterfaceScopeChoices,
     MetadataScopeChoices,
     NetBoxSourceChoices,
+    NetBoxTargetChoices,
     ObjectTypeChoices,
     PolicyPresetChoices,
     ServiceChoices,
@@ -82,6 +83,32 @@ def _require_preset_params(rule, required):
         )
 
 
+class Category(NetBoxModel):
+    """An OpenNMS monitoring Category (distinct from the asset "category"/role
+    field), synced from OpenNMS's categories endpoint or created by hand.
+    Rendered directly as ``<category name=.../>`` on a node — a Requisition
+    may set defaults applied to every member, and a per-object
+    ``MonitoringOverride`` may add its own on top (see ``Requisition.
+    default_categories``/``MonitoringOverride.categories``). This is additive
+    alongside the pre-existing ``set-node-category`` policy preset, not a
+    replacement for it.
+    """
+
+    name = models.CharField(max_length=100, unique=True)
+    description = models.CharField(max_length=200, blank=True)
+
+    class Meta:
+        ordering = ("name",)
+        verbose_name = "category"
+        verbose_name_plural = "categories"
+
+    def __str__(self):
+        return self.name
+
+    def get_absolute_url(self):
+        return reverse("plugins:netbox_opennms:category", args=[self.pk])
+
+
 class Requisition(NetBoxModel):
     """A user-named OpenNMS Foreign Source (definition + filter-scoped requisition).
 
@@ -118,6 +145,12 @@ class Requisition(NetBoxModel):
     # OpenNMS monitoring location (which Minion polls these nodes). Blank falls
     # back to the configured default location at render time.
     location = models.CharField(max_length=255, blank=True, default="")
+    # OpenNMS Categories applied to every member's <node> by default; a
+    # per-object MonitoringOverride may add its own on top (union at render
+    # time — see membership.resolve_node).
+    default_categories = models.ManyToManyField(
+        to=Category, blank=True, related_name="requisitions"
+    )
 
     class Meta:
         ordering = ("name",)
@@ -311,6 +344,9 @@ class MonitoringOverride(NetBoxModel):
     suppressed_services = models.JSONField(default=list, blank=True)
     # Override the OpenNMS location for just this object; blank = use the Requisition's.
     location = models.CharField(max_length=255, blank=True, default="")
+    # OpenNMS Categories for just this object, added on top of the
+    # Requisition's default_categories (union at render time).
+    categories = models.ManyToManyField(to=Category, blank=True, related_name="overrides")
 
     class Meta:
         ordering = ("pk",)
@@ -750,6 +786,97 @@ class MetadataEntry(NetBoxModel):
             raise ValidationError(
                 "Set either a value source or a literal value, not both."
             )
+        # RD-3 bugfix: for the four base contexts, "context" *is* placement —
+        # a "requisition"-context entry that scoped itself to "node" (scope's
+        # default) rendered once per matching node instead of once at the
+        # requisition root. Locking scope==context for these four closes that
+        # gap; a custom/pattern context still picks scope freely (there's no
+        # analogous "this context's own root" to place it at).
+        if self.context in (
+            MetadataScopeChoices.NODE,
+            MetadataScopeChoices.INTERFACE,
+            MetadataScopeChoices.SERVICE,
+            MetadataScopeChoices.REQUISITION,
+        ) and self.scope != self.context:
+            raise ValidationError(
+                {
+                    "scope": f"Context {self.context!r} must use scope "
+                    f"{self.context!r} to match — the context IS the "
+                    "placement for a base context."
+                }
+            )
+        # A requisition-scope entry has no per-member object to resolve
+        # value_source against — it's resolved once, at the requisition root.
+        if self.scope == MetadataScopeChoices.REQUISITION and self.value_source:
+            raise ValidationError(
+                {
+                    "value_source": "A Requisition-scope entry has no object to "
+                    "resolve a value source from — use a literal value."
+                }
+            )
+
+
+class MetadataPullMapping(NetBoxModel):
+    """Maps an OpenNMS metadata key observed on a Requisition's live nodes back
+    onto a NetBox field (RD-3 pull-back — the inverse of ``MetadataEntry``'s
+    NetBox→OpenNMS push). ``context``/``key`` identify the OpenNMS value (see
+    ``pull.discover_requisition_metadata_keys``); ``netbox_target`` is
+    deliberately narrow (``NetBoxTargetChoices`` — free-text fields and
+    ``cf_<name>`` only) since a value pulled from monitoring data must never
+    silently re-point a relation. Applying a mapping (writing values into
+    NetBox) is an explicit, separate operator action — see ``pull.
+    apply_pull_mappings`` — never part of the normal render/sync job.
+    """
+
+    requisition = models.ForeignKey(
+        to=Requisition, on_delete=models.CASCADE, related_name="pull_mappings"
+    )
+    context = models.CharField(max_length=64)
+    key = models.CharField(max_length=100)
+    netbox_target = models.CharField(max_length=100, choices=NetBoxTargetChoices)
+
+    class Meta:
+        ordering = ("requisition", "context", "key")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("requisition", "context", "key"),
+                name="%(app_label)s_%(class)s_unique_pull",
+            ),
+        ]
+        verbose_name = "metadata pull mapping"
+        verbose_name_plural = "metadata pull mappings"
+
+    def __str__(self):
+        return f"{self.context}:{self.key} → {self.netbox_target}"
+
+    def get_absolute_url(self):
+        return reverse("plugins:netbox_opennms:metadatapullmapping", args=[self.pk])
+
+    def clean(self):
+        super().clean()
+        if self.context and not MetadataContext.objects.filter(
+            name=self.context
+        ).exists():
+            raise ValidationError(
+                {
+                    "context": f"Unknown context {self.context!r}. Register it "
+                    "first (custom contexts must be 'X-'-prefixed) before "
+                    "using it here."
+                }
+            )
+        if self.context and self.key:
+            context_keys = MetadataKey.objects.filter(context__name=self.context)
+            if (
+                context_keys.exists()
+                and not context_keys.filter(name=self.key).exists()
+            ):
+                raise ValidationError(
+                    {
+                        "key": f"Unknown key {self.key!r} for context "
+                        f"{self.context!r}. Register it first before using "
+                        "it here."
+                    }
+                )
 
 
 class OpenNMSServer(NetBoxModel):

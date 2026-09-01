@@ -466,7 +466,7 @@ class MetadataEntryAPITest(_NoGraphQL, APIViewTestCases.APIViewTestCase):
         for key in ["k1", "k2", "k3"]:
             MetadataEntry.objects.create(
                 requisition=req,
-                scope="node",
+                scope="requisition",
                 context="requisition",
                 key=key,
                 literal_value="v",
@@ -474,14 +474,14 @@ class MetadataEntryAPITest(_NoGraphQL, APIViewTestCases.APIViewTestCase):
         cls.create_data = [
             {
                 "requisition": req.pk,
-                "scope": "node",
+                "scope": "requisition",
                 "context": "requisition",
                 "key": "a",
                 "literal_value": "1",
             },
             {
                 "requisition": req.pk,
-                "scope": "node",
+                "scope": "requisition",
                 "context": "requisition",
                 "key": "b",
                 "literal_value": "2",

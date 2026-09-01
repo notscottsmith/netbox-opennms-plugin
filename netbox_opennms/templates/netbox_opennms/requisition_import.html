@@ -1,0 +1,75 @@
+{# Copyright 2026 Ronny Trommer <ronny@no42.org> #}
+{# SPDX-License-Identifier: MIT #}
+{% extends 'base/layout.html' %}
+{% load form_helpers %}
+{% load helpers %}
+
+{% block title %}Import {{ object.name }}{% endblock %}
+
+{% block content %}
+  <div class="row">
+    <div class="col col-md-6">
+      {% if imported %}
+        <div class="card">
+          <h2 class="card-header">Detected from OpenNMS</h2>
+          <div class="card-body">
+            <p class="text-muted mb-0">
+              Copied from {{ object.name }}'s existing OpenNMS Foreign Source
+              definition — nothing is applied until you save.
+            </p>
+          </div>
+          <table class="table table-hover attr-table mb-0">
+            <tr><th scope="row">Scan interval</th><td>{{ imported.scan_interval }}</td></tr>
+          </table>
+        </div>
+        <div class="card">
+          <h2 class="card-header">Detectors</h2>
+          <table class="table table-hover mb-0">
+            <thead><tr><th>Name</th><th>Class</th></tr></thead>
+            <tbody>
+              {% for rule in imported.detectors %}
+                <tr><td>{{ rule.name }}</td><td>{{ rule.rule_class }}</td></tr>
+              {% empty %}
+                <tr><td colspan="2">{{ ''|placeholder }}</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <div class="card">
+          <h2 class="card-header">Policies</h2>
+          <table class="table table-hover mb-0">
+            <thead><tr><th>Name</th><th>Class</th></tr></thead>
+            <tbody>
+              {% for rule in imported.policies %}
+                <tr><td>{{ rule.name }}</td><td>{{ rule.rule_class }}</td></tr>
+              {% empty %}
+                <tr><td colspan="2">{{ ''|placeholder }}</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endif %}
+    </div>
+    <div class="col col-md-6">
+      <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="foreign_source" value="{{ object.name }}">
+        <div class="card">
+          <h2 class="card-header">Import {{ object.name }} as a Requisition</h2>
+          <div class="card-body">
+            <p class="text-muted">
+              Pick this Requisition's Scope below (Tenant Group, Tenant, Site
+              Group, Site or Location) — the Advanced filter alone can't
+              define its membership.
+            </p>
+            {% render_form form %}
+          </div>
+        </div>
+        <div class="float-end">
+          <a href="{{ return_url }}" class="btn btn-outline-secondary">Cancel</a>
+          <button type="submit" class="btn btn-primary">Import</button>
+        </div>
+      </form>
+    </div>
+  </div>
+{% endblock %}

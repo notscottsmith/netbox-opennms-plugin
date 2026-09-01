@@ -84,6 +84,28 @@ menu = PluginMenu(
                         ),
                     ),
                 ),
+                PluginMenuItem(
+                    link="plugins:netbox_opennms:metadatapullmapping_list",
+                    link_text=labels.NAV_METADATA_PULL_MAPPINGS,
+                    buttons=(
+                        PluginMenuButton(
+                            link="plugins:netbox_opennms:metadatapullmapping_add",
+                            title="Add",
+                            icon_class="mdi mdi-plus-thick",
+                        ),
+                    ),
+                ),
+                PluginMenuItem(
+                    link="plugins:netbox_opennms:category_list",
+                    link_text=labels.NAV_CATEGORIES,
+                    buttons=(
+                        PluginMenuButton(
+                            link="plugins:netbox_opennms:category_add",
+                            title="Add",
+                            icon_class="mdi mdi-plus-thick",
+                        ),
+                    ),
+                ),
             ),
         ),
         (

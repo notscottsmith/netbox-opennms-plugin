@@ -10,11 +10,45 @@ blank value). Pure — reads the object, no I/O — so it stays in the resolutio
 layer and the translation layer remains side-effect-free (AD-3).
 """
 
+import re
+
+_CITY_STATE_ZIP = re.compile(r"^(?P<city>.+),\s*(?P<state>\S+)\s+(?P<zip>\S+)$")
+
 
 def _rel_name(obj, attr):
     """The ``.name`` of a related object at ``attr``, or ``None``."""
     related = getattr(obj, attr, None)
     return getattr(related, "name", None) if related is not None else None
+
+
+def _parse_physical_address(site):
+    """Best-effort split of a Site's freeform ``physical_address`` into OpenNMS's
+    discrete asset fields. NetBox has no discrete address1/city/state/zip fields
+    to read from directly, so this is a heuristic, not a reliable parse: if the
+    last non-blank line looks like "City, ST ZIP" it's used for city/state/zip
+    and the remaining lines become address1/address2; otherwise everything
+    lands in address1/address2 and city/state/zip stay blank.
+    """
+    empty = {"address1": "", "address2": "", "city": "", "state": "", "zip": ""}
+    text = getattr(site, "physical_address", "") if site is not None else ""
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    if not lines:
+        return empty
+    match = len(lines) > 1 and _CITY_STATE_ZIP.match(lines[-1])
+    body = lines[:-1] if match else lines
+    result = dict(empty)
+    if match:
+        result.update(match.groupdict())
+    if body:
+        result["address1"] = body[0]
+        result["address2"] = ", ".join(body[1:])
+    return result
+
+
+def _site_decimal(obj, attr):
+    site = getattr(obj, "site", None)
+    value = getattr(site, attr, None) if site is not None else None
+    return str(value) if value is not None else None
 
 
 # source key -> callable(obj) -> value|None. Each is None-safe across Device/VM.
@@ -33,6 +67,22 @@ CURATED = {
     "tenant": lambda o: _rel_name(o, "tenant"),
     "description": lambda o: getattr(o, "description", None) or None,
     "comments": lambda o: getattr(o, "comments", None) or None,
+    "site_address1": lambda o: _parse_physical_address(getattr(o, "site", None))[
+        "address1"
+    ]
+    or None,
+    "site_address2": lambda o: _parse_physical_address(getattr(o, "site", None))[
+        "address2"
+    ]
+    or None,
+    "site_city": lambda o: _parse_physical_address(getattr(o, "site", None))["city"]
+    or None,
+    "site_state": lambda o: _parse_physical_address(getattr(o, "site", None))["state"]
+    or None,
+    "site_zip": lambda o: _parse_physical_address(getattr(o, "site", None))["zip"]
+    or None,
+    "site_latitude": lambda o: _site_decimal(o, "latitude"),
+    "site_longitude": lambda o: _site_decimal(o, "longitude"),
 }
 
 

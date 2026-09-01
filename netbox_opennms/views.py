@@ -21,8 +21,9 @@ from utilities.rqworker import any_workers_for_queue
 from utilities.views import GetReturnURLMixin, ViewTab, register_model_view
 from virtualization.models import VirtualMachine
 
-from . import filtersets, forms, import_node, tables
+from . import catalog, filtersets, forms, import_node, tables
 from .adoption import adopt_foreign_ids, existing_foreign_ids_by_label
+from .choices import NetBoxTargetChoices
 from .client import OpenNMSClient, OpenNMSError, parse_node_links
 from .derivation import foreign_id_for, validate_location_name
 from .ip_reconcile import (
@@ -45,11 +46,13 @@ from .membership import (
 )
 from .models import (
     AssetMapping,
+    Category,
     DiscoveredNode,
     DiscoveryScan,
     MetadataContext,
     MetadataEntry,
     MetadataKey,
+    MetadataPullMapping,
     MonitoredInterface,
     MonitoredService,
     MonitoringDetector,
@@ -59,6 +62,7 @@ from .models import (
     OpenNMSServer,
     Requisition,
 )
+from .pull import apply_pull_mappings, discover_requisition_metadata_keys
 from .requisition_discovery import build_foreign_source_import, list_unmirrored
 from .requisition_scan import scan_requisition
 from .reverse_sync import (
@@ -1679,55 +1683,107 @@ class UnmirroredRequisitionsView(PermissionRequiredMixin, View):
 class RequisitionImportView(PermissionRequiredMixin, View):
     """Create a Requisition shell from an unmirrored Foreign Source (issue #22).
 
-    Copies name/scan-interval/detectors/policies straight off OpenNMS's own
-    Foreign Source definition, mirroring ``RequisitionDuplicateView``'s
-    create-then-loop-create-rows pattern — but ``filter_params`` is left empty
-    (a live filter must be an explicit admin decision, not guessed from
-    OpenNMS), so the new Requisition has zero members until one is defined.
+    Copies scan-interval/detectors/policies straight off OpenNMS's own Foreign
+    Source definition, mirroring ``RequisitionDuplicateView``'s
+    create-then-loop-create-rows pattern — but membership itself is never
+    guessed from OpenNMS: GET renders a ``RequisitionForm`` (name locked to the
+    Foreign Source) so the operator must pick a Scope before POST can save it,
+    the same requirement ``membership.filter_errors`` now enforces on every
+    other Requisition (issue #72-adjacent Scope requirement). Mirrors
+    ``DiscoveredNodeImportView``'s fetch-then-render-a-form pattern.
     """
 
     permission_required = "netbox_opennms.add_requisition"
+    template_name = "netbox_opennms/requisition_import.html"
 
-    def post(self, request, pk):
-        server = get_object_or_404(OpenNMSServer, pk=pk)
-        return_url = request.META.get("HTTP_REFERER") or reverse(
+    def _return_url(self, request, server):
+        return request.META.get("HTTP_REFERER") or reverse(
             "plugins:netbox_opennms:opennmsserver_unmirrored_requisitions",
             args=[server.pk],
         )
-        foreign_source = request.POST.get("foreign_source", "").strip()
-        if not foreign_source:
-            messages.error(request, "No Foreign Source given.")
-            return redirect(return_url)
-        # Re-checked here (not just trusted from the list view that only shows
-        # unmirrored names) — the POST body is user-controlled and a name may
-        # have been imported by someone else between page load and this POST.
-        if Requisition.objects.filter(name=foreign_source).exists():
-            messages.error(
-                request,
-                f"A Requisition named {foreign_source!r} already exists — "
-                "import skipped.",
-            )
-            return redirect(return_url)
 
+    def _fetch(self, request, server, foreign_source):
+        """Returns ``(requisition, imported, error)``.
+
+        ``requisition`` is an unsaved shell pre-filled from OpenNMS's own
+        Foreign Source definition; ``imported`` carries the detectors/policies
+        to create once the form actually saves. Re-fetched on every GET *and*
+        POST (not cached in the session) since OpenNMS state and NetBox
+        uniqueness may have changed between the two requests.
+        """
+        if Requisition.objects.filter(name=foreign_source).exists():
+            return None, None, (
+                f"A Requisition named {foreign_source!r} already exists — "
+                "import skipped."
+            )
         try:
             with OpenNMSClient.from_server(server) as client:
                 definition = client.get_foreign_source(foreign_source)
         except OpenNMSError as exc:
-            messages.error(request, f"Could not reach OpenNMS: {exc}")
-            return redirect(return_url)
+            return None, None, f"Could not reach OpenNMS: {exc}"
         if definition is None:
-            messages.error(
-                request,
+            return None, None, (
                 f"Foreign Source {foreign_source!r} no longer exists on "
-                f"{server.name!r}.",
+                f"{server.name!r}."
             )
-            return redirect(return_url)
-
         imported = build_foreign_source_import(definition)
         requisition = Requisition(
             name=foreign_source, scan_interval=imported.scan_interval
         )
-        requisition.save()
+        return requisition, imported, None
+
+    def _locked_form(self, *args, **kwargs):
+        form = forms.RequisitionForm(*args, **kwargs)
+        form.fields["name"].disabled = True
+        return form
+
+    def get(self, request, pk):
+        server = get_object_or_404(OpenNMSServer, pk=pk)
+        return_url = self._return_url(request, server)
+        foreign_source = request.GET.get("foreign_source", "").strip()
+        if not foreign_source:
+            messages.error(request, "No Foreign Source given.")
+            return redirect(return_url)
+        requisition, imported, error = self._fetch(request, server, foreign_source)
+        if error:
+            messages.error(request, error)
+            return redirect(return_url)
+        form = self._locked_form(instance=requisition)
+        return render(
+            request,
+            self.template_name,
+            {
+                "object": requisition,
+                "form": form,
+                "imported": imported,
+                "return_url": return_url,
+            },
+        )
+
+    def post(self, request, pk):
+        server = get_object_or_404(OpenNMSServer, pk=pk)
+        return_url = self._return_url(request, server)
+        foreign_source = request.POST.get("foreign_source", "").strip()
+        if not foreign_source:
+            messages.error(request, "No Foreign Source given.")
+            return redirect(return_url)
+        requisition, imported, error = self._fetch(request, server, foreign_source)
+        if error:
+            messages.error(request, error)
+            return redirect(return_url)
+        form = self._locked_form(request.POST, instance=requisition)
+        if not form.is_valid():
+            return render(
+                request,
+                self.template_name,
+                {
+                    "object": requisition,
+                    "form": form,
+                    "imported": imported,
+                    "return_url": return_url,
+                },
+            )
+        requisition = form.save()
         for rule in imported.detectors:
             MonitoringDetector.objects.create(
                 requisition=requisition,
@@ -1744,11 +1800,6 @@ class RequisitionImportView(PermissionRequiredMixin, View):
             )
         messages.success(
             request, f"Imported {foreign_source!r} as Requisition {requisition.name}."
-        )
-        messages.warning(
-            request,
-            f"{requisition.name} has no filter or Scope yet — it has zero "
-            "members and will sync nothing until you define one.",
         )
         return redirect(requisition.get_absolute_url())
 
@@ -2279,3 +2330,208 @@ class RequisitionOpenNMSPullView(GetReturnURLMixin, PermissionRequiredMixin, Vie
                 f"{result.error}",
             )
         return redirect(self.get_return_url(request, instance))
+
+
+# --- Category (Part C) -------------------------------------------------------
+
+
+class CategoryView(generic.ObjectView):
+    queryset = Category.objects.all()
+
+
+class CategoryListView(generic.ObjectListView):
+    queryset = Category.objects.all()
+    table = tables.CategoryTable
+    filterset = filtersets.CategoryFilterSet
+
+
+class CategoryEditView(generic.ObjectEditView):
+    queryset = Category.objects.all()
+    form = forms.CategoryForm
+
+
+class CategoryDeleteView(generic.ObjectDeleteView):
+    queryset = Category.objects.all()
+
+
+class CategoryBulkDeleteView(generic.BulkDeleteView):
+    queryset = Category.objects.all()
+    table = tables.CategoryTable
+
+
+class CategorySyncView(PermissionRequiredMixin, View):
+    """Sync Categories from the default OpenNMS Server (Part C).
+
+    Mirrors ``MonitoringSyncAllView``'s simple button-POST shape.
+    ``get_or_create()``s a local ``Category`` row for each name OpenNMS
+    reports — never deletes a row that OpenNMS no longer lists, since a
+    Requisition/Override may still reference it.
+    """
+
+    permission_required = "netbox_opennms.add_category"
+
+    def post(self, request):
+        try:
+            with catalog._default_client() as client:
+                categories = client.list_categories()
+        except OpenNMSError as exc:
+            messages.error(request, f"Could not sync Categories: {exc}")
+            return redirect("plugins:netbox_opennms:category_list")
+        created = 0
+        for name, description in categories:
+            _obj, was_created = Category.objects.get_or_create(
+                name=name, defaults={"description": description}
+            )
+            if was_created:
+                created += 1
+        messages.success(
+            request,
+            f"Synced {len(categories)} Categor{'y' if len(categories) == 1 else 'ies'} "
+            f"from OpenNMS ({created} new).",
+        )
+        return redirect("plugins:netbox_opennms:category_list")
+
+
+# --- Metadata Pull Mapping (RD-3 pull-back) ----------------------------------
+
+
+class MetadataPullMappingView(generic.ObjectView):
+    queryset = MetadataPullMapping.objects.all()
+
+
+class MetadataPullMappingListView(generic.ObjectListView):
+    queryset = MetadataPullMapping.objects.select_related("requisition")
+    table = tables.MetadataPullMappingTable
+    filterset = filtersets.MetadataPullMappingFilterSet
+
+
+class MetadataPullMappingEditView(generic.ObjectEditView):
+    queryset = MetadataPullMapping.objects.all()
+    form = forms.MetadataPullMappingForm
+
+
+class MetadataPullMappingDeleteView(generic.ObjectDeleteView):
+    queryset = MetadataPullMapping.objects.all()
+
+
+class MetadataPullMappingBulkDeleteView(generic.BulkDeleteView):
+    queryset = MetadataPullMapping.objects.all()
+    table = tables.MetadataPullMappingTable
+
+
+class MetadataPullMappingConfigureView(GetReturnURLMixin, PermissionRequiredMixin, View):
+    """Discover a Requisition's live OpenNMS metadata keys and map each to a
+    NetBox target (RD-3 pull-back — configure step; a separate "Apply pull"
+    action, ``MetadataPullMappingApplyView``, does the actual write-back).
+
+    GET shows every ``(context, key)`` pair observed on the Requisition's
+    currently-matched live nodes (via ``pull.discover_requisition_metadata_keys``),
+    each with a dropdown pre-filled from any existing ``MetadataPullMapping``
+    row. POST saves one row per pair that was given a non-blank target, and
+    deletes any existing row for a pair that was cleared back to blank.
+    """
+
+    permission_required = "netbox_opennms.add_metadatapullmapping"
+    template_name = "netbox_opennms/metadatapullmapping_configure.html"
+
+    def _pairs_and_target_server(self, requisition):
+        target_server = target_server_for(requisition)
+        if target_server is None:
+            return [], None, "This Requisition's target OpenNMS Server could not be resolved."
+        try:
+            with OpenNMSClient.from_server(target_server) as client:
+                pairs = discover_requisition_metadata_keys(requisition, client)
+        except OpenNMSError as exc:
+            return [], target_server, f"Could not reach OpenNMS: {exc}"
+        return pairs, target_server, None
+
+    def get(self, request, pk):
+        requisition = get_object_or_404(Requisition, pk=pk)
+        pairs, _target_server, error = self._pairs_and_target_server(requisition)
+        if error:
+            messages.error(request, error)
+            return redirect(self.get_return_url(request, requisition))
+        existing = {
+            (mapping.context, mapping.key): mapping.netbox_target
+            for mapping in requisition.pull_mappings.all()
+        }
+        rows = [
+            {
+                "context": context,
+                "key": key,
+                "current_target": existing.get((context, key), ""),
+            }
+            for context, key in pairs
+        ]
+        return render(
+            request,
+            self.template_name,
+            {
+                "object": requisition,
+                "rows": rows,
+                "target_choices": NetBoxTargetChoices,
+                "return_url": self.get_return_url(request, requisition),
+            },
+        )
+
+    def post(self, request, pk):
+        requisition = get_object_or_404(Requisition, pk=pk)
+        pairs, _target_server, error = self._pairs_and_target_server(requisition)
+        if error:
+            messages.error(request, error)
+            return redirect(self.get_return_url(request, requisition))
+        saved = 0
+        for context, key in pairs:
+            field_name = f"target__{context}__{key}"
+            netbox_target = request.POST.get(field_name, "").strip()
+            if not netbox_target:
+                MetadataPullMapping.objects.filter(
+                    requisition=requisition, context=context, key=key
+                ).delete()
+                continue
+            mapping, _created = MetadataPullMapping.objects.update_or_create(
+                requisition=requisition,
+                context=context,
+                key=key,
+                defaults={"netbox_target": netbox_target},
+            )
+            try:
+                mapping.full_clean()
+            except ValidationError as exc:
+                messages.error(
+                    request, f"Could not save mapping for {context}:{key}: {exc}"
+                )
+                continue
+            saved += 1
+        messages.success(request, f"Saved {saved} pull mapping(s).")
+        return redirect(self.get_return_url(request, requisition))
+
+
+class MetadataPullMappingApplyView(GetReturnURLMixin, PermissionRequiredMixin, View):
+    """Apply a Requisition's saved ``MetadataPullMapping`` rows (RD-3 pull-back
+    — write step). Explicit, operator-invoked; never part of the normal
+    render/sync job.
+    """
+
+    permission_required = "netbox_opennms.change_metadatapullmapping"
+
+    def post(self, request, pk):
+        requisition = get_object_or_404(Requisition, pk=pk)
+        target_server = target_server_for(requisition)
+        if target_server is None:
+            messages.error(
+                request,
+                "This Requisition's target OpenNMS Server could not be resolved.",
+            )
+            return redirect(self.get_return_url(request, requisition))
+        try:
+            with OpenNMSClient.from_server(target_server) as client:
+                updated = apply_pull_mappings(requisition, client)
+        except OpenNMSError as exc:
+            messages.error(request, f"Could not apply pull mappings: {exc}")
+            return redirect(self.get_return_url(request, requisition))
+        if updated:
+            messages.success(request, f"Updated {updated} NetBox object(s).")
+        else:
+            messages.info(request, "Nothing to update.")
+        return redirect(self.get_return_url(request, requisition))

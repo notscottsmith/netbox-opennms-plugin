@@ -30,11 +30,13 @@ from netbox_opennms.membership import (
 )
 from netbox_opennms.models import (
     AssetMapping,
+    Category,
     DiscoveredNode,
     DiscoveryScan,
     MetadataContext,
     MetadataEntry,
     MetadataKey,
+    MetadataPullMapping,
     MonitoredInterface,
     MonitoredService,
     MonitoringDetector,
@@ -2225,19 +2227,370 @@ class MetadataEntryViewTest(
         req = Requisition.objects.create(
             name="me-req", filter_params={"role": ["switch"]}
         )
-        for scope, key in [("node", "k1"), ("node", "k2"), ("interface", "k3")]:
+        for key in ("k1", "k2", "k3"):
             MetadataEntry.objects.create(
                 requisition=req,
-                scope=scope,
+                scope="requisition",
                 context="requisition",
                 key=key,
                 literal_value="v",
             )
         cls.form_data = {
             "requisition": req.pk,
-            "scope": "node",
+            "scope": "requisition",
             "context": "requisition",
             "key": "k4",
             "value_source": "",
             "literal_value": "v4",
         }
+
+
+class CategoryViewTest(
+    ViewTestCases.GetObjectViewTestCase,
+    ViewTestCases.GetObjectChangelogViewTestCase,
+    ViewTestCases.CreateObjectViewTestCase,
+    ViewTestCases.EditObjectViewTestCase,
+    ViewTestCases.DeleteObjectViewTestCase,
+    ViewTestCases.ListObjectsViewTestCase,
+    ViewTestCases.BulkDeleteObjectsViewTestCase,
+):
+    """Category (Part C): a plain lookup table, no builtin/protected rows --
+    unlike MetadataContext/MetadataKey, the generic mixins are safe here."""
+
+    model = Category
+
+    def _get_base_url(self):
+        return "plugins:netbox_opennms:category_{}"
+
+    @classmethod
+    def setUpTestData(cls):
+        for name in ("X-cat-1", "X-cat-2", "X-cat-3"):
+            Category.objects.create(name=name)
+        cls.form_data = {
+            "name": "X-cat-4",
+            "description": "created by the view test suite",
+        }
+
+
+class CategorySyncViewTest(TestCase):
+    """CategorySyncView: button-POST sync from the default OpenNMS Server."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="cat-sync-tester")
+        self.user.user_permissions.add(
+            Permission.objects.get(
+                codename="add_category", content_type__app_label="netbox_opennms"
+            )
+        )
+        self.client.force_login(self.user)
+
+    def _url(self):
+        return reverse("plugins:netbox_opennms:category_sync")
+
+    def test_login_required(self):
+        self.client.logout()
+        response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/login/", response.url)
+
+    def test_requires_add_permission(self):
+        self.user.user_permissions.clear()
+        response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 403)
+
+    @mock.patch("netbox_opennms.views.catalog._default_client")
+    def test_sync_creates_new_categories(self, mock_default_client):
+        client = mock_default_client.return_value.__enter__.return_value
+        client.list_categories.return_value = [
+            ("Routers", ""),
+            ("Servers", "Server tier"),
+        ]
+        response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            set(Category.objects.values_list("name", flat=True)),
+            {"Routers", "Servers"},
+        )
+        self.assertEqual(
+            Category.objects.get(name="Servers").description, "Server tier"
+        )
+        messages = list(get_messages(response.wsgi_request))
+        self.assertTrue(any("Synced 2 Categories" in str(m) for m in messages))
+
+    @mock.patch("netbox_opennms.views.catalog._default_client")
+    def test_sync_leaves_existing_category_alone(self, mock_default_client):
+        existing = Category.objects.create(name="Routers", description="mine")
+        client = mock_default_client.return_value.__enter__.return_value
+        client.list_categories.return_value = [("Routers", "from opennms")]
+        self.client.post(self._url())
+        existing.refresh_from_db()
+        self.assertEqual(existing.description, "mine")
+
+    @mock.patch("netbox_opennms.views.catalog._default_client")
+    def test_sync_failure_shows_error(self, mock_default_client):
+        mock_default_client.return_value.__enter__.side_effect = OpenNMSError("down")
+        response = self.client.post(self._url())
+        messages = list(get_messages(response.wsgi_request))
+        self.assertTrue(any("Could not sync Categories" in str(m) for m in messages))
+        self.assertEqual(Category.objects.count(), 0)
+
+
+class MetadataPullMappingViewTest(
+    ViewTestCases.GetObjectViewTestCase,
+    ViewTestCases.GetObjectChangelogViewTestCase,
+    ViewTestCases.CreateObjectViewTestCase,
+    ViewTestCases.EditObjectViewTestCase,
+    ViewTestCases.DeleteObjectViewTestCase,
+    ViewTestCases.ListObjectsViewTestCase,
+    ViewTestCases.BulkDeleteObjectsViewTestCase,
+):
+    model = MetadataPullMapping
+
+    def _get_base_url(self):
+        return "plugins:netbox_opennms:metadatapullmapping_{}"
+
+    @classmethod
+    def setUpTestData(cls):
+        req = Requisition.objects.create(
+            name="pm-req", filter_params={"role": ["switch"]}
+        )
+        for key in ("k1", "k2", "k3"):
+            MetadataPullMapping.objects.create(
+                requisition=req,
+                context="requisition",
+                key=key,
+                netbox_target="description",
+            )
+        cls.form_data = {
+            "requisition": req.pk,
+            "context": "requisition",
+            "key": "k4",
+            "netbox_target": "comments",
+        }
+
+
+class MetadataPullMappingConfigureViewTest(TestCase):
+    """MetadataPullMappingConfigureView: discover live (context, key) pairs and
+    save/delete mapping rows against them (RD-3 pull-back -- configure step)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.server = OpenNMSServer.objects.create(
+            name="Acme", url="https://onms.example/opennms"
+        )
+        cls.requisition = Requisition.objects.create(
+            name="pm-configure-req", filter_params=FILTER
+        )
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="pm-configure-tester")
+        self.user.user_permissions.add(
+            Permission.objects.get(
+                codename="add_metadatapullmapping",
+                content_type__app_label="netbox_opennms",
+            )
+        )
+        self.client.force_login(self.user)
+
+    def _url(self):
+        return reverse(
+            "plugins:netbox_opennms:requisition_pull_mappings_configure",
+            args=[self.requisition.pk],
+        )
+
+    def test_login_required(self):
+        self.client.logout()
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/login/", response.url)
+
+    def test_requires_add_permission(self):
+        self.user.user_permissions.clear()
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 403)
+
+    @mock.patch("netbox_opennms.views.target_server_for")
+    def test_unresolvable_target_server_redirects_with_error(self, mock_target_server):
+        mock_target_server.return_value = None
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 302)
+        messages = list(get_messages(response.wsgi_request))
+        self.assertTrue(
+            any("target OpenNMS Server could not be resolved" in str(m) for m in messages)
+        )
+
+    @mock.patch("netbox_opennms.views.discover_requisition_metadata_keys")
+    @mock.patch("netbox_opennms.views.OpenNMSClient.from_server")
+    @mock.patch("netbox_opennms.views.target_server_for")
+    def test_get_renders_discovered_pairs_prefilled_from_existing_mapping(
+        self, mock_target_server, mock_from_server, mock_discover
+    ):
+        mock_target_server.return_value = self.server
+        mock_discover.return_value = [("node", "sys-location"), ("node", "owner")]
+        MetadataPullMapping.objects.create(
+            requisition=self.requisition,
+            context="node",
+            key="owner",
+            netbox_target="comments",
+        )
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 200)
+        rows = {(row["context"], row["key"]): row["current_target"] for row in response.context["rows"]}
+        self.assertEqual(
+            rows, {("node", "sys-location"): "", ("node", "owner"): "comments"}
+        )
+
+    @mock.patch("netbox_opennms.views.discover_requisition_metadata_keys")
+    @mock.patch("netbox_opennms.views.OpenNMSClient.from_server")
+    @mock.patch("netbox_opennms.views.target_server_for")
+    def test_get_discovery_failure_redirects_with_error(
+        self, mock_target_server, mock_from_server, mock_discover
+    ):
+        mock_target_server.return_value = self.server
+        mock_discover.side_effect = OpenNMSError("timeout")
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 302)
+        messages = list(get_messages(response.wsgi_request))
+        self.assertTrue(any("Could not reach OpenNMS" in str(m) for m in messages))
+
+    @mock.patch("netbox_opennms.views.discover_requisition_metadata_keys")
+    @mock.patch("netbox_opennms.views.OpenNMSClient.from_server")
+    @mock.patch("netbox_opennms.views.target_server_for")
+    def test_post_saves_mapping_for_nonblank_target(
+        self, mock_target_server, mock_from_server, mock_discover
+    ):
+        mock_target_server.return_value = self.server
+        mock_discover.return_value = [("requisition", "owner")]
+        response = self.client.post(
+            self._url(), data={"target__requisition__owner": "comments"}
+        )
+        self.assertEqual(response.status_code, 302)
+        mapping = MetadataPullMapping.objects.get(
+            requisition=self.requisition, context="requisition", key="owner"
+        )
+        self.assertEqual(mapping.netbox_target, "comments")
+        messages = list(get_messages(response.wsgi_request))
+        self.assertTrue(any("Saved 1 pull mapping" in str(m) for m in messages))
+
+    @mock.patch("netbox_opennms.views.discover_requisition_metadata_keys")
+    @mock.patch("netbox_opennms.views.OpenNMSClient.from_server")
+    @mock.patch("netbox_opennms.views.target_server_for")
+    def test_post_deletes_mapping_when_cleared_to_blank(
+        self, mock_target_server, mock_from_server, mock_discover
+    ):
+        mock_target_server.return_value = self.server
+        mock_discover.return_value = [("requisition", "owner")]
+        MetadataPullMapping.objects.create(
+            requisition=self.requisition,
+            context="requisition",
+            key="owner",
+            netbox_target="comments",
+        )
+        response = self.client.post(
+            self._url(), data={"target__requisition__owner": ""}
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(
+            MetadataPullMapping.objects.filter(
+                requisition=self.requisition, context="requisition", key="owner"
+            ).exists()
+        )
+
+    @mock.patch("netbox_opennms.views.discover_requisition_metadata_keys")
+    @mock.patch("netbox_opennms.views.OpenNMSClient.from_server")
+    @mock.patch("netbox_opennms.views.target_server_for")
+    def test_post_validation_failure_is_reported(
+        self, mock_target_server, mock_from_server, mock_discover
+    ):
+        mock_target_server.return_value = self.server
+        mock_discover.return_value = [("node", "not-a-real-key")]
+        response = self.client.post(
+            self._url(), data={"target__node__not-a-real-key": "comments"}
+        )
+        messages = list(get_messages(response.wsgi_request))
+        self.assertTrue(any("Could not save mapping" in str(m) for m in messages))
+
+
+class MetadataPullMappingApplyViewTest(TestCase):
+    """MetadataPullMappingApplyView: explicit, operator-invoked write-back
+    (RD-3 pull-back -- apply step)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.server = OpenNMSServer.objects.create(
+            name="Acme", url="https://onms.example/opennms"
+        )
+        cls.requisition = Requisition.objects.create(
+            name="pm-apply-req", filter_params=FILTER
+        )
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="pm-apply-tester")
+        self.user.user_permissions.add(
+            Permission.objects.get(
+                codename="change_metadatapullmapping",
+                content_type__app_label="netbox_opennms",
+            )
+        )
+        self.client.force_login(self.user)
+
+    def _url(self):
+        return reverse(
+            "plugins:netbox_opennms:requisition_pull_mappings_apply",
+            args=[self.requisition.pk],
+        )
+
+    def test_login_required(self):
+        self.client.logout()
+        response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/login/", response.url)
+
+    def test_requires_change_permission(self):
+        self.user.user_permissions.clear()
+        response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 403)
+
+    @mock.patch("netbox_opennms.views.target_server_for")
+    def test_unresolvable_target_server_shows_error(self, mock_target_server):
+        mock_target_server.return_value = None
+        response = self.client.post(self._url())
+        messages = list(get_messages(response.wsgi_request))
+        self.assertTrue(
+            any("target OpenNMS Server could not be resolved" in str(m) for m in messages)
+        )
+
+    @mock.patch("netbox_opennms.views.apply_pull_mappings")
+    @mock.patch("netbox_opennms.views.OpenNMSClient.from_server")
+    @mock.patch("netbox_opennms.views.target_server_for")
+    def test_successful_apply_reports_updated_count(
+        self, mock_target_server, mock_from_server, mock_apply
+    ):
+        mock_target_server.return_value = self.server
+        mock_apply.return_value = 3
+        response = self.client.post(self._url())
+        messages = list(get_messages(response.wsgi_request))
+        self.assertTrue(any("Updated 3 NetBox object" in str(m) for m in messages))
+
+    @mock.patch("netbox_opennms.views.apply_pull_mappings")
+    @mock.patch("netbox_opennms.views.OpenNMSClient.from_server")
+    @mock.patch("netbox_opennms.views.target_server_for")
+    def test_nothing_to_update_reports_info(
+        self, mock_target_server, mock_from_server, mock_apply
+    ):
+        mock_target_server.return_value = self.server
+        mock_apply.return_value = 0
+        response = self.client.post(self._url())
+        messages = list(get_messages(response.wsgi_request))
+        self.assertTrue(any("Nothing to update" in str(m) for m in messages))
+
+    @mock.patch("netbox_opennms.views.OpenNMSClient.from_server")
+    @mock.patch("netbox_opennms.views.target_server_for")
+    def test_apply_failure_shows_error(self, mock_target_server, mock_from_server):
+        mock_target_server.return_value = self.server
+        mock_from_server.return_value.__enter__.side_effect = OpenNMSError("down")
+        response = self.client.post(self._url())
+        messages = list(get_messages(response.wsgi_request))
+        self.assertTrue(
+            any("Could not apply pull mappings" in str(m) for m in messages)
+        )

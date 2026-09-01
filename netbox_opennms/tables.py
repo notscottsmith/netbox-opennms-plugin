@@ -10,11 +10,13 @@ from netbox.tables import BaseTable, NetBoxTable, columns
 from . import labels
 from .models import (
     AssetMapping,
+    Category,
     DiscoveredNode,
     DiscoveryScan,
     MetadataContext,
     MetadataEntry,
     MetadataKey,
+    MetadataPullMapping,
     MonitoredInterface,
     MonitoredService,
     MonitoringDetector,
@@ -760,3 +762,40 @@ class MetadataEntryTable(NetBoxTable):
             "actions",
         )
         default_columns = ("requisition", "scope", "context", "key")
+
+
+class CategoryTable(NetBoxTable):
+    name = tables.Column(linkify=True)
+
+    class Meta(NetBoxTable.Meta):
+        model = Category
+        fields = (
+            "pk",
+            "id",
+            "name",
+            "description",
+            "created",
+            "last_updated",
+            "actions",
+        )
+        default_columns = ("name", "description")
+
+
+class MetadataPullMappingTable(NetBoxTable):
+    requisition = tables.Column(linkify=True)
+    key = tables.Column(linkify=True)
+
+    class Meta(NetBoxTable.Meta):
+        model = MetadataPullMapping
+        fields = (
+            "pk",
+            "id",
+            "requisition",
+            "context",
+            "key",
+            "netbox_target",
+            "created",
+            "last_updated",
+            "actions",
+        )
+        default_columns = ("requisition", "context", "key", "netbox_target")

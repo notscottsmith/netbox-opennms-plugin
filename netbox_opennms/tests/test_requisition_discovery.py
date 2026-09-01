@@ -4,6 +4,7 @@
 
 from unittest import mock
 
+from dcim.models import Site
 from django.contrib.auth.models import Permission, User
 from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
@@ -185,6 +186,7 @@ class RequisitionImportViewTest(TestCase):
         cls.server = OpenNMSServer.objects.create(
             name="Acme", url="https://onms.example", username="svc", password="x"
         )
+        cls.site = Site.objects.create(name="Raleigh", slug="raleigh")
         Requisition.objects.create(name="fs-existing")
 
     def setUp(self):
@@ -201,6 +203,31 @@ class RequisitionImportViewTest(TestCase):
             "plugins:netbox_opennms:opennmsserver_import_requisition",
             args=[self.server.pk],
         )
+
+    def _post_data(self, foreign_source, **overrides):
+        data = {
+            "foreign_source": foreign_source,
+            "object_types": "device",
+            "filter_params": "{}",
+            "scan_interval": "1d",
+            "default_interfaces": "primary",
+            "scope_site": self.site.pk,
+        }
+        data.update(overrides)
+        return data
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_get_renders_form_with_name_locked(self, mock_from_server):
+        client = mock_from_server.return_value.__enter__.return_value
+        client.get_foreign_source.return_value = {"scan-interval": "30m"}
+        response = self.client.get(self._url() + "?foreign_source=fs-new")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context["form"].fields["name"].disabled)
+        self.assertContains(response, "fs-new")
+
+    def test_get_with_no_foreign_source_redirects(self):
+        response = self.client.get(self._url(), follow=True)
+        self.assertContains(response, "No Foreign Source given")
 
     @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
     def test_import_creates_requisition_with_detectors_and_policies(
@@ -226,13 +253,13 @@ class RequisitionImportViewTest(TestCase):
             },
         }
         response = self.client.post(
-            self._url(), {"foreign_source": "fs-new"}, follow=True
+            self._url(), self._post_data("fs-new"), follow=True
         )
         self.assertEqual(response.status_code, 200)
 
         requisition = Requisition.objects.get(name="fs-new")
         self.assertEqual(requisition.scan_interval, "30m")
-        self.assertEqual(requisition.filter_params, {})
+        self.assertEqual(requisition.filter_params, {"site": [self.site.slug]})
 
         detector = requisition.detectors.get()
         self.assertEqual(detector.name, "ICMP")
@@ -251,12 +278,25 @@ class RequisitionImportViewTest(TestCase):
         )
 
         self.assertContains(response, "Imported")
-        self.assertContains(response, "no filter or Scope")
+
+    @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
+    def test_no_scope_pick_is_rejected(self, mock_from_server):
+        client = mock_from_server.return_value.__enter__.return_value
+        client.get_foreign_source.return_value = {
+            "detectors": {}, "policies": {},
+        }
+        response = self.client.post(
+            self._url(),
+            self._post_data("fs-new", scope_site=""),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Pick at least one Scope level")
+        self.assertFalse(Requisition.objects.filter(name="fs-new").exists())
 
     @mock.patch("netbox_opennms.client.OpenNMSClient.from_server")
     def test_existing_name_is_rejected(self, mock_from_server):
         response = self.client.post(
-            self._url(), {"foreign_source": "fs-existing"}, follow=True
+            self._url(), self._post_data("fs-existing"), follow=True
         )
         self.assertContains(response, "already exists")
         mock_from_server.assert_not_called()
@@ -269,7 +309,7 @@ class RequisitionImportViewTest(TestCase):
         client = mock_from_server.return_value.__enter__.return_value
         client.get_foreign_source.return_value = None
         response = self.client.post(
-            self._url(), {"foreign_source": "fs-gone"}, follow=True
+            self._url(), self._post_data("fs-gone"), follow=True
         )
         self.assertContains(response, "no longer exists")
         self.assertFalse(Requisition.objects.filter(name="fs-gone").exists())
@@ -279,14 +319,14 @@ class RequisitionImportViewTest(TestCase):
         client = mock_from_server.return_value.__enter__.return_value
         client.get_foreign_source.side_effect = OpenNMSError("unreachable")
         response = self.client.post(
-            self._url(), {"foreign_source": "fs-new"}, follow=True
+            self._url(), self._post_data("fs-new"), follow=True
         )
         self.assertContains(response, "unreachable")
         self.assertFalse(Requisition.objects.filter(name="fs-new").exists())
 
     def test_requires_add_requisition_permission(self):
         self.user.user_permissions.clear()
-        response = self.client.post(self._url(), {"foreign_source": "fs-new"})
+        response = self.client.post(self._url(), self._post_data("fs-new"))
         self.assertEqual(response.status_code, 403)
         self.assertFalse(Requisition.objects.filter(name="fs-new").exists())
 
@@ -302,7 +342,7 @@ class RequisitionImportViewTest(TestCase):
             client.get_foreign_source.return_value = {
                 "detectors": {"detector": {"name": "SNMP", "class": "x.Y"}}
             }
-            self.client.post(self._url(), {"foreign_source": "fs-noparams"})
+            self.client.post(self._url(), self._post_data("fs-noparams"))
         detector = MonitoringDetector.objects.get(
             requisition__name="fs-noparams", name="SNMP"
         )

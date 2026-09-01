@@ -33,6 +33,7 @@ from netbox_opennms.models import (
     DeployedForeignSource,
     DiscoveredNode,
     DiscoveryScan,
+    MetadataEntry,
     MonitoringDetector,
     MonitoringOverride,
     OpenNMSServer,
@@ -108,6 +109,34 @@ class SyncForeignSourceJobTest(TestCase):
         )
         self.assertEqual(
             client.import_requisition.call_args.kwargs["rescan_existing"], "false"
+        )
+
+    @mock.patch("netbox_opennms.jobs.advisory_lock")
+    @mock.patch("netbox_opennms.jobs.OpenNMSClient.from_server")
+    def test_requisition_scope_metadata_renders_at_root(self, mock_from_server, _lock):
+        # RD-3 bugfix: resolve_requisition_metadata is threaded through to
+        # render_requisition, so a requisition-scope entry lands once at the
+        # <model-import> root of the pushed XML.
+        MetadataEntry.objects.create(
+            requisition=self.requisition,
+            scope="requisition",
+            context="requisition",
+            key="owner",
+            literal_value="neteng",
+        )
+        client = mock_from_server.return_value.__enter__.return_value
+        client.import_requisition.return_value = mock.Mock(status_code=202)
+
+        self._runner().run(foreign_source=FS)
+
+        resolution = resolve(FS)
+        self.assertEqual(
+            client.post_requisition.call_args.args[0],
+            render_requisition(
+                FS,
+                resolution.nodes,
+                requisition_metadata=[("requisition", "owner", "neteng")],
+            ),
         )
 
     @mock.patch("netbox_opennms.jobs.advisory_lock")

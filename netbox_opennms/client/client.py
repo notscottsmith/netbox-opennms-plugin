@@ -186,6 +186,38 @@ class OpenNMSClient:
                 "OpenNMS returned an unparseable foreignSourcesConfig/assets response."
             ) from exc
 
+    def list_categories(self):
+        """Available OpenNMS monitoring Categories (Part C, RD-7).
+
+        ``GET /rest/categories`` → an ``ElementList``
+        (``{"count": N, "element": [...]}`` on Horizon 36; a bare list on some
+        versions), each element a plain name string or a
+        ``{"name": ..., "description": ...}`` dict. Returns a list of
+        ``(name, description)`` pairs (``description`` "" when absent); typed
+        error on an unparseable body.
+        """
+        response = self._request(
+            "GET",
+            "/rest/categories",
+            headers={"Accept": "application/json"},
+        )
+        try:
+            payload = response.json()
+            elements = (
+                payload if isinstance(payload, list) else payload.get("element", [])
+            )
+            categories = []
+            for entry in elements:
+                if isinstance(entry, str):
+                    categories.append((entry, ""))
+                elif isinstance(entry, dict) and entry.get("name"):
+                    categories.append((entry["name"], entry.get("description") or ""))
+            return categories
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise OpenNMSError(
+                "OpenNMS returned an unparseable categories response."
+            ) from exc
+
     def list_asset_suggestions(self):
         """Known asset-field values OpenNMS has seen, for reuse instead of a
         near-duplicate (Server detail page, issue #64/#61).

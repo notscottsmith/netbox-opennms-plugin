@@ -22,6 +22,8 @@ NAV_METADATA_CONTEXTS = "Metadata Contexts"
 NAV_METADATA_KEYS = "Metadata Keys"
 NAV_MONITORING_DETECTORS = "Detectors"
 NAV_MONITORING_POLICIES = "Policies"
+NAV_CATEGORIES = "Categories"
+NAV_METADATA_PULL_MAPPINGS = "Metadata Pull Mappings"
 
 # --- Requisition table columns (tables.py) ----------------------------------
 

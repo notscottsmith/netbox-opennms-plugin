@@ -69,6 +69,7 @@
           <tr><th scope="row">Default interfaces</th><td>{{ object.get_default_interfaces_display }}</td></tr>
           <tr><th scope="row">Declared services</th><td>{{ object.services|join:", "|placeholder }}</td></tr>
           <tr><th scope="row">Location</th><td>{{ object.location|placeholder }}</td></tr>
+          <tr><th scope="row">Default categories</th><td>{% for category in object.default_categories.all %}{{ category|linkify }}{% if not forloop.last %}, {% endif %}{% empty %}{{ ''|placeholder }}{% endfor %}</td></tr>
         </table>
         <div class="card-body">
           <details>
@@ -146,6 +147,33 @@
             {% empty %}<tr><td colspan="3" class="text-muted">None</td></tr>{% endfor %}
           </tbody>
         </table>
+      </div>
+      <div class="card">
+        <h2 class="card-header d-flex justify-content-between align-items-center">
+          Metadata Pull Mappings
+          {% if perms.netbox_opennms.add_metadatapullmapping %}
+            <a href="{% url 'plugins:netbox_opennms:requisition_pull_mappings_configure' pk=object.pk %}"
+               class="btn btn-sm btn-primary"><i class="mdi mdi-cog"></i> Configure</a>
+          {% endif %}
+        </h2>
+        <table class="table table-hover mb-0">
+          <thead><tr><th>Context</th><th>Key</th><th>NetBox target</th></tr></thead>
+          <tbody>
+            {% for mapping in object.pull_mappings.all %}
+              <tr><td>{{ mapping.context }}</td><td>{{ mapping|linkify }}</td><td><code>{{ mapping.netbox_target }}</code></td></tr>
+            {% empty %}<tr><td colspan="3" class="text-muted">None</td></tr>{% endfor %}
+          </tbody>
+        </table>
+        {% if perms.netbox_opennms.change_metadatapullmapping and object.pull_mappings.exists %}
+          <div class="card-body">
+            <form method="post" action="{% url 'plugins:netbox_opennms:requisition_pull_mappings_apply' pk=object.pk %}">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-sm btn-outline-primary">
+                <i class="mdi mdi-download" aria-hidden="true"></i> Apply pull mappings
+              </button>
+            </form>
+          </div>
+        {% endif %}
       </div>
     </div>
   </div>

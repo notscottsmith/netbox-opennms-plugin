@@ -13,11 +13,13 @@ from ..membership import filter_errors
 from ..models import (
     ASSIGNMENT_MODELS,
     AssetMapping,
+    Category,
     DiscoveredNode,
     DiscoveryScan,
     MetadataContext,
     MetadataEntry,
     MetadataKey,
+    MetadataPullMapping,
     MonitoredInterface,
     MonitoredService,
     MonitoringDetector,
@@ -56,6 +58,7 @@ class RequisitionSerializer(NetBoxModelSerializer):
             "default_interfaces",
             "services",
             "location",
+            "default_categories",
             "tags",
             "custom_fields",
             "created",
@@ -156,6 +159,7 @@ class MonitoringOverrideSerializer(NetBoxModelSerializer):
             "management_role",
             "suppressed_services",
             "location",
+            "categories",
             "tags",
             "custom_fields",
             "created",
@@ -511,6 +515,50 @@ class MetadataEntrySerializer(NetBoxModelSerializer):
             "key",
             "value_source",
             "literal_value",
+            "tags",
+            "custom_fields",
+            "created",
+            "last_updated",
+        )
+        brief_fields = ("id", "url", "display", "key")
+
+
+class CategorySerializer(NetBoxModelSerializer):
+    url = serializers.HyperlinkedIdentityField(
+        view_name="plugins-api:netbox_opennms-api:category-detail"
+    )
+
+    class Meta:
+        model = Category
+        fields = (
+            "id",
+            "url",
+            "display",
+            "name",
+            "description",
+            "tags",
+            "custom_fields",
+            "created",
+            "last_updated",
+        )
+        brief_fields = ("id", "url", "display", "name")
+
+
+class MetadataPullMappingSerializer(NetBoxModelSerializer):
+    url = serializers.HyperlinkedIdentityField(
+        view_name="plugins-api:netbox_opennms-api:metadatapullmapping-detail"
+    )
+
+    class Meta:
+        model = MetadataPullMapping
+        fields = (
+            "id",
+            "url",
+            "display",
+            "requisition",
+            "context",
+            "key",
+            "netbox_target",
             "tags",
             "custom_fields",
             "created",

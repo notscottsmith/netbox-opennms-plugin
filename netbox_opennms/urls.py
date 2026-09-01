@@ -8,11 +8,13 @@ from netbox.views.generic import ObjectChangeLogView
 from . import views
 from .models import (
     AssetMapping,
+    Category,
     DiscoveredNode,
     DiscoveryScan,
     MetadataContext,
     MetadataEntry,
     MetadataKey,
+    MetadataPullMapping,
     MonitoredInterface,
     MonitoredService,
     MonitoringDetector,
@@ -132,6 +134,28 @@ urlpatterns = (
     *_crud("metadata-contexts", "metadatacontext", "MetadataContext", MetadataContext),
     *_crud("metadata-keys", "metadatakey", "MetadataKey", MetadataKey),
     *_crud("metadata-entries", "metadataentry", "MetadataEntry", MetadataEntry),
+    *_crud("categories", "category", "Category", Category),
+    path(
+        "categories/sync/",
+        views.CategorySyncView.as_view(),
+        name="category_sync",
+    ),
+    *_crud(
+        "metadata-pull-mappings",
+        "metadatapullmapping",
+        "MetadataPullMapping",
+        MetadataPullMapping,
+    ),
+    path(
+        "requisitions/<int:pk>/pull-mappings/configure/",
+        views.MetadataPullMappingConfigureView.as_view(),
+        name="requisition_pull_mappings_configure",
+    ),
+    path(
+        "requisitions/<int:pk>/pull-mappings/apply/",
+        views.MetadataPullMappingApplyView.as_view(),
+        name="requisition_pull_mappings_apply",
+    ),
     *_crud("servers", "opennmsserver", "OpenNMSServer", OpenNMSServer),
     path(
         "servers/<int:pk>/test/",

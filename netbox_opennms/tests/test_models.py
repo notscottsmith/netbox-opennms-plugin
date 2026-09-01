@@ -19,10 +19,12 @@ from ipam.models import IPAddress
 from tenancy.models import Tenant
 
 from netbox_opennms.models import (
+    Category,
     DiscoveryScan,
     MetadataContext,
     MetadataEntry,
     MetadataKey,
+    MetadataPullMapping,
     MonitoredService,
     MonitoringDetector,
     MonitoringExclusion,
@@ -593,7 +595,7 @@ class MetadataEntryContextValidationTest(TestCase):
     def test_seeded_base_context_is_valid(self):
         entry = MetadataEntry(
             requisition=self.req,
-            scope="node",
+            scope="requisition",
             context="requisition",
             key="k1",
             literal_value="v",
@@ -734,7 +736,7 @@ class MetadataEntryKeyValidationTest(TestCase):
         # matching real OpenNMS behaviour (no documented vocabulary there).
         entry = MetadataEntry(
             requisition=self.req,
-            scope="node",
+            scope="requisition",
             context="requisition",
             key="anything",
             literal_value="v",
@@ -764,3 +766,157 @@ class MetadataEntryKeyValidationTest(TestCase):
         )
         with self.assertRaises(ValidationError):
             entry.full_clean()
+
+
+class MetadataEntryScopeContextInvariantTest(TestCase):
+    """RD-3 bugfix: for a base context, scope must equal context -- context IS
+    placement, closing the bug where a context="requisition" entry rendered
+    once per node instead of once at the requisition root."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.req = Requisition.objects.create(
+            name="netbox.raleigh.router-scopefix", filter_params=FILTER
+        )
+
+    def test_base_context_scope_mismatch_is_rejected(self):
+        entry = MetadataEntry(
+            requisition=self.req,
+            scope="node",
+            context="requisition",
+            key="k1",
+            literal_value="v",
+        )
+        with self.assertRaises(ValidationError):
+            entry.full_clean()
+
+    def test_base_context_matching_scope_is_valid(self):
+        for context in ("node", "interface", "service", "requisition"):
+            entry = MetadataEntry(
+                requisition=self.req,
+                scope=context,
+                context=context,
+                key=f"k-{context}",
+                literal_value="v",
+            )
+            entry.full_clean()  # does not raise
+
+    def test_custom_context_freely_chooses_scope(self):
+        MetadataContext.objects.create(name="X-billing")
+        entry = MetadataEntry(
+            requisition=self.req,
+            scope="service",
+            context="X-billing",
+            key="k1",
+            literal_value="v",
+        )
+        entry.full_clean()  # does not raise
+
+    def test_requisition_scope_rejects_value_source(self):
+        entry = MetadataEntry(
+            requisition=self.req,
+            scope="requisition",
+            context="requisition",
+            key="k1",
+            value_source="name",
+        )
+        with self.assertRaises(ValidationError):
+            entry.full_clean()
+
+    def test_requisition_scope_accepts_literal_value(self):
+        entry = MetadataEntry(
+            requisition=self.req,
+            scope="requisition",
+            context="requisition",
+            key="k1",
+            literal_value="v",
+        )
+        entry.full_clean()  # does not raise
+
+
+class CategoryModelTest(TestCase):
+    def test_str_is_name(self):
+        category = Category.objects.create(name="X-critical")
+        self.assertEqual(str(category), "X-critical")
+
+    def test_get_absolute_url(self):
+        category = Category.objects.create(name="X-critical")
+        self.assertIn(str(category.pk), category.get_absolute_url())
+
+    def test_name_must_be_unique(self):
+        Category.objects.create(name="X-dup")
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                Category.objects.create(name="X-dup")
+
+    def test_description_is_optional(self):
+        category = Category(name="X-optional")
+        category.full_clean()  # does not raise
+
+
+class MetadataPullMappingValidationTest(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.req = Requisition.objects.create(
+            name="netbox.raleigh.router-pullmap", filter_params=FILTER
+        )
+
+    def test_valid_mapping(self):
+        mapping = MetadataPullMapping(
+            requisition=self.req,
+            context="node",
+            key="sys-location",
+            netbox_target="description",
+        )
+        mapping.full_clean()  # does not raise
+
+    def test_unregistered_context_is_rejected(self):
+        mapping = MetadataPullMapping(
+            requisition=self.req,
+            context="X-not-registered",
+            key="k1",
+            netbox_target="description",
+        )
+        with self.assertRaises(ValidationError):
+            mapping.full_clean()
+
+    def test_unregistered_node_key_is_rejected(self):
+        mapping = MetadataPullMapping(
+            requisition=self.req,
+            context="node",
+            key="not-a-real-key",
+            netbox_target="comments",
+        )
+        with self.assertRaises(ValidationError):
+            mapping.full_clean()
+
+    def test_unregistered_key_under_requisition_context_is_freeform(self):
+        mapping = MetadataPullMapping(
+            requisition=self.req,
+            context="requisition",
+            key="anything",
+            netbox_target="comments",
+        )
+        mapping.full_clean()  # does not raise
+
+    def test_unique_together_requisition_context_key(self):
+        MetadataPullMapping.objects.create(
+            requisition=self.req,
+            context="requisition",
+            key="k1",
+            netbox_target="comments",
+        )
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                MetadataPullMapping.objects.create(
+                    requisition=self.req,
+                    context="requisition",
+                    key="k1",
+                    netbox_target="description",
+                )
+
+    def test_str(self):
+        mapping = MetadataPullMapping(
+            context="node", key="sys-location", netbox_target="description"
+        )
+        self.assertEqual(str(mapping), "node:sys-location → description")

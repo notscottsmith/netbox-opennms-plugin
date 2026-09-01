@@ -393,6 +393,48 @@ class OpenNMSClientTest(SimpleTestCase):
         self.assertTrue(url.endswith("/rest/foreignSourcesConfig/assets"))
 
     @mock.patch.object(requests.Session, "request")
+    def test_list_categories_parses_bare_list_of_strings(self, mock_request):
+        mock_request.return_value = mock.Mock(
+            status_code=200,
+            ok=True,
+            json=mock.Mock(return_value=["Routers", "Servers"]),
+        )
+        self.assertEqual(
+            _client().list_categories(),
+            [("Routers", ""), ("Servers", "")],
+        )
+        _, url = mock_request.call_args.args
+        self.assertTrue(url.endswith("/rest/categories"))
+
+    @mock.patch.object(requests.Session, "request")
+    def test_list_categories_parses_elementlist_of_dicts(self, mock_request):
+        mock_request.return_value = mock.Mock(
+            status_code=200,
+            ok=True,
+            json=mock.Mock(
+                return_value={
+                    "count": 2,
+                    "element": [
+                        {"name": "Routers", "description": "Core routers"},
+                        {"name": "Servers"},
+                    ],
+                }
+            ),
+        )
+        self.assertEqual(
+            _client().list_categories(),
+            [("Routers", "Core routers"), ("Servers", "")],
+        )
+
+    @mock.patch.object(requests.Session, "request")
+    def test_list_categories_unparseable_raises(self, mock_request):
+        mock_request.return_value = mock.Mock(
+            status_code=200, ok=True, json=mock.Mock(side_effect=ValueError("x"))
+        )
+        with self.assertRaises(OpenNMSError):
+            _client().list_categories()
+
+    @mock.patch.object(requests.Session, "request")
     def test_list_asset_suggestions_parses_well_formed_payload(self, mock_request):
         mock_request.return_value = mock.Mock(
             status_code=200,

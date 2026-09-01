@@ -1,0 +1,15 @@
+{# Copyright 2026 Ronny Trommer <ronny@no42.org> #}
+{# SPDX-License-Identifier: MIT #}
+{% extends 'generic/object_list.html' %}
+
+{% block buttons %}
+  {{ block.super }}
+  {% if perms.netbox_opennms.add_category %}
+    <form method="post" action="{% url 'plugins:netbox_opennms:category_sync' %}" class="d-inline">
+      {% csrf_token %}
+      <button type="submit" class="btn btn-outline-primary">
+        <i class="mdi mdi-sync" aria-hidden="true"></i> Sync from OpenNMS
+      </button>
+    </form>
+  {% endif %}
+{% endblock %}

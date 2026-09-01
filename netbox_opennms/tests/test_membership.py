@@ -28,8 +28,11 @@ from netbox_opennms.membership import (
     resolve,
     resolve_all,
     resolve_node,
+    resolve_requisition_metadata,
 )
 from netbox_opennms.models import (
+    Category,
+    MetadataEntry,
     MonitoredInterface,
     MonitoredService,
     MonitoringOverride,
@@ -479,6 +482,92 @@ class MembershipTest(TestCase):
         self.assertEqual(resolve_node(device, req, override)[0].location, "edge")
         device2, _ = self._device("rtr-2", ip="10.0.0.3/24")
         self.assertEqual(resolve_node(device2, req, None)[0].location, "core")
+
+    # --- categories (Part C) ------------------------------------------------
+
+    def test_resolve_node_categories_default_only(self):
+        device, _ = self._device("rtr-1")
+        req = self._requisition()
+        cat = Category.objects.create(name="X-core")
+        req.default_categories.add(cat)
+        node, _ = resolve_node(device, req, None)
+        self.assertEqual(node.categories, [cat])
+
+    def test_resolve_node_categories_override_only(self):
+        device, _ = self._device("rtr-1")
+        req = self._requisition()
+        cat = Category.objects.create(name="X-override")
+        override = MonitoringOverride.objects.create(assigned_object=device)
+        override.categories.add(cat)
+        node, _ = resolve_node(device, req, override)
+        self.assertEqual(node.categories, [cat])
+
+    def test_resolve_node_categories_union_default_and_override(self):
+        device, _ = self._device("rtr-1")
+        req = self._requisition()
+        default_cat = Category.objects.create(name="X-default")
+        override_cat = Category.objects.create(name="X-override")
+        req.default_categories.add(default_cat)
+        override = MonitoringOverride.objects.create(assigned_object=device)
+        override.categories.add(override_cat)
+        node, _ = resolve_node(device, req, override)
+        self.assertEqual(set(node.categories), {default_cat, override_cat})
+
+    def test_resolve_node_categories_no_duplicates(self):
+        device, _ = self._device("rtr-1")
+        req = self._requisition()
+        cat = Category.objects.create(name="X-shared")
+        req.default_categories.add(cat)
+        override = MonitoringOverride.objects.create(assigned_object=device)
+        override.categories.add(cat)
+        node, _ = resolve_node(device, req, override)
+        self.assertEqual(node.categories, [cat])
+
+    def test_resolve_node_categories_empty_when_none_assigned(self):
+        device, _ = self._device("rtr-1")
+        node, _ = resolve_node(device, self._requisition(), None)
+        self.assertEqual(node.categories, [])
+
+    # --- resolve_requisition_metadata (Part B: scope/context fix) -----------
+
+    def test_resolve_requisition_metadata_returns_triads(self):
+        req = self._requisition()
+        MetadataEntry.objects.create(
+            requisition=req,
+            scope="requisition",
+            context="requisition",
+            key="owner",
+            literal_value="neteng",
+        )
+        self.assertEqual(
+            resolve_requisition_metadata(req), [("requisition", "owner", "neteng")]
+        )
+
+    def test_resolve_requisition_metadata_excludes_node_scope_entries(self):
+        req = self._requisition()
+        MetadataEntry.objects.create(
+            requisition=req,
+            scope="node",
+            context="node",
+            key="sys-location",
+            literal_value="rack-1",
+        )
+        self.assertEqual(resolve_requisition_metadata(req), [])
+
+    def test_resolve_node_excludes_requisition_scope_metadata(self):
+        # A requisition-scope entry has no per-member object to resolve
+        # against -- it must not leak into any per-node metadata bucket.
+        device, _ = self._device("rtr-1")
+        req = self._requisition()
+        MetadataEntry.objects.create(
+            requisition=req,
+            scope="requisition",
+            context="requisition",
+            key="owner",
+            literal_value="neteng",
+        )
+        node, _ = resolve_node(device, req, None)
+        self.assertEqual(node.node_metadata, [])
 
     # --- resolve / monitored_foreign_sources -------------------------------
 

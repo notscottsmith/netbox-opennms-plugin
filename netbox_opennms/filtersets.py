@@ -7,11 +7,13 @@ from netbox.filtersets import NetBoxModelFilterSet
 
 from .models import (
     AssetMapping,
+    Category,
     DiscoveredNode,
     DiscoveryScan,
     MetadataContext,
     MetadataEntry,
     MetadataKey,
+    MetadataPullMapping,
     MonitoredInterface,
     MonitoredService,
     MonitoringDetector,
@@ -183,6 +185,30 @@ class MetadataEntryFilterSet(NetBoxModelFilterSet):
     class Meta:
         model = MetadataEntry
         fields = ("id", "requisition", "scope", "context", "key")
+
+    def search(self, queryset, name, value):
+        if value:
+            return queryset.filter(key__icontains=value)
+        return queryset
+
+
+class CategoryFilterSet(NetBoxModelFilterSet):
+    class Meta:
+        model = Category
+        fields = ("id", "name")
+
+    def search(self, queryset, name, value):
+        if value:
+            return queryset.filter(
+                Q(name__icontains=value) | Q(description__icontains=value)
+            )
+        return queryset
+
+
+class MetadataPullMappingFilterSet(NetBoxModelFilterSet):
+    class Meta:
+        model = MetadataPullMapping
+        fields = ("id", "requisition", "context", "key", "netbox_target")
 
     def search(self, queryset, name, value):
         if value:

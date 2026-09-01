@@ -97,6 +97,13 @@ def render_node(node, default_location=""):
         # Interface-scope metadata applies to every interface (RD-3).
         _add_metadata(iface_el, node.interface_metadata)
 
+    # <category>* per the requisition XSD order: interface*, category*, asset*,
+    # meta-data* (Requisition defaults ∪ the object's own Override — see
+    # membership.resolve_node).
+    for category in node.categories:
+        category_el = etree.SubElement(el, f"{{{MODEL_IMPORT_NS}}}category")
+        category_el.set("name", category.name)
+
     # Node-scope enrichment, after interfaces per the requisition XSD order:
     # <interface>* then <asset>* then <meta-data>* (RD-2/RD-3).
     for name, value in node.assets:
@@ -107,14 +114,22 @@ def render_node(node, default_location=""):
     return el
 
 
-def render_requisition(foreign_source, nodes, date_stamp=None, default_location=""):
+def render_requisition(
+    foreign_source,
+    nodes,
+    date_stamp=None,
+    default_location="",
+    requisition_metadata=None,
+):
     """Render the complete ``model-import`` requisition for one Foreign Source.
 
     ``foreign_source`` is the already-derived name (AD-14); ``nodes`` are the
     resolved ``NodeSpec`` objects (``membership.resolve``). Each yields one node
     with its management IP as the primary (``P``) interface and any extra IPs as
     non-primary (``N``). A node's location falls back to ``default_location``
-    (passed in for purity). Returns bytes.
+    (passed in for purity). ``requisition_metadata`` is the requisition-scope
+    ``(context, key, value)`` triads (``membership.resolve_requisition_metadata``),
+    rendered once as root-level ``<meta-data>`` (RD-3). Returns bytes.
     """
     root = etree.Element(f"{{{MODEL_IMPORT_NS}}}model-import")
     root.set("foreign-source", foreign_source)
@@ -123,6 +138,8 @@ def render_requisition(foreign_source, nodes, date_stamp=None, default_location=
 
     for node in nodes:
         root.append(render_node(node, default_location))
+
+    _add_metadata(root, requisition_metadata)
 
     return etree.tostring(root, xml_declaration=True, encoding="UTF-8")
 

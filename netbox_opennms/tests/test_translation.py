@@ -136,6 +136,61 @@ class RenderRequisitionTest(SimpleTestCase):
         self.assertIsNotNone(n)
         self.assertIsNone(n.find(f"{MI}interface"))
 
+    def test_requisition_metadata_renders_once_at_root(self):
+        # RD-3 bugfix: a requisition-scope triad lands once on <model-import>
+        # itself, not per-node.
+        xml = render_requisition(
+            "fs",
+            [self._node(), self._node(foreign_id="device-2")],
+            requisition_metadata=[("requisition", "owner", "neteng")],
+        )
+        root = etree.fromstring(xml)
+        root_md = root.findall(f"{MI}meta-data")
+        self.assertEqual(len(root_md), 1)
+        self.assertEqual(
+            (root_md[0].get("context"), root_md[0].get("key"), root_md[0].get("value")),
+            ("requisition", "owner", "neteng"),
+        )
+        # Not duplicated onto either node.
+        for node_el in root.findall(f"{MI}node"):
+            self.assertIsNone(node_el.find(f"{MI}meta-data"))
+
+    def test_no_requisition_metadata_omits_root_meta_data(self):
+        xml = render_requisition("fs", [self._node()])
+        self.assertIsNone(etree.fromstring(xml).find(f"{MI}meta-data"))
+
+    def test_node_categories_render_between_interfaces_and_assets(self):
+        class _Cat:
+            def __init__(self, name):
+                self.name = name
+
+        node = self._node(
+            interfaces=[InterfaceSpec("10.0.0.1", "P", services=["ICMP"])],
+            categories=[_Cat("X-core"), _Cat("X-edge")],
+            assets=[("serialNumber", "SN-1")],
+        )
+        n = etree.fromstring(render_requisition("fs", [node])).find(f"{MI}node")
+        children = list(n)
+        tags = [child.tag for child in children]
+        self.assertEqual(
+            [c.get("name") for c in n.findall(f"{MI}category")],
+            ["X-core", "X-edge"],
+        )
+        # interface* before category* before asset* (XSD order).
+        self.assertLess(
+            tags.index(f"{MI}interface"), tags.index(f"{MI}category")
+        )
+        self.assertLess(
+            tags.index(f"{MI}category"),
+            [i for i, t in enumerate(tags) if t == f"{MI}asset"][0],
+        )
+
+    def test_no_categories_renders_no_category_element(self):
+        n = etree.fromstring(
+            render_requisition("fs", [self._node()])
+        ).find(f"{MI}node")
+        self.assertIsNone(n.find(f"{MI}category"))
+
 
 class RenderNodeDocumentTest(SimpleTestCase):
     """render_node_document (issue #35) shares render_node with render_requisition."""
